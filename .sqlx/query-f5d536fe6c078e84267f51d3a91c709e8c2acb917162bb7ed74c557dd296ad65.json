@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size) VALUES (?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "f5d536fe6c078e84267f51d3a91c709e8c2acb917162bb7ed74c557dd296ad65"
+}

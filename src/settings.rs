@@ -43,5 +43,5 @@ pub(crate) struct Settings {
     pub force_https: bool, //force generated links to be https://
 
     #[env_settings(default = "admin@example.com")]
-    admin_email: String,
+    pub admin_email: String,
 }

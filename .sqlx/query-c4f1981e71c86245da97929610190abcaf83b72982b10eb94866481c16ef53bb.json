@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE uploads SET deleted_timestamp = NOW() WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "c4f1981e71c86245da97929610190abcaf83b72982b10eb94866481c16ef53bb"
+}
