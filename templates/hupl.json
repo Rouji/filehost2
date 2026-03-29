@@ -1,0 +1,6 @@
+\{
+  "name": "{name}",
+  "type": "http",
+  "targetUrl": "{base_url}",
+  "fileParam": "file"
+}

@@ -1,0 +1,8 @@
+\{
+  "Version": "18.0.2",
+  "DestinationType": "ImageUploader, FileUploader",
+  "RequestMethod": "POST",
+  "RequestURL": "{base_url}",
+  "FileFormName": "file",
+  "Body": "MultipartFormData"
+}
