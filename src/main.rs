@@ -5,6 +5,9 @@ mod settings;
 mod templates;
 mod upload;
 
+#[cfg(test)]
+mod tests;
+
 use actix_multipart::{MultipartError, form::MultipartFormConfig};
 use actix_web::{App, Error, HttpRequest, HttpServer, middleware::Logger, web};
 use clap::Parser;
@@ -35,6 +38,7 @@ async fn main() -> std::io::Result<()> {
         let result = match command {
             cli::Command::Migrate => cli::migrate(&db).await,
             cli::Command::DeleteExpired => cli::delete_expired(&db, &settings).await,
+            cli::Command::Delete { target } => cli::delete(&db, &settings, target).await,
         };
         if let Err(e) = result {
             eprintln!("Error: {e}");
@@ -44,10 +48,9 @@ async fn main() -> std::io::Result<()> {
     }
 
     if settings.base_url.is_none() {
-        let scheme = if settings.force_https { "https" } else { "http" };
         settings.base_url = Some(format!(
-            "{}://{}:{}/",
-            scheme, settings.listen_addr, settings.listen_port
+            "http://{}:{}/",
+            settings.listen_addr, settings.listen_port
         ));
     }
 

@@ -39,9 +39,6 @@ pub(crate) struct Settings {
     #[env_settings(default = "false")]
     pub auto_file_ext: bool, //automatically try to detect file extension for files that have none
 
-    #[env_settings(default = "false")]
-    pub force_https: bool, //force generated links to be https://
-
     #[env_settings(default = "admin@example.com")]
     pub admin_email: String,
 }

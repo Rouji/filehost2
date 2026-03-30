@@ -3,7 +3,7 @@ use std::path::Path;
 use actix_files::NamedFile;
 use actix_multipart::form::{MultipartForm, tempfile::TempFile, text::Text};
 use actix_web::{
-    HttpResponse, Responder, get,
+    HttpRequest, HttpResponse, Responder, get,
     http::header::{ContentDisposition, ContentType},
     post, web,
 };
@@ -17,6 +17,7 @@ use crate::templates::RenderedTemplates;
 use crate::upload::{build_slug, calculate_expiry, md5_file, uuid_to_path};
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum Config {
     Hupl,
     ShareX,
@@ -59,6 +60,7 @@ pub(crate) struct UploadForm {
 
 #[post("/")]
 pub(crate) async fn upload(
+    req: HttpRequest,
     MultipartForm(form): MultipartForm<UploadForm>,
     db: web::Data<MySqlPool>,
     settings: web::Data<Settings>,
@@ -68,6 +70,13 @@ pub(crate) async fn upload(
         .as_ref()
         .map(|t| t.0.clamp(settings.min_id_length, settings.max_id_length))
         .unwrap_or(settings.min_id_length);
+
+    let uploader_ip: Option<u32> = req
+        .peer_addr()
+        .and_then(|addr| match addr.ip() {
+            std::net::IpAddr::V4(ip) => Some(u32::from(ip)),
+            std::net::IpAddr::V6(_) => None,
+        });
 
     let mut response = String::new();
     for file in form.files {
@@ -157,13 +166,14 @@ pub(crate) async fn upload(
         }
 
         let result = sqlx::query!(
-            "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip) VALUES (?, ?, ?, ?, ?, ?, ?)",
             uuid,
             original_name,
             expiry,
             slug,
             file.size as i64,
             hash.as_slice(),
+            uploader_ip,
         )
         .execute(db.get_ref())
         .await;
@@ -190,7 +200,7 @@ pub(crate) async fn get_file(
 
     let row = sqlx::query_as!(
         Upload,
-        "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash as `hash: Vec<u8>` FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+        "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash as `hash: Vec<u8>`, uploader_ip FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
         slug
     )
     .fetch_optional(db.get_ref())

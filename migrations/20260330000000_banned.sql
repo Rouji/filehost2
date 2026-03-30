@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS banned_ipv4_ranges (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    start_ip INT UNSIGNED NOT NULL,
+    end_ip INT UNSIGNED NOT NULL,
+    reason VARCHAR(255) DEFAULT NULL,
+    banned_timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_timestamp DATETIME DEFAULT NULL
+);
+
+CREATE TABLE IF NOT EXISTS banned_file_hashes (
+    hash BINARY(16) NOT NULL PRIMARY KEY,
+    reason VARCHAR(255) DEFAULT NULL
+);
+
+CREATE TABLE IF NOT EXISTS banned_file_extensions (
+    extension VARCHAR(255) PRIMARY KEY
+);
+
+CREATE TABLE IF NOT EXISTS banned_file_mimes (
+    mime VARCHAR(255) PRIMARY KEY
+);

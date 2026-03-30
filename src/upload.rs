@@ -100,7 +100,6 @@ mod tests {
             log_path: None,
             max_ext_len: 7,
             auto_file_ext: false,
-            force_https: false,
             admin_email: "admin@example.com".to_string(),
         }
     }

@@ -909,6 +909,7 @@ version = "0.1.0"
 dependencies = [
  "actix-files",
  "actix-form-data",
+ "actix-http",
  "actix-multipart 0.7.2",
  "actix-web",
  "anyhow",
