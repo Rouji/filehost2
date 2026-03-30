@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+  "query": "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash as `hash: Vec<u8>` FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
   "describe": {
     "columns": [
       {
@@ -65,6 +65,15 @@
           "flags": "NOT_NULL | NO_DEFAULT_VALUE",
           "max_size": 11
         }
+      },
+      {
+        "ordinal": 7,
+        "name": "hash: Vec<u8>",
+        "type_info": {
+          "type": "String",
+          "flags": "BINARY",
+          "max_size": 16
+        }
       }
     ],
     "parameters": {
@@ -77,8 +86,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "523d70676ad81f4f27e21a01730413479bd18c8f99b5241f6a7833158e56570b"
+  "hash": "9ec0caca2e48427a42090fe3389ed8b9776ad43fdb84c3d103c863fc50341826"
 }

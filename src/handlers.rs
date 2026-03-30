@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::model::Upload;
 use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
-use crate::upload::{build_slug, calculate_expiry, uuid_to_path};
+use crate::upload::{build_slug, calculate_expiry, md5_file, uuid_to_path};
 
 #[derive(Debug, Deserialize)]
 enum Config {
@@ -73,10 +73,15 @@ pub(crate) async fn upload(
     for file in form.files {
         let uuid = Uuid::new_v4();
         let original_name = file.file_name.as_deref().unwrap_or("unknown").to_string();
-        let ct_subtype = match file.content_type {
-            Some(ct) => Some(ct.subtype().to_string()),
+        let mime_str = match file.content_type {
+            Some(ref ct) => Some(ct.to_string()),
             None => None,
         };
+        let ct_subtype = match file.content_type {
+            Some(ref ct) => Some(ct.subtype().to_string()),
+            None => None,
+        };
+
         let slug = build_slug(
             &original_name,
             ct_subtype.as_deref(),
@@ -86,6 +91,53 @@ pub(crate) async fn upload(
         );
         let expiry = calculate_expiry(file.size, &settings);
         let save_path = uuid_to_path(Path::new(&settings.store_path), &uuid);
+
+        if let Some(ref mime) = mime_str {
+            let banned = sqlx::query!(
+                "SELECT 1 as banned FROM banned_file_mimes WHERE mime = ?",
+                mime,
+            )
+            .fetch_optional(db.get_ref())
+            .await;
+            match banned {
+                Ok(Some(_)) => return HttpResponse::Forbidden().finish(),
+                Err(e) => {
+                    log::error!("DB banned mime check failed: {e}");
+                    return HttpResponse::InternalServerError().finish();
+                }
+                Ok(None) => {}
+            }
+        } else {
+            log::warn!(
+                "No content type provided for file {}, skipping MIME type check",
+                original_name
+            );
+        }
+
+        // TODO: maybe move this into some background process to avoid blocking the request?
+        let hash = match md5_file(file.file.path().to_path_buf()).await {
+            Ok(h) => h,
+            Err(e) => {
+                log::error!("Failed to hash file: {e}");
+                return HttpResponse::InternalServerError().finish();
+            }
+        };
+
+        // Reject if the hash is banned.
+        let banned = sqlx::query!(
+            "SELECT 1 as banned FROM banned_file_hashes WHERE hash = ?",
+            hash.as_slice(),
+        )
+        .fetch_optional(db.get_ref())
+        .await;
+        match banned {
+            Ok(Some(_)) => return HttpResponse::Forbidden().finish(),
+            Err(e) => {
+                log::error!("DB banned hash check failed: {e}");
+                return HttpResponse::InternalServerError().finish();
+            }
+            Ok(None) => {}
+        }
 
         if let Err(e) = std::fs::create_dir_all(save_path.parent().unwrap()) {
             log::error!("Failed to create directory: {e}");
@@ -105,12 +157,13 @@ pub(crate) async fn upload(
         }
 
         let result = sqlx::query!(
-            "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash) VALUES (?, ?, ?, ?, ?, ?)",
             uuid,
             original_name,
             expiry,
             slug,
             file.size as i64,
+            hash.as_slice(),
         )
         .execute(db.get_ref())
         .await;
@@ -137,7 +190,7 @@ pub(crate) async fn get_file(
 
     let row = sqlx::query_as!(
         Upload,
-        "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+        "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash as `hash: Vec<u8>` FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
         slug
     )
     .fetch_optional(db.get_ref())

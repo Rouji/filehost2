@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -13,6 +14,27 @@ pub(crate) fn random_string(len: usize) -> String {
 pub(crate) fn uuid_to_path(root: &Path, uuid: &Uuid) -> PathBuf {
     let folder = format!("{:04x}", uuid.as_u128() >> 112);
     root.join(folder).join(uuid.to_string())
+}
+
+/// Hash a file by path using MD5, streaming in 64 KiB chunks to avoid
+/// loading the entire file into memory. Runs in a blocking thread so the
+/// async runtime is not stalled.
+pub(crate) async fn md5_file(path: PathBuf) -> std::io::Result<[u8; 16]> {
+    actix_web::rt::task::spawn_blocking(move || {
+        let mut file = std::fs::File::open(&path)?;
+        let mut ctx = md5::Context::new();
+        let mut buf = [0u8; 65536];
+        loop {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            ctx.consume(&buf[..n]);
+        }
+        Ok::<[u8; 16], std::io::Error>(ctx.compute().into())
+    })
+    .await
+    .expect("hashing task panicked")
 }
 
 pub(crate) fn calculate_expiry(file_size: usize, settings: &Settings) -> PrimitiveDateTime {

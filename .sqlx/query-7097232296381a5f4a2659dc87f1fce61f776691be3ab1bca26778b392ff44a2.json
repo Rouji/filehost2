@@ -1,0 +1,24 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT 1 as banned FROM banned_file_mimes WHERE mime = ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "banned",
+        "type_info": {
+          "type": "Long",
+          "flags": "NOT_NULL | BINARY",
+          "max_size": 1
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7097232296381a5f4a2659dc87f1fce61f776691be3ab1bca26778b392ff44a2"
+}

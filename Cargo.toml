@@ -15,6 +15,7 @@ env-settings-derive = "0.1.15"
 env-settings-utils = "0.1.15"
 env_logger = "0.11.8"
 log = "0.4"
+md5 = "0.7"
 rand = "0.10.0"
 time = "0.3"
 serde = { version = "1.0.228", features = ["derive"] }
