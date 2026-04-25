@@ -4,7 +4,7 @@ use actix_files::NamedFile;
 use actix_multipart::form::{MultipartForm, tempfile::TempFile, text::Text};
 use actix_web::{
     HttpRequest, HttpResponse, Responder, get,
-    http::header::{ContentDisposition, ContentType},
+    http::header::{ContentDisposition, ContentType, DispositionParam, DispositionType},
     post, web,
 };
 use serde::Deserialize;
@@ -82,14 +82,24 @@ pub(crate) async fn upload(
     for file in form.files {
         let uuid = Uuid::new_v4();
         let original_name = file.file_name.as_deref().unwrap_or("unknown").to_string();
-        let mime_str = match file.content_type {
-            Some(ref ct) => Some(ct.to_string()),
-            None => None,
-        };
-        let ct_subtype = match file.content_type {
-            Some(ref ct) => Some(ct.subtype().to_string()),
-            None => None,
-        };
+        // Use client-provided Content-Type; fall back to guessing from filename.
+        let content_type_str: String = file.content_type
+            .as_ref()
+            .map(|ct| ct.to_string())
+            .unwrap_or_else(|| {
+                mime_guess::from_path(&original_name)
+                    .first_or_octet_stream()
+                    .to_string()
+            });
+        let mime_str = Some(content_type_str.clone());
+        let ct_subtype: Option<String> = file.content_type
+            .as_ref()
+            .map(|ct| ct.subtype().to_string())
+            .or_else(|| {
+                mime_guess::from_path(&original_name)
+                    .first()
+                    .map(|m| m.subtype().as_str().to_string())
+            });
 
         let slug = build_slug(
             &original_name,
@@ -166,7 +176,7 @@ pub(crate) async fn upload(
         }
 
         let result = sqlx::query!(
-            "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             uuid,
             original_name,
             expiry,
@@ -174,6 +184,7 @@ pub(crate) async fn upload(
             file.size as i64,
             hash.as_slice(),
             uploader_ip,
+            content_type_str,
         )
         .execute(db.get_ref())
         .await;
@@ -200,7 +211,7 @@ pub(crate) async fn get_file(
 
     let row = sqlx::query_as!(
         Upload,
-        "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash as `hash: Vec<u8>`, uploader_ip FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+        "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash as `hash: Vec<u8>`, uploader_ip, content_type FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
         slug
     )
     .fetch_optional(db.get_ref())
@@ -208,13 +219,24 @@ pub(crate) async fn get_file(
     .map_err(actix_web::error::ErrorInternalServerError)?
     .ok_or_else(|| actix_web::error::ErrorNotFound("File not found"))?;
 
+    let mime: mime_guess::Mime = row.content_type
+        .as_deref()
+        .and_then(|s| s.parse::<mime_guess::Mime>().ok())
+        .unwrap_or(mime_guess::mime::APPLICATION_OCTET_STREAM);
+
+    let disposition = match mime.type_().as_str() {
+        "image" | "video" | "audio" => DispositionType::Inline,
+        "text" if mime.subtype().as_str() == "plain" => DispositionType::Inline,
+        "application" if matches!(mime.subtype().as_str(), "json" | "pdf") => DispositionType::Inline,
+        _ => DispositionType::Attachment,
+    };
+
     let file_path = uuid_to_path(Path::new(&settings.store_path), &row.id);
     Ok(NamedFile::open(file_path)?
         .use_last_modified(true)
+        .set_content_type(mime)
         .set_content_disposition(ContentDisposition {
-            disposition: actix_web::http::header::DispositionType::Attachment,
-            parameters: vec![actix_web::http::header::DispositionParam::Filename(
-                row.original_name,
-            )],
+            disposition,
+            parameters: vec![DispositionParam::Filename(row.original_name)],
         }))
 }

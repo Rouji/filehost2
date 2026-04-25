@@ -159,7 +159,7 @@ mod tests {
                 .get("content-disposition")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or(""),
-            format!("attachment; filename=\"{file_name}\"")
+            format!("inline; filename=\"{file_name}\"")
         );
         assert_eq!(&test::read_body(resp).await[..], file_content.as_bytes());
     }

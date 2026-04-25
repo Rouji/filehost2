@@ -12,6 +12,7 @@ pub(crate) struct Upload {
     pub file_size: i64,
     pub hash: Option<Vec<u8>>,
     pub uploader_ip: Option<u32>,
+    pub content_type: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]

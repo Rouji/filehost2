@@ -920,6 +920,7 @@ dependencies = [
  "env_logger",
  "log",
  "md5",
+ "mime_guess",
  "rand 0.10.0",
  "serde",
  "sqlx",

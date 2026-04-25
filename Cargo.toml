@@ -25,3 +25,4 @@ serde = { version = "1.0.228", features = ["derive"] }
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "mysql", "macros", "migrate", "time", "uuid"] }
 tinytemplate = "1.2.1"
 uuid = { version="1.21.0", features=["v4"] }
+mime_guess = "2"
