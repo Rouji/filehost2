@@ -105,10 +105,14 @@ mod tests {
     static BOUNDARY: &str = "----TestBoundary";
 
     fn multipart_body(name: &str, body: &str) -> String {
+        multipart_body_with_type(name, "text/plain", body)
+    }
+
+    fn multipart_body_with_type(name: &str, content_type: &str, body: &str) -> String {
         format!(
             "--{BOUNDARY}\r\n\
              Content-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n\
-             Content-Type: text/plain\r\n\
+             Content-Type: {content_type}\r\n\
              \r\n\
              {body}\r\n"
         )
@@ -162,6 +166,55 @@ mod tests {
             format!("inline; filename=\"{file_name}\"")
         );
         assert_eq!(&test::read_body(resp).await[..], file_content.as_bytes());
+    }
+
+    #[sqlx::test]
+    async fn html_served_as_plaintext_attachment(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool).await;
+
+        let req = multipart_request(&multipart_body_with_type(
+            "page.html",
+            "text/html",
+            "<h1>hi</h1>",
+        ));
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "upload failed: {}",
+            resp.status()
+        );
+
+        let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+        let slug = url.trim().trim_start_matches("http://localhost:8080/");
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/{slug}"))
+                .to_request(),
+        )
+        .await;
+        assert!(resp.status().is_success());
+
+        let cd = resp
+            .headers()
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            cd.starts_with("attachment"),
+            "expected attachment disposition, got: {cd}"
+        );
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            !ct.contains("text/html"),
+            "expected non-HTML content type, got: {ct}"
+        );
     }
 
     #[sqlx::test]

@@ -71,19 +71,18 @@ pub(crate) async fn upload(
         .map(|t| t.0.clamp(settings.min_id_length, settings.max_id_length))
         .unwrap_or(settings.min_id_length);
 
-    let uploader_ip: Option<u32> = req
-        .peer_addr()
-        .and_then(|addr| match addr.ip() {
-            std::net::IpAddr::V4(ip) => Some(u32::from(ip)),
-            std::net::IpAddr::V6(_) => None,
-        });
+    let uploader_ip: Option<u32> = req.peer_addr().and_then(|addr| match addr.ip() {
+        std::net::IpAddr::V4(ip) => Some(u32::from(ip)),
+        std::net::IpAddr::V6(_) => None,
+    });
 
     let mut response = String::new();
     for file in form.files {
         let uuid = Uuid::new_v4();
         let original_name = file.file_name.as_deref().unwrap_or("unknown").to_string();
         // Use client-provided Content-Type; fall back to guessing from filename.
-        let content_type_str: String = file.content_type
+        let content_type_str: String = file
+            .content_type
             .as_ref()
             .map(|ct| ct.to_string())
             .unwrap_or_else(|| {
@@ -92,7 +91,8 @@ pub(crate) async fn upload(
                     .to_string()
             });
         let mime_str = Some(content_type_str.clone());
-        let ct_subtype: Option<String> = file.content_type
+        let ct_subtype: Option<String> = file
+            .content_type
             .as_ref()
             .map(|ct| ct.subtype().to_string())
             .or_else(|| {
@@ -219,7 +219,8 @@ pub(crate) async fn get_file(
     .map_err(actix_web::error::ErrorInternalServerError)?
     .ok_or_else(|| actix_web::error::ErrorNotFound("File not found"))?;
 
-    let mime: mime_guess::Mime = row.content_type
+    let mime: mime_guess::Mime = row
+        .content_type
         .as_deref()
         .and_then(|s| s.parse::<mime_guess::Mime>().ok())
         .unwrap_or(mime_guess::mime::APPLICATION_OCTET_STREAM);
@@ -227,14 +228,22 @@ pub(crate) async fn get_file(
     let disposition = match mime.type_().as_str() {
         "image" | "video" | "audio" => DispositionType::Inline,
         "text" if mime.subtype().as_str() == "plain" => DispositionType::Inline,
-        "application" if matches!(mime.subtype().as_str(), "json" | "pdf") => DispositionType::Inline,
+        "application" if matches!(mime.subtype().as_str(), "json" | "pdf") => {
+            DispositionType::Inline
+        }
         _ => DispositionType::Attachment,
+    };
+
+    // Serve non-plain text types (html, js, css, …) as text/plain so browsers don't execute them
+    let serve_mime = match mime.type_().as_str() {
+        "text" if mime.subtype().as_str() != "plain" => mime_guess::mime::TEXT_PLAIN,
+        _ => mime,
     };
 
     let file_path = uuid_to_path(Path::new(&settings.store_path), &row.id);
     Ok(NamedFile::open(file_path)?
         .use_last_modified(true)
-        .set_content_type(mime)
+        .set_content_type(serve_mime)
         .set_content_disposition(ContentDisposition {
             disposition,
             parameters: vec![DispositionParam::Filename(row.original_name)],
