@@ -1,0 +1,1 @@
+ALTER TABLE uploads ADD COLUMN content_type VARCHAR(255) NULL;
