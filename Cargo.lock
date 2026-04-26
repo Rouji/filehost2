@@ -914,6 +914,7 @@ dependencies = [
  "actix-web",
  "anyhow",
  "clap",
+ "dotenvy",
  "env-settings",
  "env-settings-derive",
  "env-settings-utils",

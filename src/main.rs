@@ -25,6 +25,8 @@ fn handle_multipart_error(err: MultipartError, _req: &HttpRequest) -> Error {
 async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
+    dotenvy::dotenv().ok();
+
     let cli = cli::Cli::parse();
 
     let mut settings =

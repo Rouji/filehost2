@@ -26,3 +26,4 @@ sqlx = { version = "0.8.6", features = ["runtime-tokio", "mysql", "macros", "mig
 tinytemplate = "1.2.1"
 uuid = { version="1.21.0", features=["v4"] }
 mime_guess = "2"
+dotenvy = "0.15.7"
