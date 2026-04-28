@@ -13,6 +13,13 @@ use uuid::Uuid;
 
 use crate::model::Upload;
 use crate::settings::Settings;
+
+fn error_page(status: actix_web::http::StatusCode, message: &str) -> HttpResponse {
+    let body = format!("{status} {message}");
+    HttpResponse::build(status)
+        .content_type(ContentType::plaintext())
+        .body(body)
+}
 use crate::templates::RenderedTemplates;
 use crate::upload::{build_slug, calculate_expiry, md5_file, uuid_to_path};
 
@@ -76,10 +83,63 @@ pub(crate) async fn upload(
         std::net::IpAddr::V6(_) => None,
     });
 
+    let internal_error_response = error_page(
+        actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+        "Something went wrong.",
+    );
+
+    if let Some(ip) = uploader_ip {
+        let banned = sqlx::query(
+            "SELECT 1 FROM banned_ipv4_ranges \
+             WHERE ? BETWEEN start_ip AND end_ip \
+             AND (expires_timestamp IS NULL OR expires_timestamp > NOW())",
+        )
+        .bind(ip)
+        .fetch_optional(db.get_ref())
+        .await;
+        match banned {
+            Ok(Some(_)) => {
+                return error_page(
+                    actix_web::http::StatusCode::FORBIDDEN,
+                    "Your IP is banned from uploading.",
+                );
+            }
+            Err(e) => {
+                log::error!("banned IP check failed: {e}");
+                return internal_error_response;
+            }
+            Ok(None) => {}
+        }
+    }
+
     let mut response = String::new();
     for file in form.files {
         let uuid = Uuid::new_v4();
         let original_name = file.file_name.as_deref().unwrap_or("unknown").to_string();
+
+        if let Some(ext) = std::path::Path::new(&original_name)
+            .extension()
+            .and_then(|e| e.to_str())
+        {
+            let banned = sqlx::query("SELECT 1 FROM banned_file_extensions WHERE extension = ?")
+                .bind(ext)
+                .fetch_optional(db.get_ref())
+                .await;
+            match banned {
+                Ok(Some(_)) => {
+                    return error_page(
+                        actix_web::http::StatusCode::FORBIDDEN,
+                        "File type not allowed.",
+                    );
+                }
+                Err(e) => {
+                    log::error!("banned extension check failed: {e}");
+                    return internal_error_response;
+                }
+                Ok(None) => {}
+            }
+        }
+
         // Use client-provided Content-Type; fall back to guessing from filename.
         let content_type_str: String = file
             .content_type
@@ -119,10 +179,15 @@ pub(crate) async fn upload(
             .fetch_optional(db.get_ref())
             .await;
             match banned {
-                Ok(Some(_)) => return HttpResponse::Forbidden().finish(),
+                Ok(Some(_)) => {
+                    return error_page(
+                        actix_web::http::StatusCode::FORBIDDEN,
+                        "Your upload was rejected.",
+                    );
+                }
                 Err(e) => {
-                    log::error!("DB banned mime check failed: {e}");
-                    return HttpResponse::InternalServerError().finish();
+                    log::error!("banned mime check failed: {e}");
+                    return internal_error_response;
                 }
                 Ok(None) => {}
             }
@@ -138,7 +203,7 @@ pub(crate) async fn upload(
             Ok(h) => h,
             Err(e) => {
                 log::error!("Failed to hash file: {e}");
-                return HttpResponse::InternalServerError().finish();
+                return internal_error_response;
             }
         };
 
@@ -150,28 +215,33 @@ pub(crate) async fn upload(
         .fetch_optional(db.get_ref())
         .await;
         match banned {
-            Ok(Some(_)) => return HttpResponse::Forbidden().finish(),
+            Ok(Some(_)) => {
+                return error_page(
+                    actix_web::http::StatusCode::FORBIDDEN,
+                    "Your upload was rejected.",
+                );
+            }
             Err(e) => {
-                log::error!("DB banned hash check failed: {e}");
-                return HttpResponse::InternalServerError().finish();
+                log::error!("banned hash check failed: {e}");
+                return internal_error_response;
             }
             Ok(None) => {}
         }
 
         if let Err(e) = std::fs::create_dir_all(save_path.parent().unwrap()) {
             log::error!("Failed to create directory: {e}");
-            return HttpResponse::InternalServerError().finish();
+            return internal_error_response;
         }
 
         if let Err(e) = file.file.persist(&save_path) {
             if e.error.kind() == std::io::ErrorKind::CrossesDevices {
                 if let Err(copy_err) = std::fs::copy(e.file.path(), &save_path) {
                     log::error!("Failed to copy file: {copy_err}");
-                    return HttpResponse::InternalServerError().finish();
+                    return internal_error_response;
                 }
             } else {
                 log::error!("Failed to persist file: {}", e.error);
-                return HttpResponse::InternalServerError().finish();
+                return internal_error_response;
             }
         }
 
@@ -190,8 +260,8 @@ pub(crate) async fn upload(
         .await;
 
         if let Err(e) = result {
-            log::error!("DB insert failed: {e}");
-            return HttpResponse::InternalServerError().finish();
+            log::error!("insert failed: {e}");
+            return internal_error_response;
         }
 
         let link = format!("{}{}\n", settings.base_url.as_ref().unwrap(), slug);
