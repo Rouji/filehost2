@@ -195,10 +195,19 @@ pub(crate) async fn upload(
         settings.min_id_length
     };
 
-    let uploader_ip: Option<u32> = req.peer_addr().and_then(|addr| match addr.ip() {
-        std::net::IpAddr::V4(ip) => Some(u32::from(ip)),
-        std::net::IpAddr::V6(_) => None,
-    });
+    let uploader_ip: Option<u32> = if settings.trust_xff {
+        req.headers()
+            .get("X-Forwarded-For")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.trim().parse::<std::net::Ipv4Addr>().ok())
+            .map(u32::from)
+    } else {
+        req.peer_addr().and_then(|addr| match addr.ip() {
+            std::net::IpAddr::V4(ip) => Some(u32::from(ip)),
+            std::net::IpAddr::V6(_) => None,
+        })
+    };
 
     if let Some(ip) = uploader_ip {
         match db::is_ip_banned(db.get_ref(), ip).await {

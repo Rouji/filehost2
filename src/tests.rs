@@ -29,6 +29,7 @@ mod tests {
             log_path: None,
             max_ext_len: 7,
             auto_file_ext: false,
+            trust_xff: false,
             admin_email: "test@example.com".to_string(),
         }
     }
@@ -214,6 +215,72 @@ mod tests {
         assert!(
             !ct.contains("text/html"),
             "expected non-HTML content type, got: {ct}"
+        );
+    }
+
+    async fn ban_ip(pool: &MySqlPool, ip: std::net::Ipv4Addr) {
+        let ip_int = u32::from(ip);
+        sqlx::query(
+            "INSERT INTO banned_ipv4_ranges (start_ip, end_ip, banned_timestamp) VALUES (?, ?, NOW())",
+        )
+        .bind(ip_int)
+        .bind(ip_int)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn xff_used_when_trust_xff_enabled(pool: MySqlPool) {
+        let banned_ip: std::net::Ipv4Addr = "1.2.3.4".parse().unwrap();
+        ban_ip(&pool, banned_ip).await;
+
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool).await;
+
+        let req = test::TestRequest::post()
+            .uri("/")
+            .insert_header((
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            ))
+            .insert_header(("X-Forwarded-For", "1.2.3.4"))
+            .set_payload(format!(
+                "{}--{BOUNDARY}--\r\n",
+                multipart_body("test.txt", "hello")
+            ))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+    }
+
+    #[sqlx::test]
+    async fn xff_ignored_when_trust_xff_disabled(pool: MySqlPool) {
+        let banned_ip: std::net::Ipv4Addr = "1.2.3.4".parse().unwrap();
+        ban_ip(&pool, banned_ip).await;
+
+        let app = full_app(test_settings(), pool).await;
+
+        let req = test::TestRequest::post()
+            .uri("/")
+            .insert_header((
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            ))
+            .insert_header(("X-Forwarded-For", "1.2.3.4"))
+            .set_payload(format!(
+                "{}--{BOUNDARY}--\r\n",
+                multipart_body("test.txt", "hello")
+            ))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "XFF should be ignored when trust_xff=false, got: {}",
+            resp.status()
         );
     }
 

@@ -38,6 +38,8 @@ pub(crate) struct Settings {
     pub max_ext_len: usize, //max. length for file extensions
     #[env_settings(default = "false")]
     pub auto_file_ext: bool, //automatically try to detect file extension for files that have none
+    #[env_settings(default = "false")]
+    pub trust_xff: bool, //trust X-Forwarded-For header; enable only when behind a reverse proxy
 
     #[env_settings(default = "admin@example.com")]
     pub admin_email: String,
