@@ -1,4 +1,5 @@
 mod cli;
+mod db;
 mod handlers;
 mod model;
 mod settings;

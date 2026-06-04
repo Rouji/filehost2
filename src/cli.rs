@@ -1,13 +1,12 @@
 use std::net::Ipv4Addr;
-use std::path::Path;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use sqlx::mysql::MySqlPool;
 use uuid::Uuid;
 
+use crate::db;
 use crate::settings::Settings;
-use crate::upload::uuid_to_path;
 
 #[derive(Parser)]
 #[command(about = "Minimalistic file hosting service")]
@@ -41,16 +40,7 @@ pub(crate) async fn migrate(db: &MySqlPool) -> Result<()> {
 }
 
 pub(crate) async fn delete_expired(db: &MySqlPool, settings: &Settings) -> Result<()> {
-    let uploads = sqlx::query!(
-        "SELECT id as `id: Uuid`, slug, original_name FROM uploads WHERE expiry_timestamp <= NOW() AND deleted_timestamp IS NULL"
-    )
-    .fetch_all(db)
-    .await?;
-
-    let count = uploads.len();
-    for upload in uploads {
-        delete_by_id(db, settings, upload.id, &upload.slug, &upload.original_name).await?;
-    }
+    let count = db::delete_expired(db, settings).await?;
     println!("Deleted {count} expired upload(s).");
     Ok(())
 }
@@ -61,85 +51,13 @@ pub(crate) async fn delete(
     target: DeleteTarget,
 ) -> Result<()> {
     let count = match target {
-        DeleteTarget::Id { id } => {
-            let rows = sqlx::query!(
-                "SELECT id as `id: Uuid`, slug, original_name FROM uploads WHERE id = ? AND deleted_timestamp IS NULL",
-                id
-            )
-            .fetch_all(db)
-            .await?;
-            let n = rows.len();
-            for r in rows {
-                delete_by_id(db, settings, r.id, &r.slug, &r.original_name).await?;
-            }
-            n
-        }
-        DeleteTarget::Slug { slug } => {
-            let rows = sqlx::query!(
-                "SELECT id as `id: Uuid`, slug, original_name FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
-                slug
-            )
-            .fetch_all(db)
-            .await?;
-            let n = rows.len();
-            for r in rows {
-                delete_by_id(db, settings, r.id, &r.slug, &r.original_name).await?;
-            }
-            n
-        }
-        DeleteTarget::Ip { ip } => {
-            let ip_int = u32::from(ip);
-            let rows = sqlx::query!(
-                "SELECT id as `id: Uuid`, slug, original_name FROM uploads WHERE uploader_ip = ? AND deleted_timestamp IS NULL",
-                ip_int
-            )
-            .fetch_all(db)
-            .await?;
-            let n = rows.len();
-            for r in rows {
-                delete_by_id(db, settings, r.id, &r.slug, &r.original_name).await?;
-            }
-            n
-        }
+        DeleteTarget::Id { id } => db::delete_by_id(db, settings, id).await?,
+        DeleteTarget::Slug { slug } => db::delete_by_slug(db, settings, &slug).await?,
+        DeleteTarget::Ip { ip } => db::delete_by_ip(db, settings, u32::from(ip)).await?,
         DeleteTarget::IpRange { start, end } => {
-            let start_int = u32::from(start);
-            let end_int = u32::from(end);
-            let rows = sqlx::query!(
-                "SELECT id as `id: Uuid`, slug, original_name FROM uploads WHERE uploader_ip BETWEEN ? AND ? AND deleted_timestamp IS NULL",
-                start_int,
-                end_int,
-            )
-            .fetch_all(db)
-            .await?;
-            let n = rows.len();
-            for r in rows {
-                delete_by_id(db, settings, r.id, &r.slug, &r.original_name).await?;
-            }
-            n
+            db::delete_by_ip_range(db, settings, u32::from(start), u32::from(end)).await?
         }
     };
-
     println!("Deleted {count} upload(s).");
-    Ok(())
-}
-
-async fn delete_by_id(
-    db: &MySqlPool,
-    settings: &Settings,
-    id: Uuid,
-    slug: &str,
-    original_name: &str,
-) -> Result<()> {
-    let path = uuid_to_path(Path::new(&settings.store_path), &id);
-    if let Err(e) = std::fs::remove_file(&path) {
-        log::warn!("Failed to delete file {}: {e}", path.display());
-    }
-    sqlx::query!(
-        "UPDATE uploads SET deleted_timestamp = NOW() WHERE id = ?",
-        id,
-    )
-    .execute(db)
-    .await?;
-    log::info!("Deleted file: {id} {slug} {original_name}");
     Ok(())
 }

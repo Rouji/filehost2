@@ -4,24 +4,145 @@ use actix_files::NamedFile;
 use actix_multipart::form::{MultipartForm, tempfile::TempFile, text::Text};
 use actix_web::{
     HttpRequest, HttpResponse, Responder, get,
-    http::header::{ContentDisposition, ContentType, DispositionParam, DispositionType},
+    http::{StatusCode, header::{ContentDisposition, ContentType, DispositionParam, DispositionType}},
     post, web,
 };
 use serde::Deserialize;
 use sqlx::mysql::MySqlPool;
 use uuid::Uuid;
 
+use crate::db;
 use crate::model::Upload;
 use crate::settings::Settings;
+use crate::templates::RenderedTemplates;
+use crate::upload::{build_slug, calculate_expiry, md5_file, uuid_to_path};
 
-fn error_page(status: actix_web::http::StatusCode, message: &str) -> HttpResponse {
+fn error_page(status: StatusCode, message: &str) -> HttpResponse {
     let body = format!("{status} {message}");
     HttpResponse::build(status)
         .content_type(ContentType::plaintext())
         .body(body)
 }
-use crate::templates::RenderedTemplates;
-use crate::upload::{build_slug, calculate_expiry, md5_file, uuid_to_path};
+
+fn determine_content_type(file: &TempFile, original_name: &str) -> (String, Option<String>) {
+    let content_type_str = file
+        .content_type
+        .as_ref()
+        .map(|ct| ct.to_string())
+        .unwrap_or_else(|| {
+            mime_guess::from_path(original_name)
+                .first_or_octet_stream()
+                .to_string()
+        });
+    let ct_subtype = file
+        .content_type
+        .as_ref()
+        .map(|ct| ct.subtype().to_string())
+        .or_else(|| {
+            mime_guess::from_path(original_name)
+                .first()
+                .map(|m| m.subtype().as_str().to_string())
+        });
+    (content_type_str, ct_subtype)
+}
+
+fn save_file(tmp: tempfile::NamedTempFile, dest: &Path) -> std::io::Result<()> {
+    match tmp.persist(dest) {
+        Ok(_) => Ok(()),
+        Err(e) if e.error.kind() == std::io::ErrorKind::CrossesDevices => {
+            std::fs::copy(e.file.path(), dest)?;
+            Ok(())
+        }
+        Err(e) => Err(e.error),
+    }
+}
+
+async fn process_file(
+    db: &MySqlPool,
+    settings: &Settings,
+    file: TempFile,
+    uploader_ip: Option<u32>,
+    id_len: usize,
+) -> Result<String, HttpResponse> {
+    let uuid = Uuid::new_v4();
+    let original_name = file.file_name.as_deref().unwrap_or("unknown").to_string();
+    let file_size = file.size;
+
+    let internal_err = || error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
+
+    if let Some(ext) = Path::new(&original_name).extension().and_then(|e| e.to_str()) {
+        match db::is_extension_banned(db, ext).await {
+            Ok(true) => return Err(error_page(StatusCode::FORBIDDEN, "File type not allowed.")),
+            Err(e) => {
+                log::error!("banned extension check failed: {e}");
+                return Err(internal_err());
+            }
+            Ok(false) => {}
+        }
+    }
+
+    let (content_type_str, ct_subtype) = determine_content_type(&file, &original_name);
+
+    let slug = build_slug(
+        &original_name,
+        ct_subtype.as_deref(),
+        id_len,
+        settings.auto_file_ext,
+        settings.max_ext_len,
+    );
+    let expiry = calculate_expiry(file_size, settings);
+    let save_path = uuid_to_path(Path::new(&settings.store_path), &uuid);
+
+    match db::is_mime_banned(db, &content_type_str).await {
+        Ok(true) => return Err(error_page(StatusCode::FORBIDDEN, "Your upload was rejected.")),
+        Err(e) => {
+            log::error!("banned mime check failed: {e}");
+            return Err(internal_err());
+        }
+        Ok(false) => {}
+    }
+
+    // TODO: maybe move this into some background process to avoid blocking the request?
+    let hash = match md5_file(file.file.path().to_path_buf()).await {
+        Ok(h) => h,
+        Err(e) => {
+            log::error!("Failed to hash file: {e}");
+            return Err(internal_err());
+        }
+    };
+
+    match db::is_hash_banned(db, hash.as_slice()).await {
+        Ok(true) => return Err(error_page(StatusCode::FORBIDDEN, "Your upload was rejected.")),
+        Err(e) => {
+            log::error!("banned hash check failed: {e}");
+            return Err(internal_err());
+        }
+        Ok(false) => {}
+    }
+
+    if let Err(e) = std::fs::create_dir_all(save_path.parent().unwrap()) {
+        log::error!("Failed to create directory: {e}");
+        return Err(internal_err());
+    }
+
+    if let Err(e) = save_file(file.file, &save_path) {
+        log::error!("Failed to save file: {e}");
+        return Err(internal_err());
+    }
+
+    if let Err(e) = sqlx::query!(
+        "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        uuid, original_name, expiry, slug, file_size as i64, hash.as_slice(), uploader_ip, content_type_str,
+    )
+    .execute(db)
+    .await
+    {
+        log::error!("insert failed: {e}");
+        return Err(internal_err());
+    }
+
+    Ok(format!("{}{}\n", settings.base_url.as_ref().unwrap(), slug))
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -72,200 +193,36 @@ pub(crate) async fn upload(
     db: web::Data<MySqlPool>,
     settings: web::Data<Settings>,
 ) -> impl Responder {
-    let id_len = form
-        .id_length
-        .as_ref()
-        .map(|t| t.0.clamp(settings.min_id_length, settings.max_id_length))
-        .unwrap_or(settings.min_id_length);
+    let id_len = if let Some(ref t) = form.id_length {
+        t.0.clamp(settings.min_id_length, settings.max_id_length)
+    } else {
+        settings.min_id_length
+    };
 
     let uploader_ip: Option<u32> = req.peer_addr().and_then(|addr| match addr.ip() {
         std::net::IpAddr::V4(ip) => Some(u32::from(ip)),
         std::net::IpAddr::V6(_) => None,
     });
 
-    let internal_error_response = error_page(
-        actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
-        "Something went wrong.",
-    );
-
     if let Some(ip) = uploader_ip {
-        let banned = sqlx::query(
-            "SELECT 1 FROM banned_ipv4_ranges \
-             WHERE ? BETWEEN start_ip AND end_ip \
-             AND (expires_timestamp IS NULL OR expires_timestamp > NOW())",
-        )
-        .bind(ip)
-        .fetch_optional(db.get_ref())
-        .await;
-        match banned {
-            Ok(Some(_)) => {
-                return error_page(
-                    actix_web::http::StatusCode::FORBIDDEN,
-                    "Your IP is banned from uploading.",
-                );
+        match db::is_ip_banned(db.get_ref(), ip).await {
+            Ok(true) => {
+                return error_page(StatusCode::FORBIDDEN, "Your IP is banned from uploading.")
             }
             Err(e) => {
                 log::error!("banned IP check failed: {e}");
-                return internal_error_response;
+                return error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
             }
-            Ok(None) => {}
+            Ok(false) => {}
         }
     }
 
     let mut response = String::new();
     for file in form.files {
-        let uuid = Uuid::new_v4();
-        let original_name = file.file_name.as_deref().unwrap_or("unknown").to_string();
-
-        if let Some(ext) = std::path::Path::new(&original_name)
-            .extension()
-            .and_then(|e| e.to_str())
-        {
-            let banned = sqlx::query("SELECT 1 FROM banned_file_extensions WHERE extension = ?")
-                .bind(ext)
-                .fetch_optional(db.get_ref())
-                .await;
-            match banned {
-                Ok(Some(_)) => {
-                    return error_page(
-                        actix_web::http::StatusCode::FORBIDDEN,
-                        "File type not allowed.",
-                    );
-                }
-                Err(e) => {
-                    log::error!("banned extension check failed: {e}");
-                    return internal_error_response;
-                }
-                Ok(None) => {}
-            }
+        match process_file(db.get_ref(), &settings, file, uploader_ip, id_len).await {
+            Ok(link) => response.push_str(&link),
+            Err(resp) => return resp,
         }
-
-        // Use client-provided Content-Type; fall back to guessing from filename.
-        let content_type_str: String = file
-            .content_type
-            .as_ref()
-            .map(|ct| ct.to_string())
-            .unwrap_or_else(|| {
-                mime_guess::from_path(&original_name)
-                    .first_or_octet_stream()
-                    .to_string()
-            });
-        let mime_str = Some(content_type_str.clone());
-        let ct_subtype: Option<String> = file
-            .content_type
-            .as_ref()
-            .map(|ct| ct.subtype().to_string())
-            .or_else(|| {
-                mime_guess::from_path(&original_name)
-                    .first()
-                    .map(|m| m.subtype().as_str().to_string())
-            });
-
-        let slug = build_slug(
-            &original_name,
-            ct_subtype.as_deref(),
-            id_len,
-            settings.auto_file_ext,
-            settings.max_ext_len,
-        );
-        let expiry = calculate_expiry(file.size, &settings);
-        let save_path = uuid_to_path(Path::new(&settings.store_path), &uuid);
-
-        if let Some(ref mime) = mime_str {
-            let banned = sqlx::query!(
-                "SELECT 1 as banned FROM banned_file_mimes WHERE mime = ?",
-                mime,
-            )
-            .fetch_optional(db.get_ref())
-            .await;
-            match banned {
-                Ok(Some(_)) => {
-                    return error_page(
-                        actix_web::http::StatusCode::FORBIDDEN,
-                        "Your upload was rejected.",
-                    );
-                }
-                Err(e) => {
-                    log::error!("banned mime check failed: {e}");
-                    return internal_error_response;
-                }
-                Ok(None) => {}
-            }
-        } else {
-            log::warn!(
-                "No content type provided for file {}, skipping MIME type check",
-                original_name
-            );
-        }
-
-        // TODO: maybe move this into some background process to avoid blocking the request?
-        let hash = match md5_file(file.file.path().to_path_buf()).await {
-            Ok(h) => h,
-            Err(e) => {
-                log::error!("Failed to hash file: {e}");
-                return internal_error_response;
-            }
-        };
-
-        // Reject if the hash is banned.
-        let banned = sqlx::query!(
-            "SELECT 1 as banned FROM banned_file_hashes WHERE hash = ?",
-            hash.as_slice(),
-        )
-        .fetch_optional(db.get_ref())
-        .await;
-        match banned {
-            Ok(Some(_)) => {
-                return error_page(
-                    actix_web::http::StatusCode::FORBIDDEN,
-                    "Your upload was rejected.",
-                );
-            }
-            Err(e) => {
-                log::error!("banned hash check failed: {e}");
-                return internal_error_response;
-            }
-            Ok(None) => {}
-        }
-
-        if let Err(e) = std::fs::create_dir_all(save_path.parent().unwrap()) {
-            log::error!("Failed to create directory: {e}");
-            return internal_error_response;
-        }
-
-        if let Err(e) = file.file.persist(&save_path) {
-            if e.error.kind() == std::io::ErrorKind::CrossesDevices {
-                if let Err(copy_err) = std::fs::copy(e.file.path(), &save_path) {
-                    log::error!("Failed to copy file: {copy_err}");
-                    return internal_error_response;
-                }
-            } else {
-                log::error!("Failed to persist file: {}", e.error);
-                return internal_error_response;
-            }
-        }
-
-        let result = sqlx::query!(
-            "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            uuid,
-            original_name,
-            expiry,
-            slug,
-            file.size as i64,
-            hash.as_slice(),
-            uploader_ip,
-            content_type_str,
-        )
-        .execute(db.get_ref())
-        .await;
-
-        if let Err(e) = result {
-            log::error!("insert failed: {e}");
-            return internal_error_response;
-        }
-
-        let link = format!("{}{}\n", settings.base_url.as_ref().unwrap(), slug);
-        response.push_str(&link);
     }
 
     HttpResponse::Ok().body(response)
