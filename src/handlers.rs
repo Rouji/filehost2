@@ -25,24 +25,20 @@ fn error_page(status: StatusCode, message: &str) -> HttpResponse {
 }
 
 fn determine_content_type(file: &TempFile, original_name: &str) -> (String, Option<String>) {
-    let content_type_str = file
-        .content_type
-        .as_ref()
-        .map(|ct| ct.to_string())
-        .unwrap_or_else(|| {
-            mime_guess::from_path(original_name)
-                .first_or_octet_stream()
-                .to_string()
-        });
-    let ct_subtype = file
-        .content_type
-        .as_ref()
-        .map(|ct| ct.subtype().to_string())
-        .or_else(|| {
-            mime_guess::from_path(original_name)
-                .first()
-                .map(|m| m.subtype().as_str().to_string())
-        });
+    let content_type_str = if let Some(ref ct) = file.content_type {
+        ct.to_string()
+    } else {
+        mime_guess::from_path(original_name)
+            .first_or_octet_stream()
+            .to_string()
+    };
+    let ct_subtype = if let Some(ref ct) = file.content_type {
+        Some(ct.subtype().to_string())
+    } else {
+        mime_guess::from_path(original_name)
+            .first()
+            .map(|m| m.subtype().as_str().to_string())
+    };
     (content_type_str, ct_subtype)
 }
 
