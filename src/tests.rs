@@ -346,6 +346,125 @@ mod tests {
         assert_eq!(ipv4, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
     }
 
+    fn php_source_dir() -> String {
+        format!("/tmp/filehost_php_test_{}/", uuid::Uuid::new_v4())
+    }
+
+    #[sqlx::test]
+    async fn import_php_imports_file(pool: MySqlPool) {
+        let settings = test_settings();
+        std::fs::create_dir_all(&settings.store_path).unwrap();
+
+        let src = php_source_dir();
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(format!("{src}abc123.txt"), b"hello").unwrap();
+
+        crate::migrate::import_php(&pool, &settings, src.clone().into(), None)
+            .await
+            .unwrap();
+
+        let row: (String, Option<u32>) = sqlx::query_as(
+            "SELECT original_name, uploader_ip FROM uploads WHERE slug = 'abc123.txt'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "abc123.txt"); // falls back to slug
+        assert_eq!(row.1, None);
+
+        std::fs::remove_dir_all(&src).ok();
+    }
+
+    #[sqlx::test]
+    async fn import_php_uses_log(pool: MySqlPool) {
+        let settings = test_settings();
+        std::fs::create_dir_all(&settings.store_path).unwrap();
+
+        let src = php_source_dir();
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(format!("{src}abc123.txt"), b"hello").unwrap();
+
+        // Log file lives outside the files dir so it isn't imported as a file.
+        let log_path = format!("{src}../uploads.log");
+        std::fs::write(
+            &log_path,
+            "2026-06-06T14:30:45+00:00\t10.0.0.1\t5\t'original name.txt'\tabc123.txt\n",
+        )
+        .unwrap();
+
+        crate::migrate::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
+            .await
+            .unwrap();
+
+        let row: (String, Option<u32>) = sqlx::query_as(
+            "SELECT original_name, uploader_ip FROM uploads WHERE slug = 'abc123.txt'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "original name.txt");
+        assert_eq!(row.1, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
+
+        std::fs::remove_dir_all(&src).ok();
+    }
+
+    #[sqlx::test]
+    async fn import_php_log_uses_last_occurrence(pool: MySqlPool) {
+        let settings = test_settings();
+        std::fs::create_dir_all(&settings.store_path).unwrap();
+
+        let src = php_source_dir();
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(format!("{src}abc123.txt"), b"hello").unwrap();
+
+        let log_path = format!("{src}../uploads.log");
+        std::fs::write(
+            &log_path,
+            "2026-01-01T00:00:00+00:00\t1.1.1.1\t5\t'old.txt'\tabc123.txt\n\
+             2026-06-06T14:30:45+00:00\t10.0.0.1\t5\t'new.txt'\tabc123.txt\n",
+        )
+        .unwrap();
+
+        crate::migrate::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
+            .await
+            .unwrap();
+
+        let original_name: String =
+            sqlx::query_scalar("SELECT original_name FROM uploads WHERE slug = 'abc123.txt'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(original_name, "new.txt");
+
+        std::fs::remove_dir_all(&src).ok();
+    }
+
+    #[sqlx::test]
+    async fn import_php_is_idempotent(pool: MySqlPool) {
+        let settings = test_settings();
+        std::fs::create_dir_all(&settings.store_path).unwrap();
+
+        let src = php_source_dir();
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(format!("{src}abc123.txt"), b"hello").unwrap();
+
+        crate::migrate::import_php(&pool, &settings, src.clone().into(), None)
+            .await
+            .unwrap();
+        crate::migrate::import_php(&pool, &settings, src.clone().into(), None)
+            .await
+            .unwrap();
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM uploads WHERE slug = 'abc123.txt'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1, "second import should be skipped");
+
+        std::fs::remove_dir_all(&src).ok();
+    }
+
     #[sqlx::test]
     async fn upload_multiple(pool: MySqlPool) {
         let app = full_app(test_settings(), pool).await;

@@ -1,6 +1,7 @@
 mod cli;
 mod db;
 mod handlers;
+mod migrate;
 mod model;
 mod settings;
 mod templates;
@@ -42,6 +43,7 @@ async fn main() -> std::io::Result<()> {
             cli::Command::Migrate => cli::migrate(&db).await,
             cli::Command::DeleteExpired => cli::delete_expired(&db, &settings).await,
             cli::Command::Delete { target } => cli::delete(&db, &settings, target).await,
+            cli::Command::ImportPhp { files, log } => cli::import_php(&db, &settings, files, log).await,
         };
         if let Err(e) = result {
             eprintln!("Error: {e}");

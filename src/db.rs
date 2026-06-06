@@ -128,6 +128,45 @@ pub(crate) async fn delete_by_ip_range(
     Ok(count)
 }
 
+pub(crate) async fn insert_upload(
+    db: &MySqlPool,
+    id: Uuid,
+    slug: &str,
+    original_name: &str,
+    upload_timestamp: time::PrimitiveDateTime,
+    expiry_timestamp: time::PrimitiveDateTime,
+    file_size: i64,
+    uploader_ip: Option<u32>,
+    content_type: Option<&str>,
+) -> anyhow::Result<bool> {
+    let exists = sqlx::query("SELECT 1 FROM uploads WHERE slug = ?")
+        .bind(slug)
+        .fetch_optional(db)
+        .await?
+        .is_some();
+
+    if exists {
+        return Ok(false);
+    }
+
+    sqlx::query(
+        "INSERT INTO uploads (id, slug, original_name, upload_timestamp, expiry_timestamp, file_size, uploader_ip, content_type) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(slug)
+    .bind(original_name)
+    .bind(upload_timestamp)
+    .bind(expiry_timestamp)
+    .bind(file_size)
+    .bind(uploader_ip)
+    .bind(content_type)
+    .execute(db)
+    .await?;
+
+    Ok(true)
+}
+
 pub(crate) async fn log_access(
     db: &MySqlPool,
     upload_id: Uuid,

@@ -1,4 +1,5 @@
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -6,6 +7,7 @@ use sqlx::mysql::MySqlPool;
 use uuid::Uuid;
 
 use crate::db;
+use crate::migrate;
 use crate::settings::Settings;
 
 #[derive(Parser)]
@@ -22,6 +24,14 @@ pub(crate) enum Command {
     Delete {
         #[command(subcommand)]
         target: DeleteTarget,
+    },
+    /// Import files from a single_php_filehost instance
+    ImportPhp {
+        /// Path to the PHP filehost's files directory
+        files: PathBuf,
+        /// Path to the PHP filehost's upload log
+        #[arg(long)]
+        log: Option<PathBuf>,
     },
 }
 
@@ -43,6 +53,15 @@ pub(crate) async fn delete_expired(db: &MySqlPool, settings: &Settings) -> Resul
     let count = db::delete_expired(db, settings).await?;
     println!("Deleted {count} expired upload(s).");
     Ok(())
+}
+
+pub(crate) async fn import_php(
+    db: &MySqlPool,
+    settings: &Settings,
+    files: PathBuf,
+    log: Option<PathBuf>,
+) -> Result<()> {
+    migrate::import_php(db, settings, files, log).await
 }
 
 pub(crate) async fn delete(
