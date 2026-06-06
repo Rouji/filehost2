@@ -1,7 +1,7 @@
 mod cli;
 mod db;
 mod handlers;
-mod migrate;
+mod import;
 mod model;
 mod settings;
 mod templates;

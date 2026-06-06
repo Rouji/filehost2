@@ -7,7 +7,7 @@ use sqlx::mysql::MySqlPool;
 use uuid::Uuid;
 
 use crate::db;
-use crate::migrate;
+use crate::import;
 use crate::settings::Settings;
 
 #[derive(Parser)]
@@ -61,7 +61,7 @@ pub(crate) async fn import_php(
     files: PathBuf,
     log: Option<PathBuf>,
 ) -> Result<()> {
-    migrate::import_php(db, settings, files, log).await
+    import::import_php(db, settings, files, log).await
 }
 
 pub(crate) async fn delete(

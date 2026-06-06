@@ -359,7 +359,7 @@ mod tests {
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(format!("{src}abc123.txt"), b"hello").unwrap();
 
-        crate::migrate::import_php(&pool, &settings, src.clone().into(), None)
+        crate::import::import_php(&pool, &settings, src.clone().into(), None)
             .await
             .unwrap();
 
@@ -392,7 +392,7 @@ mod tests {
         )
         .unwrap();
 
-        crate::migrate::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
+        crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
             .await
             .unwrap();
 
@@ -425,7 +425,7 @@ mod tests {
         )
         .unwrap();
 
-        crate::migrate::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
+        crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
             .await
             .unwrap();
 
@@ -448,10 +448,10 @@ mod tests {
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(format!("{src}abc123.txt"), b"hello").unwrap();
 
-        crate::migrate::import_php(&pool, &settings, src.clone().into(), None)
+        crate::import::import_php(&pool, &settings, src.clone().into(), None)
             .await
             .unwrap();
-        crate::migrate::import_php(&pool, &settings, src.clone().into(), None)
+        crate::import::import_php(&pool, &settings, src.clone().into(), None)
             .await
             .unwrap();
 
