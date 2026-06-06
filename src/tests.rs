@@ -284,6 +284,68 @@ mod tests {
         );
     }
 
+    async fn upload_and_get_slug(
+        app: &impl actix_web::dev::Service<
+            Request,
+            Response = ServiceResponse,
+            Error = Error,
+        >,
+        filename: &str,
+    ) -> String {
+        let req = multipart_request(&multipart_body(filename, "content"));
+        let resp = test::call_service(app, req).await;
+        assert!(resp.status().is_success(), "upload failed: {}", resp.status());
+        let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+        url.trim()
+            .trim_start_matches("http://localhost:8080/")
+            .to_string()
+    }
+
+    #[sqlx::test]
+    async fn download_is_logged(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool.clone()).await;
+        let slug = upload_and_get_slug(&app, "test.txt").await;
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/{slug}"))
+                .to_request(),
+        )
+        .await;
+        assert!(resp.status().is_success());
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accesses")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[sqlx::test]
+    async fn download_logs_xff_ip(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool.clone()).await;
+        let slug = upload_and_get_slug(&app, "test.txt").await;
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/{slug}"))
+                .insert_header(("X-Forwarded-For", "10.0.0.1"))
+                .to_request(),
+        )
+        .await;
+        assert!(resp.status().is_success());
+
+        let ipv4: Option<u32> = sqlx::query_scalar("SELECT ipv4 FROM accesses LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(ipv4, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
+    }
+
     #[sqlx::test]
     async fn upload_multiple(pool: MySqlPool) {
         let app = full_app(test_settings(), pool).await;

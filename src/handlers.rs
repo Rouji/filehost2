@@ -17,6 +17,22 @@ use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
 use crate::upload::{build_slug, calculate_expiry, md5_file, uuid_to_path};
 
+fn extract_ip(req: &HttpRequest, trust_xff: bool) -> Option<u32> {
+    if trust_xff {
+        req.headers()
+            .get("X-Forwarded-For")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.trim().parse::<std::net::Ipv4Addr>().ok())
+            .map(u32::from)
+    } else {
+        req.peer_addr().and_then(|addr| match addr.ip() {
+            std::net::IpAddr::V4(ip) => Some(u32::from(ip)),
+            std::net::IpAddr::V6(_) => None,
+        })
+    }
+}
+
 fn error_page(status: StatusCode, message: &str) -> HttpResponse {
     let body = format!("{status} {message}");
     HttpResponse::build(status)
@@ -195,19 +211,7 @@ pub(crate) async fn upload(
         settings.min_id_length
     };
 
-    let uploader_ip: Option<u32> = if settings.trust_xff {
-        req.headers()
-            .get("X-Forwarded-For")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .and_then(|s| s.trim().parse::<std::net::Ipv4Addr>().ok())
-            .map(u32::from)
-    } else {
-        req.peer_addr().and_then(|addr| match addr.ip() {
-            std::net::IpAddr::V4(ip) => Some(u32::from(ip)),
-            std::net::IpAddr::V6(_) => None,
-        })
-    };
+    let uploader_ip = extract_ip(&req, settings.trust_xff);
 
     if let Some(ip) = uploader_ip {
         match db::is_ip_banned(db.get_ref(), ip).await {
@@ -235,6 +239,7 @@ pub(crate) async fn upload(
 
 #[get("/{slug}")]
 pub(crate) async fn get_file(
+    req: HttpRequest,
     path: web::Path<(String,)>,
     db: web::Data<MySqlPool>,
     settings: web::Data<Settings>,
@@ -250,6 +255,11 @@ pub(crate) async fn get_file(
     .await
     .map_err(actix_web::error::ErrorInternalServerError)?
     .ok_or_else(|| actix_web::error::ErrorNotFound("File not found"))?;
+
+    let ipv4 = extract_ip(&req, settings.trust_xff);
+    if let Err(e) = db::log_access(db.get_ref(), row.id, ipv4).await {
+        log::warn!("Failed to log file access: {e}");
+    }
 
     let mime: mime_guess::Mime = row
         .content_type

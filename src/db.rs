@@ -128,6 +128,19 @@ pub(crate) async fn delete_by_ip_range(
     Ok(count)
 }
 
+pub(crate) async fn log_access(
+    db: &MySqlPool,
+    upload_id: Uuid,
+    ipv4: Option<u32>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO accesses (upload_id, ipv4) VALUES (?, ?)")
+        .bind(upload_id)
+        .bind(ipv4)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 async fn delete_one(
     db: &MySqlPool,
     settings: &Settings,
