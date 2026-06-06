@@ -20,7 +20,7 @@ env_logger = "0.11.8"
 log = "0.4"
 md5 = "0.7"
 rand = "0.10.0"
-time = "0.3"
+time = { version = "0.3", features = ["parsing"] }
 serde = { version = "1.0.228", features = ["derive"] }
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "mysql", "macros", "migrate", "time", "uuid"] }
 tempfile = "3"

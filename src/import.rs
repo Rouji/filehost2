@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use sqlx::mysql::MySqlPool;
-use time::{Duration, OffsetDateTime, PrimitiveDateTime};
+use time::{Duration, OffsetDateTime, PrimitiveDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::db;
@@ -13,6 +13,7 @@ use crate::settings::Settings;
 use crate::upload::uuid_to_path;
 
 struct LogEntry {
+    upload_timestamp: PrimitiveDateTime,
     uploader_ip: Option<u32>,
     original_name: String,
 }
@@ -31,12 +32,19 @@ fn parse_log(log_path: &Path) -> Result<HashMap<String, LogEntry>> {
             continue;
         }
 
+        let upload_timestamp = match OffsetDateTime::parse(parts[0], &Rfc3339) {
+            Ok(t) => PrimitiveDateTime::new(t.date(), t.time()),
+            Err(e) => {
+                log::warn!("Log line {}: bad timestamp {:?}: {e}", i + 1, parts[0]);
+                continue;
+            }
+        };
         let uploader_ip = parts[1].parse::<Ipv4Addr>().ok().map(u32::from);
         let original_name = parts[3].trim_matches('\'').to_string();
         let slug = parts[4].to_string();
 
         // Overwrite any earlier entry — slugs are reused over time, last occurrence wins.
-        map.insert(slug, LogEntry { uploader_ip, original_name });
+        map.insert(slug, LogEntry { upload_timestamp, uploader_ip, original_name });
     }
 
     Ok(map)
@@ -107,15 +115,14 @@ pub(crate) async fn import_php(
             Err(e) => { log::error!("Cannot stat {slug}: {e}"); errors += 1; continue; }
         };
 
-        let upload_timestamp = match mtime_to_primitive(&path) {
-            Ok(t) => t,
-            Err(e) => { log::error!("Cannot read mtime for {slug}: {e}"); errors += 1; continue; }
-        };
-
-        let (uploader_ip, original_name) = if let Some(entry) = log.get(&slug) {
-            (entry.uploader_ip, entry.original_name.clone())
+        let (upload_timestamp, uploader_ip, original_name) = if let Some(entry) = log.get(&slug) {
+            (entry.upload_timestamp, entry.uploader_ip, entry.original_name.clone())
         } else {
-            (None, slug.clone())
+            let ts = match mtime_to_primitive(&path) {
+                Ok(t) => t,
+                Err(e) => { log::error!("Cannot read mtime for {slug}: {e}"); errors += 1; continue; }
+            };
+            (ts, None, slug.clone())
         };
 
         let expiry = compute_expiry(upload_timestamp, file_size, settings);
