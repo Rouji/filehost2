@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use actix_files::NamedFile;
-use actix_multipart::form::{MultipartForm, tempfile::TempFile, text::Text};
+use actix_multipart::form::{MultipartForm, text::Text};
 use actix_web::{
     HttpRequest, HttpResponse, Responder, get,
     http::{StatusCode, header::{ContentDisposition, ContentType, DispositionParam, DispositionType}},
@@ -15,7 +15,7 @@ use crate::db;
 use crate::model::Upload;
 use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
-use crate::upload::{build_slug, calculate_expiry, md5_file, uuid_to_path};
+use crate::upload::{build_slug, calculate_expiry, uuid_to_path, HashedTempFile};
 
 fn extract_ip(req: &HttpRequest, trust_xff: bool) -> Option<u32> {
     if trust_xff {
@@ -40,7 +40,7 @@ fn error_page(status: StatusCode, message: &str) -> HttpResponse {
         .body(body)
 }
 
-fn determine_content_type(file: &TempFile, original_name: &str) -> (String, Option<String>) {
+fn determine_content_type(file: &HashedTempFile, original_name: &str) -> (String, Option<String>) {
     let content_type_str = if let Some(ref ct) = file.content_type {
         ct.to_string()
     } else {
@@ -72,7 +72,7 @@ fn save_file(tmp: tempfile::NamedTempFile, dest: &Path) -> std::io::Result<()> {
 async fn process_file(
     db: &MySqlPool,
     settings: &Settings,
-    file: TempFile,
+    file: HashedTempFile,
     uploader_ip: Option<u32>,
     id_len: usize,
 ) -> Result<String, HttpResponse> {
@@ -114,14 +114,7 @@ async fn process_file(
         Ok(false) => {}
     }
 
-    // TODO: maybe move this into some background process to avoid blocking the request?
-    let hash = match md5_file(file.file.path().to_path_buf()).await {
-        Ok(h) => h,
-        Err(e) => {
-            log::error!("Failed to hash file: {e}");
-            return Err(internal_err());
-        }
-    };
+    let hash = file.hash;
 
     match db::is_hash_banned(db, hash.as_slice()).await {
         Ok(true) => return Err(error_page(StatusCode::FORBIDDEN, "Your upload was rejected.")),
@@ -191,10 +184,10 @@ pub(crate) async fn index(
     }
 }
 
-#[derive(Debug, MultipartForm)]
+#[derive(MultipartForm)]
 pub(crate) struct UploadForm {
     #[multipart(rename = "file")]
-    files: Vec<TempFile>,
+    files: Vec<HashedTempFile>,
     id_length: Option<Text<usize>>,
 }
 

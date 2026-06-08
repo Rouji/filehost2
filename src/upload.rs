@@ -1,9 +1,14 @@
-use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use uuid::Uuid;
 
+use actix_multipart::form::{FieldReader, Limits};
+use actix_multipart::{Field, MultipartError};
+use actix_web::{HttpRequest, error::ErrorInternalServerError};
+use futures_util::TryStreamExt as _;
 use rand::distr::{Alphanumeric, SampleString};
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
+use tokio::io::AsyncWriteExt as _;
 
 use crate::settings::Settings;
 
@@ -16,25 +21,74 @@ pub(crate) fn uuid_to_path(root: &Path, uuid: &Uuid) -> PathBuf {
     root.join(folder).join(uuid.to_string())
 }
 
-/// Hash a file by path using MD5, streaming in 64 KiB chunks to avoid
-/// loading the entire file into memory. Runs in a blocking thread so the
-/// async runtime is not stalled.
-pub(crate) async fn md5_file(path: PathBuf) -> std::io::Result<[u8; 16]> {
-    actix_web::rt::task::spawn_blocking(move || {
-        let mut file = std::fs::File::open(&path)?;
-        let mut ctx = md5::Context::new();
-        let mut buf = [0u8; 65536];
-        loop {
-            let n = file.read(&mut buf)?;
-            if n == 0 {
-                break;
+/// A multipart field reader that writes the upload to a temp file and
+/// simultaneously feeds every chunk to a BLAKE3 hasher, so no second
+/// disk pass is needed after the upload completes.
+pub(crate) struct HashedTempFile {
+    pub file: tempfile::NamedTempFile,
+    pub content_type: Option<mime::Mime>,
+    pub file_name: Option<String>,
+    pub size: usize,
+    pub hash: [u8; 32],
+}
+
+impl<'t> FieldReader<'t> for HashedTempFile {
+    type Future = Pin<Box<dyn std::future::Future<Output = Result<Self, MultipartError>> + 't>>;
+
+    fn read_field(_req: &'t HttpRequest, mut field: Field, limits: &'t mut Limits) -> Self::Future {
+        Box::pin(async move {
+            let content_type = field.content_type().map(ToOwned::to_owned);
+            let file_name = field
+                .content_disposition()
+                .expect("multipart form fields should have a content-disposition header")
+                .get_filename()
+                .map(ToOwned::to_owned);
+            let field_name = field.name().unwrap_or("file").to_owned();
+
+            let file = tempfile::NamedTempFile::new().map_err(|e| MultipartError::Field {
+                name: field_name.clone(),
+                source: ErrorInternalServerError(e),
+            })?;
+
+            let mut file_async =
+                tokio::fs::File::from_std(file.reopen().map_err(|e| MultipartError::Field {
+                    name: field_name.clone(),
+                    source: ErrorInternalServerError(e),
+                })?);
+
+            let mut hasher = blake3::Hasher::new();
+            let mut size = 0usize;
+
+            while let Some(chunk) = field.try_next().await? {
+                limits.try_consume_limits(chunk.len(), false)?;
+                size += chunk.len();
+                hasher.update(&chunk);
+                file_async
+                    .write_all(chunk.as_ref())
+                    .await
+                    .map_err(|e| MultipartError::Field {
+                        name: field_name.clone(),
+                        source: ErrorInternalServerError(e),
+                    })?;
             }
-            ctx.consume(&buf[..n]);
-        }
-        Ok::<[u8; 16], std::io::Error>(ctx.compute().into())
-    })
-    .await
-    .expect("hashing task panicked")
+
+            file_async
+                .flush()
+                .await
+                .map_err(|e| MultipartError::Field {
+                    name: field_name,
+                    source: ErrorInternalServerError(e),
+                })?;
+
+            Ok(HashedTempFile {
+                file,
+                content_type,
+                file_name,
+                size,
+                hash: hasher.finalize().into(),
+            })
+        })
+    }
 }
 
 pub(crate) fn calculate_expiry(file_size: usize, settings: &Settings) -> PrimitiveDateTime {
