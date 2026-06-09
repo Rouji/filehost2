@@ -156,6 +156,7 @@ mod tests {
             auto_file_ext: false,
             trust_xff: false,
             admin_email: "admin@example.com".to_string(),
+            clamd_addr: None,
         }
     }
 

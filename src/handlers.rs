@@ -11,6 +11,7 @@ use serde::Deserialize;
 use sqlx::mysql::MySqlPool;
 use uuid::Uuid;
 
+use crate::clamd;
 use crate::db;
 use crate::model::Upload;
 use crate::settings::Settings;
@@ -144,6 +145,25 @@ async fn process_file(
     {
         log::error!("insert failed: {e}");
         return Err(internal_err());
+    }
+
+    if let Some(addr) = settings.clamd_addr.clone() {
+        let db = db.clone();
+        let settings = settings.clone();
+        let slug_log = slug.clone();
+        tokio::spawn(async move {
+            let slug = slug_log;
+            match clamd::scan_file(&addr, &save_path).await {
+                Ok(clamd::ScanResult::Clean) => log::info!("clamd: {uuid} ({slug}) clean"),
+                Ok(clamd::ScanResult::Infected(name)) => {
+                    log::warn!("clamd: {uuid} ({slug}) infected with {name:?}, deleting");
+                    if let Err(e) = db::delete_by_id(&db, &settings, uuid).await {
+                        log::error!("clamd: failed to delete infected file {uuid}: {e}");
+                    }
+                }
+                Err(e) => log::error!("clamd: scan failed for {uuid} ({slug}): {e}"),
+            }
+        });
     }
 
     Ok(format!("{}{}\n", settings.base_url.as_ref().unwrap(), slug))

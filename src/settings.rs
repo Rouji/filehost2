@@ -43,4 +43,6 @@ pub(crate) struct Settings {
 
     #[env_settings(default = "admin@example.com")]
     pub admin_email: String,
+
+    pub clamd_addr: Option<String>,
 }

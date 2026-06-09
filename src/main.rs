@@ -1,3 +1,4 @@
+mod clamd;
 mod cli;
 mod db;
 mod handlers;
