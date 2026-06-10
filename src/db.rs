@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use sqlx::mysql::MySqlPool;
+use sqlx::{Row, mysql::MySqlPool};
 use uuid::Uuid;
 
 use crate::settings::Settings;
@@ -167,6 +167,30 @@ pub(crate) async fn insert_upload(
     .await?;
 
     Ok(true)
+}
+
+pub(crate) async fn uploads_count_last_day(db: &MySqlPool, ip: u32) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT COUNT(*) FROM uploads \
+         WHERE uploader_ip = ? \
+         AND upload_timestamp > NOW() - INTERVAL 1 DAY",
+    )
+    .bind(ip)
+    .fetch_one(db)
+    .await?;
+    Ok(row.try_get::<i64, _>(0).unwrap_or(0))
+}
+
+pub(crate) async fn uploads_bytes_last_day(db: &MySqlPool, ip: u32) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT COALESCE(SUM(file_size), 0) FROM uploads \
+         WHERE uploader_ip = ? \
+         AND upload_timestamp > NOW() - INTERVAL 1 DAY",
+    )
+    .bind(ip)
+    .fetch_one(db)
+    .await?;
+    Ok(row.try_get::<i64, _>(0).unwrap_or(0))
 }
 
 pub(crate) async fn log_access(
