@@ -35,6 +35,7 @@ mod tests {
             max_uploads_per_day: None,
             max_bytes_per_day: None,
             max_upload_bytes_per_sec: None,
+            max_upload_burst_bytes: None,
         }
     }
 

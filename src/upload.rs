@@ -47,9 +47,10 @@ impl<'t> FieldReader<'t> for HashedTempFile {
             let field_name = field.name().unwrap_or("file").to_owned();
 
             let throttle = _req.app_data::<actix_web::web::Data<UploadThrottle>>().cloned();
-            let rate = _req
+            let (rate, burst) = _req
                 .app_data::<actix_web::web::Data<Settings>>()
-                .and_then(|s| s.max_upload_bytes_per_sec);
+                .map(|s| (s.max_upload_bytes_per_sec, s.max_upload_burst_bytes))
+                .unwrap_or((None, None));
             let ip: Option<u32> = _req.peer_addr().and_then(|a| match a.ip() {
                 std::net::IpAddr::V4(v4) => Some(u32::from(v4)),
                 _ => None,
@@ -72,7 +73,7 @@ impl<'t> FieldReader<'t> for HashedTempFile {
             while let Some(chunk) = field.try_next().await? {
                 limits.try_consume_limits(chunk.len(), false)?;
                 if let (Some(t), Some(r), Some(ip)) = (&throttle, rate, ip) {
-                    t.throttle(ip, chunk.len(), r).await;
+                    t.throttle(ip, chunk.len(), r, burst.unwrap_or(r)).await;
                 }
                 size += chunk.len();
                 hasher.update(&chunk);
@@ -173,6 +174,7 @@ mod tests {
             max_uploads_per_day: None,
             max_bytes_per_day: None,
             max_upload_bytes_per_sec: None,
+            max_upload_burst_bytes: None,
         }
     }
 

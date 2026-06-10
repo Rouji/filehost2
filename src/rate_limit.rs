@@ -11,8 +11,10 @@ impl UploadThrottle {
     }
 
     /// Throttle an upload chunk for the given IP, blocking until the token
-    /// bucket allows it. `rate_bps` is the max bytes per second for this IP.
-    pub(crate) async fn throttle(&self, ip: u32, bytes: usize, rate_bps: f64) {
+    /// bucket allows it. `rate_bps` is the max bytes per second; `burst` is
+    /// the maximum number of bytes that can be sent immediately before
+    /// throttling kicks in (defaults to `rate_bps` if not provided).
+    pub(crate) async fn throttle(&self, ip: u32, bytes: usize, rate_bps: f64, burst: f64) {
         let sleep_dur = {
             let mut map = self.0.lock().await;
 
@@ -21,10 +23,10 @@ impl UploadThrottle {
             // Evict entries idle for longer than 1 bucket-refill period.
             map.retain(|_, (last, _)| now.duration_since(*last) < Duration::from_secs(60));
 
-            let (last_refill, tokens) = map.entry(ip).or_insert((now, rate_bps));
+            let (last_refill, tokens) = map.entry(ip).or_insert((now, burst));
 
             let elapsed = now.duration_since(*last_refill).as_secs_f64();
-            *tokens = (*tokens + elapsed * rate_bps).min(rate_bps);
+            *tokens = (*tokens + elapsed * rate_bps).min(burst);
             *last_refill = now;
 
             let bytes_f = bytes as f64;

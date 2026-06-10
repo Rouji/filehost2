@@ -49,4 +49,5 @@ pub(crate) struct Settings {
     pub max_uploads_per_day: Option<usize>,
     pub max_bytes_per_day: Option<u64>,
     pub max_upload_bytes_per_sec: Option<f64>,
+    pub max_upload_burst_bytes: Option<f64>,
 }
