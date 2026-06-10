@@ -239,6 +239,33 @@ pub(crate) async fn upload(
         }
     }
 
+    if let Some(ip) = uploader_ip {
+        if let Some(limit) = settings.max_uploads_per_day {
+            match db::uploads_count_last_day(db.get_ref(), ip).await {
+                Ok(n) if n >= limit as i64 => {
+                    return error_page(StatusCode::TOO_MANY_REQUESTS, "Upload limit reached.")
+                }
+                Err(e) => {
+                    log::error!("upload count rate limit check failed: {e}");
+                    return error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
+                }
+                Ok(_) => {}
+            }
+        }
+        if let Some(limit) = settings.max_bytes_per_day {
+            match db::uploads_bytes_last_day(db.get_ref(), ip).await {
+                Ok(b) if b >= limit as i64 => {
+                    return error_page(StatusCode::TOO_MANY_REQUESTS, "Daily byte quota reached.")
+                }
+                Err(e) => {
+                    log::error!("byte quota rate limit check failed: {e}");
+                    return error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
+                }
+                Ok(_) => {}
+            }
+        }
+    }
+
     let mut response = String::new();
     for file in form.files {
         match process_file(db.get_ref(), &settings, file, uploader_ip, id_len).await {

@@ -1,5 +1,6 @@
 mod clamd;
 mod cli;
+mod rate_limit;
 mod db;
 mod handlers;
 mod import;
@@ -61,6 +62,7 @@ async fn main() -> std::io::Result<()> {
     }
 
     let rendered_templates = templates::render(&settings);
+    let throttle = web::Data::new(rate_limit::UploadThrottle::new());
 
     let s = settings.clone();
     HttpServer::new(move || {
@@ -72,6 +74,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(db.clone()))
             .app_data(web::Data::new(s.clone()))
             .app_data(web::Data::new(rendered_templates.clone()))
+            .app_data(throttle.clone())
             .app_data(
                 MultipartFormConfig::default()
                     .total_limit(s.max_filesize * 1024 * 1024)

@@ -45,4 +45,8 @@ pub(crate) struct Settings {
     pub admin_email: String,
 
     pub clamd_addr: Option<String>,
+
+    pub max_uploads_per_day: Option<usize>,
+    pub max_bytes_per_day: Option<u64>,
+    pub max_upload_bytes_per_sec: Option<f64>,
 }

@@ -32,6 +32,9 @@ mod tests {
             trust_xff: false,
             admin_email: "test@example.com".to_string(),
             clamd_addr: None,
+            max_uploads_per_day: None,
+            max_bytes_per_day: None,
+            max_upload_bytes_per_sec: None,
         }
     }
 

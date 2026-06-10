@@ -10,6 +10,7 @@ use rand::distr::{Alphanumeric, SampleString};
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 use tokio::io::AsyncWriteExt as _;
 
+use crate::rate_limit::UploadThrottle;
 use crate::settings::Settings;
 
 pub(crate) fn random_string(len: usize) -> String {
@@ -45,6 +46,15 @@ impl<'t> FieldReader<'t> for HashedTempFile {
                 .map(ToOwned::to_owned);
             let field_name = field.name().unwrap_or("file").to_owned();
 
+            let throttle = _req.app_data::<actix_web::web::Data<UploadThrottle>>().cloned();
+            let rate = _req
+                .app_data::<actix_web::web::Data<Settings>>()
+                .and_then(|s| s.max_upload_bytes_per_sec);
+            let ip: Option<u32> = _req.peer_addr().and_then(|a| match a.ip() {
+                std::net::IpAddr::V4(v4) => Some(u32::from(v4)),
+                _ => None,
+            });
+
             let file = tempfile::NamedTempFile::new().map_err(|e| MultipartError::Field {
                 name: field_name.clone(),
                 source: ErrorInternalServerError(e),
@@ -61,6 +71,9 @@ impl<'t> FieldReader<'t> for HashedTempFile {
 
             while let Some(chunk) = field.try_next().await? {
                 limits.try_consume_limits(chunk.len(), false)?;
+                if let (Some(t), Some(r), Some(ip)) = (&throttle, rate, ip) {
+                    t.throttle(ip, chunk.len(), r).await;
+                }
                 size += chunk.len();
                 hasher.update(&chunk);
                 file_async
@@ -157,6 +170,9 @@ mod tests {
             trust_xff: false,
             admin_email: "admin@example.com".to_string(),
             clamd_addr: None,
+            max_uploads_per_day: None,
+            max_bytes_per_day: None,
+            max_upload_bytes_per_sec: None,
         }
     }
 
