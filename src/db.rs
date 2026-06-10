@@ -139,11 +139,13 @@ pub(crate) async fn insert_upload(
     uploader_ip: Option<u32>,
     content_type: Option<&str>,
 ) -> anyhow::Result<bool> {
-    let exists = sqlx::query("SELECT 1 FROM uploads WHERE slug = ?")
-        .bind(slug)
-        .fetch_optional(db)
-        .await?
-        .is_some();
+    let exists = sqlx::query(
+        "SELECT 1 FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+    )
+    .bind(slug)
+    .fetch_optional(db)
+    .await?
+    .is_some();
 
     if exists {
         return Ok(false);
