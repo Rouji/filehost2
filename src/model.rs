@@ -33,7 +33,7 @@ pub(crate) struct BannedIpv4Range {
 
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct BannedFileHash {
-    pub hash: Vec<u8>, // 16-byte MD5
+    pub hash: Vec<u8>,
     pub reason: Option<String>,
 }
 
