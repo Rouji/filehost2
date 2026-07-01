@@ -1,3 +1,4 @@
+mod admin;
 mod clamd;
 mod cli;
 mod rate_limit;
@@ -70,6 +71,25 @@ async fn main() -> std::io::Result<()> {
             .service(handlers::index)
             .service(handlers::get_file)
             .service(handlers::upload)
+            .service(
+                web::scope("/admin")
+                    .service(admin::stats)
+                    .service(admin::list_uploads)
+                    .service(admin::delete_upload)
+                    .service(admin::delete_upload_by_slug)
+                    .service(admin::list_banned_ips)
+                    .service(admin::add_banned_ip)
+                    .service(admin::remove_banned_ip)
+                    .service(admin::list_banned_extensions)
+                    .service(admin::add_banned_extension)
+                    .service(admin::remove_banned_extension)
+                    .service(admin::list_banned_mimes)
+                    .service(admin::add_banned_mime)
+                    .service(admin::remove_banned_mime)
+                    .service(admin::list_banned_hashes)
+                    .service(admin::add_banned_hash)
+                    .service(admin::remove_banned_hash),
+            )
             .wrap(Logger::default())
             .app_data(web::Data::new(db.clone()))
             .app_data(web::Data::new(s.clone()))

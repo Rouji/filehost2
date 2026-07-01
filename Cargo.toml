@@ -23,7 +23,7 @@ futures-util = "0.3"
 mime = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "sync", "time"] }
 rand = "0.10.0"
-time = { version = "0.3", features = ["parsing"] }
+time = { version = "0.3", features = ["parsing", "formatting"] }
 serde = { version = "1.0.228", features = ["derive"] }
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "mysql", "macros", "migrate", "time", "uuid"] }
 tempfile = "3"

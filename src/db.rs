@@ -2,8 +2,10 @@ use std::path::Path;
 
 use anyhow::Result;
 use sqlx::{Row, mysql::MySqlPool};
+use time::PrimitiveDateTime;
 use uuid::Uuid;
 
+use crate::model::{BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, Upload};
 use crate::settings::Settings;
 use crate::upload::uuid_to_path;
 
@@ -204,6 +206,180 @@ pub(crate) async fn log_access(
         .execute(db)
         .await?;
     Ok(())
+}
+
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct GlobalStats {
+    pub active_uploads: i64,
+    pub active_bytes: i64,
+    pub deleted_uploads: i64,
+    pub uploads_last_24h: i64,
+    pub bytes_last_24h: i64,
+}
+
+pub(crate) async fn global_stats(db: &MySqlPool) -> Result<GlobalStats, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT \
+           CAST(COALESCE(SUM(CASE WHEN deleted_timestamp IS NULL THEN 1 ELSE 0 END), 0) AS SIGNED) AS active_uploads, \
+           CAST(COALESCE(SUM(CASE WHEN deleted_timestamp IS NULL THEN file_size ELSE 0 END), 0) AS SIGNED) AS active_bytes, \
+           CAST(COALESCE(SUM(CASE WHEN deleted_timestamp IS NOT NULL THEN 1 ELSE 0 END), 0) AS SIGNED) AS deleted_uploads, \
+           CAST(COALESCE(SUM(CASE WHEN upload_timestamp > NOW() - INTERVAL 1 DAY THEN 1 ELSE 0 END), 0) AS SIGNED) AS uploads_last_24h, \
+           CAST(COALESCE(SUM(CASE WHEN upload_timestamp > NOW() - INTERVAL 1 DAY THEN file_size ELSE 0 END), 0) AS SIGNED) AS bytes_last_24h \
+         FROM uploads",
+    )
+    .fetch_one(db)
+    .await?;
+
+    Ok(GlobalStats {
+        active_uploads: row.try_get(0)?,
+        active_bytes: row.try_get(1)?,
+        deleted_uploads: row.try_get(2)?,
+        uploads_last_24h: row.try_get(3)?,
+        bytes_last_24h: row.try_get(4)?,
+    })
+}
+
+pub(crate) async fn list_uploads(
+    db: &MySqlPool,
+    ip: Option<u32>,
+    slug: Option<&str>,
+    include_deleted: bool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<Upload>, sqlx::Error> {
+    let mut sql = String::from(
+        "SELECT id, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, \
+         slug, file_size, hash, uploader_ip, content_type FROM uploads WHERE 1=1",
+    );
+    if !include_deleted {
+        sql.push_str(" AND deleted_timestamp IS NULL");
+    }
+    if ip.is_some() {
+        sql.push_str(" AND uploader_ip = ?");
+    }
+    if slug.is_some() {
+        sql.push_str(" AND slug = ?");
+    }
+    sql.push_str(" ORDER BY upload_timestamp DESC LIMIT ? OFFSET ?");
+
+    let mut q = sqlx::query_as::<_, Upload>(&sql);
+    if let Some(ip) = ip {
+        q = q.bind(ip);
+    }
+    if let Some(slug) = slug {
+        q = q.bind(slug);
+    }
+    q.bind(limit).bind(offset).fetch_all(db).await
+}
+
+pub(crate) async fn list_banned_ips(db: &MySqlPool) -> Result<Vec<BannedIpv4Range>, sqlx::Error> {
+    sqlx::query_as::<_, BannedIpv4Range>(
+        "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp FROM banned_ipv4_ranges ORDER BY id DESC",
+    )
+    .fetch_all(db)
+    .await
+}
+
+pub(crate) async fn insert_banned_ip(
+    db: &MySqlPool,
+    start_ip: u32,
+    end_ip: u32,
+    reason: Option<&str>,
+    expires_timestamp: Option<PrimitiveDateTime>,
+) -> Result<i64, sqlx::Error> {
+    let result = sqlx::query(
+        "INSERT INTO banned_ipv4_ranges (start_ip, end_ip, reason, expires_timestamp) VALUES (?, ?, ?, ?)",
+    )
+    .bind(start_ip)
+    .bind(end_ip)
+    .bind(reason)
+    .bind(expires_timestamp)
+    .execute(db)
+    .await?;
+    Ok(result.last_insert_id() as i64)
+}
+
+pub(crate) async fn delete_banned_ip(db: &MySqlPool, id: i64) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM banned_ipv4_ranges WHERE id = ?")
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub(crate) async fn list_banned_extensions(
+    db: &MySqlPool,
+) -> Result<Vec<BannedFileExtension>, sqlx::Error> {
+    sqlx::query_as::<_, BannedFileExtension>(
+        "SELECT extension FROM banned_file_extensions ORDER BY extension",
+    )
+    .fetch_all(db)
+    .await
+}
+
+pub(crate) async fn insert_banned_extension(db: &MySqlPool, ext: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT IGNORE INTO banned_file_extensions (extension) VALUES (?)")
+        .bind(ext)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn delete_banned_extension(db: &MySqlPool, ext: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM banned_file_extensions WHERE extension = ?")
+        .bind(ext)
+        .execute(db)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub(crate) async fn list_banned_mimes(db: &MySqlPool) -> Result<Vec<BannedFileMime>, sqlx::Error> {
+    sqlx::query_as::<_, BannedFileMime>("SELECT mime FROM banned_file_mimes ORDER BY mime")
+        .fetch_all(db)
+        .await
+}
+
+pub(crate) async fn insert_banned_mime(db: &MySqlPool, mime: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT IGNORE INTO banned_file_mimes (mime) VALUES (?)")
+        .bind(mime)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn delete_banned_mime(db: &MySqlPool, mime: &str) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM banned_file_mimes WHERE mime = ?")
+        .bind(mime)
+        .execute(db)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub(crate) async fn list_banned_hashes(db: &MySqlPool) -> Result<Vec<BannedFileHash>, sqlx::Error> {
+    sqlx::query_as::<_, BannedFileHash>("SELECT hash, reason FROM banned_file_hashes ORDER BY hash")
+        .fetch_all(db)
+        .await
+}
+
+pub(crate) async fn insert_banned_hash(
+    db: &MySqlPool,
+    hash: &[u8],
+    reason: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT IGNORE INTO banned_file_hashes (hash, reason) VALUES (?, ?)")
+        .bind(hash)
+        .bind(reason)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn delete_banned_hash(db: &MySqlPool, hash: &[u8]) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM banned_file_hashes WHERE hash = ?")
+        .bind(hash)
+        .execute(db)
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 async fn delete_one(

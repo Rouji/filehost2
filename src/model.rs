@@ -24,6 +24,7 @@ pub(crate) struct Upload {
 
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct BannedIpv4Range {
+    pub id: i64,
     pub start_ip: u32,
     pub end_ip: u32,
     pub reason: Option<String>,

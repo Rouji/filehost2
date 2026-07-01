@@ -31,6 +31,7 @@ mod tests {
             auto_file_ext: false,
             trust_xff: false,
             admin_email: "test@example.com".to_string(),
+            admin_token: None,
             clamd_addr: None,
             max_uploads_per_day: None,
             max_bytes_per_day: None,
