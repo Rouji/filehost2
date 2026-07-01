@@ -5,8 +5,10 @@ mod tests {
     use actix_http::Request;
     use actix_multipart::form::MultipartFormConfig;
     use actix_web::{App, Error, dev::ServiceResponse, test, web};
+    use serde::{Deserialize, Serialize};
     use sqlx::MySqlPool;
 
+    use crate::admin;
     use crate::handlers;
     use crate::settings::Settings;
     use crate::templates;
@@ -64,6 +66,25 @@ mod tests {
                 .service(handlers::index)
                 .service(handlers::upload)
                 .service(handlers::get_file)
+                .service(
+                    web::scope("/admin")
+                        .service(admin::stats)
+                        .service(admin::list_uploads)
+                        .service(admin::delete_upload)
+                        .service(admin::delete_upload_by_slug)
+                        .service(admin::list_banned_ips)
+                        .service(admin::add_banned_ip)
+                        .service(admin::remove_banned_ip)
+                        .service(admin::list_banned_extensions)
+                        .service(admin::add_banned_extension)
+                        .service(admin::remove_banned_extension)
+                        .service(admin::list_banned_mimes)
+                        .service(admin::add_banned_mime)
+                        .service(admin::remove_banned_mime)
+                        .service(admin::list_banned_hashes)
+                        .service(admin::add_banned_hash)
+                        .service(admin::remove_banned_hash),
+                )
                 .app_data(web::Data::new(pool))
                 .app_data(web::Data::new(settings.clone()))
                 .app_data(web::Data::new(tmpl))
@@ -494,5 +515,378 @@ mod tests {
         let body = test::read_body(resp).await;
         let body_str = String::from_utf8(body.to_vec()).unwrap();
         assert_eq!(body_str.lines().count(), 2);
+    }
+
+    fn admin_settings() -> Settings {
+        let mut settings = test_settings();
+        settings.admin_token = Some("secret".to_string());
+        settings
+    }
+
+    fn admin_req(method: test::TestRequest, uri: &str) -> test::TestRequest {
+        method
+            .uri(uri)
+            .insert_header(("Authorization", "Bearer secret"))
+    }
+
+    #[derive(Deserialize)]
+    struct StatsResponse {
+        active_uploads: i64,
+    }
+
+    #[sqlx::test]
+    async fn admin_no_token_configured_returns_404(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool).await; // admin_token defaults to None
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/admin/stats").to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[sqlx::test]
+    async fn admin_missing_header_returns_401(pool: MySqlPool) {
+        let app = full_app(admin_settings(), pool).await;
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/admin/stats").to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[sqlx::test]
+    async fn admin_wrong_token_returns_403(pool: MySqlPool) {
+        let app = full_app(admin_settings(), pool).await;
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri("/admin/stats")
+                .insert_header(("Authorization", "Bearer wrong"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 403);
+    }
+
+    #[sqlx::test]
+    async fn admin_correct_token_returns_stats(pool: MySqlPool) {
+        let app = full_app(admin_settings(), pool).await;
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::get(), "/admin/stats").to_request(),
+        )
+        .await;
+        assert!(resp.status().is_success());
+        let body: StatsResponse = test::read_body_json(resp).await;
+        assert_eq!(body.active_uploads, 0);
+    }
+
+    #[derive(Deserialize)]
+    struct UploadResponse {
+        id: String,
+        slug: String,
+        deleted: bool,
+    }
+
+    #[sqlx::test]
+    async fn admin_lists_and_deletes_upload_by_id(pool: MySqlPool) {
+        let app = full_app(admin_settings(), pool).await;
+        let slug = upload_and_get_slug(&app, "test.txt").await;
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::get(), "/admin/uploads").to_request(),
+        )
+        .await;
+        assert!(resp.status().is_success());
+        let uploads: Vec<UploadResponse> = test::read_body_json(resp).await;
+        let upload = uploads
+            .iter()
+            .find(|u| u.slug == slug)
+            .expect("uploaded file should be listed");
+        assert!(!upload.deleted);
+
+        let resp = test::call_service(
+            &app,
+            admin_req(
+                test::TestRequest::delete(),
+                &format!("/admin/uploads/{}", upload.id),
+            )
+            .to_request(),
+        )
+        .await;
+        assert!(resp.status().is_success());
+
+        // Deleted uploads are excluded from the default listing.
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::get(), "/admin/uploads").to_request(),
+        )
+        .await;
+        let uploads: Vec<UploadResponse> = test::read_body_json(resp).await;
+        assert!(!uploads.iter().any(|u| u.slug == slug));
+
+        // And the file is no longer servable.
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/{slug}"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[sqlx::test]
+    async fn admin_deletes_upload_by_slug(pool: MySqlPool) {
+        let app = full_app(admin_settings(), pool).await;
+        let slug = upload_and_get_slug(&app, "test.txt").await;
+
+        let resp = test::call_service(
+            &app,
+            admin_req(
+                test::TestRequest::delete(),
+                &format!("/admin/uploads/slug/{slug}"),
+            )
+            .to_request(),
+        )
+        .await;
+        assert!(resp.status().is_success());
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/{slug}"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[derive(Serialize)]
+    struct IpRangeBody<'a> {
+        start_ip: &'a str,
+        end_ip: &'a str,
+        reason: Option<&'a str>,
+        expires_timestamp: Option<&'a str>,
+    }
+
+    #[derive(Deserialize)]
+    struct IdResponse {
+        id: i64,
+    }
+
+    #[derive(Deserialize)]
+    struct IpRangeResponse {
+        id: i64,
+        start_ip: String,
+        end_ip: String,
+    }
+
+    #[sqlx::test]
+    async fn admin_bans_ip_range_add_list_delete(pool: MySqlPool) {
+        let app = full_app(admin_settings(), pool).await;
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::post(), "/admin/bans/ips")
+                .set_json(&IpRangeBody {
+                    start_ip: "1.2.3.0",
+                    end_ip: "1.2.3.255",
+                    reason: Some("spam"),
+                    expires_timestamp: None,
+                })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 201);
+        let created: IdResponse = test::read_body_json(resp).await;
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::get(), "/admin/bans/ips").to_request(),
+        )
+        .await;
+        let ranges: Vec<IpRangeResponse> = test::read_body_json(resp).await;
+        let range = ranges
+            .iter()
+            .find(|r| r.id == created.id)
+            .expect("banned range should be listed");
+        assert_eq!(range.start_ip, "1.2.3.0");
+        assert_eq!(range.end_ip, "1.2.3.255");
+
+        let resp = test::call_service(
+            &app,
+            admin_req(
+                test::TestRequest::delete(),
+                &format!("/admin/bans/ips/{}", created.id),
+            )
+            .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 204);
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::get(), "/admin/bans/ips").to_request(),
+        )
+        .await;
+        let ranges: Vec<IpRangeResponse> = test::read_body_json(resp).await;
+        assert!(!ranges.iter().any(|r| r.id == created.id));
+    }
+
+    #[derive(Serialize)]
+    struct ExtensionBody<'a> {
+        extension: &'a str,
+    }
+
+    #[sqlx::test]
+    async fn admin_bans_extension_add_list_delete_and_enforced(pool: MySqlPool) {
+        let app = full_app(admin_settings(), pool).await;
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::post(), "/admin/bans/extensions")
+                .set_json(&ExtensionBody { extension: "exe" })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 201);
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::get(), "/admin/bans/extensions").to_request(),
+        )
+        .await;
+        let extensions: Vec<String> = test::read_body_json(resp).await;
+        assert!(extensions.contains(&"exe".to_string()));
+
+        // Banned extension is rejected at upload time.
+        let req = multipart_request(&multipart_body("test.exe", "MZ"));
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+
+        let resp = test::call_service(
+            &app,
+            admin_req(
+                test::TestRequest::delete(),
+                "/admin/bans/extensions/exe",
+            )
+            .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 204);
+
+        // Upload succeeds again once the ban is lifted.
+        let req = multipart_request(&multipart_body("test.exe", "MZ"));
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+    }
+
+    #[derive(Serialize)]
+    struct MimeBody<'a> {
+        mime: &'a str,
+    }
+
+    #[sqlx::test]
+    async fn admin_bans_mime_add_list_delete(pool: MySqlPool) {
+        let app = full_app(admin_settings(), pool).await;
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::post(), "/admin/bans/mimes")
+                .set_json(&MimeBody {
+                    mime: "application/x-msdownload",
+                })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 201);
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::get(), "/admin/bans/mimes").to_request(),
+        )
+        .await;
+        let mimes: Vec<String> = test::read_body_json(resp).await;
+        assert!(mimes.contains(&"application/x-msdownload".to_string()));
+
+        // Mime types contain a slash, so the delete route uses a greedy path match.
+        let resp = test::call_service(
+            &app,
+            admin_req(
+                test::TestRequest::delete(),
+                "/admin/bans/mimes/application/x-msdownload",
+            )
+            .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 204);
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::get(), "/admin/bans/mimes").to_request(),
+        )
+        .await;
+        let mimes: Vec<String> = test::read_body_json(resp).await;
+        assert!(!mimes.contains(&"application/x-msdownload".to_string()));
+    }
+
+    #[derive(Serialize)]
+    struct HashBody<'a> {
+        hash: &'a str,
+        reason: Option<&'a str>,
+    }
+
+    #[derive(Deserialize)]
+    struct HashResponse {
+        hash: String,
+    }
+
+    #[sqlx::test]
+    async fn admin_bans_hash_add_list_delete(pool: MySqlPool) {
+        let app = full_app(admin_settings(), pool).await;
+        let hash = "a".repeat(64); // 32 bytes of 0xaa, hex-encoded
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::post(), "/admin/bans/hashes")
+                .set_json(&HashBody {
+                    hash: &hash,
+                    reason: Some("known malware"),
+                })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 201);
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::get(), "/admin/bans/hashes").to_request(),
+        )
+        .await;
+        let hashes: Vec<HashResponse> = test::read_body_json(resp).await;
+        assert!(hashes.iter().any(|h| h.hash == hash));
+
+        let resp = test::call_service(
+            &app,
+            admin_req(
+                test::TestRequest::delete(),
+                &format!("/admin/bans/hashes/{hash}"),
+            )
+            .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 204);
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::get(), "/admin/bans/hashes").to_request(),
+        )
+        .await;
+        let hashes: Vec<HashResponse> = test::read_body_json(resp).await;
+        assert!(!hashes.iter().any(|h| h.hash == hash));
     }
 }
