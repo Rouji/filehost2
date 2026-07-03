@@ -16,6 +16,9 @@ struct LogEntry {
     upload_timestamp: PrimitiveDateTime,
     uploader_ip: Option<u32>,
     original_name: String,
+    // single_php_filehost logs `filesize($tmpfile)` after already having moved $tmpfile
+    // away, so this is reliably empty/false in practice — best-effort only.
+    file_size: Option<u64>,
 }
 
 fn parse_log(log_path: &Path) -> Result<HashMap<String, LogEntry>> {
@@ -40,11 +43,12 @@ fn parse_log(log_path: &Path) -> Result<HashMap<String, LogEntry>> {
             }
         };
         let uploader_ip = parts[1].parse::<Ipv4Addr>().ok().map(u32::from);
+        let file_size = parts[2].parse::<u64>().ok();
         let original_name = parts[3].trim_matches('\'').to_string();
         let slug = parts[4].to_string();
 
         // Overwrite any earlier entry — slugs are reused over time, last occurrence wins.
-        map.insert(slug, LogEntry { upload_timestamp, uploader_ip, original_name });
+        map.insert(slug, LogEntry { upload_timestamp, uploader_ip, original_name, file_size });
     }
 
     Ok(map)
@@ -173,6 +177,49 @@ pub(crate) async fn import_php(
         }
     }
 
-    println!("Done: {imported} imported, {skipped} skipped, {errors} errors.");
+    // Log entries whose file is already gone: no file to serve, but still worth keeping
+    // as a soft-deleted record for history/stats rather than dropping them entirely.
+    let mut historical = 0usize;
+    let mut historical_skipped = 0usize;
+    let mut historical_errors = 0usize;
+
+    for (slug, entry) in &log {
+        // The log's size field is unreliable (see LogEntry), so an unknown size falls
+        // back to 0 — treated like a tiny file for expiry purposes, which barely matters
+        // since the row is inserted already-expired/deleted anyway.
+        let file_size = entry.file_size.unwrap_or(0);
+        let expiry = compute_expiry(entry.upload_timestamp, file_size, settings);
+        let content_type = mime_guess::from_path(slug).first().map(|m| m.to_string());
+
+        match db::insert_historical_upload(
+            db,
+            Uuid::new_v4(),
+            slug,
+            &entry.original_name,
+            entry.upload_timestamp,
+            expiry,
+            expiry, // no record of the actual deletion time; assume it lived out its expiry
+            file_size as i64,
+            entry.uploader_ip,
+            content_type.as_deref(),
+        )
+        .await
+        {
+            Ok(true) => {
+                log::info!("Imported (historical, no file): {slug}");
+                historical += 1;
+            }
+            Ok(false) => historical_skipped += 1,
+            Err(e) => {
+                log::error!("DB insert failed for historical entry {slug}: {e}");
+                historical_errors += 1;
+            }
+        }
+    }
+
+    println!(
+        "Done: {imported} imported, {skipped} skipped, {errors} errors, \
+         {historical} historical entries imported ({historical_skipped} skipped, {historical_errors} errors)."
+    );
     Ok(())
 }

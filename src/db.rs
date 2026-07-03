@@ -171,6 +171,51 @@ pub(crate) async fn insert_upload(
     Ok(true)
 }
 
+/// Like `insert_upload`, but for log entries whose file no longer exists on disk: the
+/// row is inserted already soft-deleted so the app never tries to serve it. Unlike
+/// `insert_upload`, existence is checked regardless of `deleted_timestamp` — these are
+/// one-time archival records, not something a slug should be allowed to reclaim.
+pub(crate) async fn insert_historical_upload(
+    db: &MySqlPool,
+    id: Uuid,
+    slug: &str,
+    original_name: &str,
+    upload_timestamp: time::PrimitiveDateTime,
+    expiry_timestamp: time::PrimitiveDateTime,
+    deleted_timestamp: time::PrimitiveDateTime,
+    file_size: i64,
+    uploader_ip: Option<u32>,
+    content_type: Option<&str>,
+) -> anyhow::Result<bool> {
+    let exists = sqlx::query("SELECT 1 FROM uploads WHERE slug = ?")
+        .bind(slug)
+        .fetch_optional(db)
+        .await?
+        .is_some();
+
+    if exists {
+        return Ok(false);
+    }
+
+    sqlx::query(
+        "INSERT INTO uploads (id, slug, original_name, upload_timestamp, expiry_timestamp, deleted_timestamp, file_size, uploader_ip, content_type) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(slug)
+    .bind(original_name)
+    .bind(upload_timestamp)
+    .bind(expiry_timestamp)
+    .bind(deleted_timestamp)
+    .bind(file_size)
+    .bind(uploader_ip)
+    .bind(content_type)
+    .execute(db)
+    .await?;
+
+    Ok(true)
+}
+
 pub(crate) async fn uploads_count_last_day(db: &MySqlPool, ip: u32) -> Result<i64, sqlx::Error> {
     let row = sqlx::query(
         "SELECT COUNT(*) FROM uploads \

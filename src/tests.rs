@@ -436,6 +436,51 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn import_php_tolerates_missing_log_file_size(pool: MySqlPool) {
+        // single_php_filehost's log always has an empty size field in practice (it calls
+        // filesize() on the temp file *after* already moving it away). Import must still
+        // pick up the name/IP from the log rather than dropping the line entirely.
+        let settings = test_settings();
+        std::fs::create_dir_all(&settings.store_path).unwrap();
+
+        let src = php_source_dir();
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(format!("{src}present.txt"), b"hello").unwrap();
+
+        let log_path = format!("{src}../uploads.log");
+        std::fs::write(
+            &log_path,
+            "2026-06-06T14:30:45+00:00\t10.0.0.1\t\t'original name.txt'\tpresent.txt\n\
+             2025-01-01T00:00:00+00:00\t10.0.0.2\t\t'old upload.bin'\tgone.txt\n",
+        )
+        .unwrap();
+
+        crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
+            .await
+            .unwrap();
+
+        let row: (String, Option<u32>) = sqlx::query_as(
+            "SELECT original_name, uploader_ip FROM uploads WHERE slug = 'present.txt'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "original name.txt");
+        assert_eq!(row.1, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
+
+        let row: (String, i64) = sqlx::query_as(
+            "SELECT original_name, file_size FROM uploads WHERE slug = 'gone.txt'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "old upload.bin");
+        assert_eq!(row.1, 0, "unknown historical size should fall back to 0");
+
+        std::fs::remove_dir_all(&src).ok();
+    }
+
+    #[sqlx::test]
     async fn import_php_log_uses_last_occurrence(pool: MySqlPool) {
         let settings = test_settings();
         std::fs::create_dir_all(&settings.store_path).unwrap();
@@ -462,6 +507,83 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(original_name, "new.txt");
+
+        std::fs::remove_dir_all(&src).ok();
+    }
+
+    #[sqlx::test]
+    async fn import_php_imports_historical_entry_without_file(pool: MySqlPool) {
+        let settings = test_settings();
+        std::fs::create_dir_all(&settings.store_path).unwrap();
+
+        // The files dir only has "present.txt" — "gone.txt" is referenced by the log
+        // but its file no longer exists anywhere.
+        let src = php_source_dir();
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(format!("{src}present.txt"), b"hello").unwrap();
+
+        let log_path = format!("{src}../uploads.log");
+        std::fs::write(
+            &log_path,
+            "2026-01-01T00:00:00+00:00\t10.0.0.1\t5\t'present.txt'\tpresent.txt\n\
+             2025-01-01T00:00:00+00:00\t10.0.0.2\t1234\t'old upload.bin'\tgone.txt\n",
+        )
+        .unwrap();
+
+        crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
+            .await
+            .unwrap();
+
+        let row: (String, i64, Option<u32>, Option<time::PrimitiveDateTime>) = sqlx::query_as(
+            "SELECT original_name, file_size, uploader_ip, deleted_timestamp FROM uploads WHERE slug = 'gone.txt'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "old upload.bin");
+        assert_eq!(row.1, 1234);
+        assert_eq!(row.2, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 2))));
+        assert!(row.3.is_some(), "historical entry should be soft-deleted");
+
+        // No file backs it, so it must never be served.
+        let app = full_app(settings, pool).await;
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/gone.txt").to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 404);
+
+        std::fs::remove_dir_all(&src).ok();
+    }
+
+    #[sqlx::test]
+    async fn import_php_historical_entry_is_idempotent(pool: MySqlPool) {
+        let settings = test_settings();
+        std::fs::create_dir_all(&settings.store_path).unwrap();
+
+        let src = php_source_dir();
+        std::fs::create_dir_all(&src).unwrap();
+
+        let log_path = format!("{src}../uploads.log");
+        std::fs::write(
+            &log_path,
+            "2025-01-01T00:00:00+00:00\t10.0.0.2\t1234\t'old upload.bin'\tgone.txt\n",
+        )
+        .unwrap();
+
+        crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.clone().into()))
+            .await
+            .unwrap();
+        crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
+            .await
+            .unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads WHERE slug = 'gone.txt'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "second import should not duplicate the historical row");
 
         std::fs::remove_dir_all(&src).ok();
     }
