@@ -5,6 +5,20 @@ on:
   pull_request:
 
 jobs:
+  clippy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+        env:
+          SQLX_OFFLINE: true
+
   test:
     runs-on: ubuntu-latest
 
