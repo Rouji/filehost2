@@ -24,21 +24,40 @@ struct LogEntry {
 fn parse_log(log_path: &Path) -> Result<HashMap<String, LogEntry>> {
     let file = std::fs::File::open(log_path)
         .with_context(|| format!("Failed to open log file: {}", log_path.display()))?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut map = HashMap::new();
+    let mut buf = Vec::new();
+    let mut line_no = 0usize;
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
+    loop {
+        buf.clear();
+        // Read raw bytes rather than `BufRead::lines()`, which aborts the whole
+        // import on the first non-UTF-8 byte — real-world logged filenames
+        // aren't guaranteed to be valid UTF-8. Invalid bytes are replaced with
+        // U+FFFD instead, so one corrupted line doesn't lose every other row.
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            break;
+        }
+        line_no += 1;
+        while matches!(buf.last(), Some(b'\n' | b'\r')) {
+            buf.pop();
+        }
+
+        let line = String::from_utf8_lossy(&buf);
+        if matches!(line, std::borrow::Cow::Owned(_)) {
+            log::warn!("Log line {line_no}: invalid UTF-8, replaced with U+FFFD");
+        }
+
         let parts: Vec<&str> = line.splitn(5, '\t').collect();
         if parts.len() < 5 {
-            log::warn!("Log line {}: expected 5 tab-separated fields, got {}", i + 1, parts.len());
+            log::warn!("Log line {line_no}: expected 5 tab-separated fields, got {}", parts.len());
             continue;
         }
 
         let upload_timestamp = match OffsetDateTime::parse(parts[0], &Rfc3339) {
             Ok(t) => PrimitiveDateTime::new(t.date(), t.time()),
             Err(e) => {
-                log::warn!("Log line {}: bad timestamp {:?}: {e}", i + 1, parts[0]);
+                log::warn!("Log line {line_no}: bad timestamp {:?}: {e}", parts[0]);
                 continue;
             }
         };
