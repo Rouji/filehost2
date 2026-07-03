@@ -1,22 +1,33 @@
-FROM rust:latest AS builder
+FROM --platform=$BUILDPLATFORM rust:latest AS builder
 
+ARG TARGETARCH
+
+# cargo-zigbuild cross-links against musl for any target from this one
+# (amd64) builder, so the arm64 leg needs no QEMU emulation.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends musl-tools
-RUN rustup target add x86_64-unknown-linux-musl
+    apt-get update && apt-get install -y --no-install-recommends python3-pip \
+    && pip3 install --break-system-packages ziglang \
+    && cargo install cargo-zigbuild
+
+RUN case "$TARGETARCH" in \
+      amd64) echo x86_64-unknown-linux-musl > /rust_target ;; \
+      arm64) echo aarch64-unknown-linux-musl > /rust_target ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac
+RUN rustup target add "$(cat /rust_target)"
 
 WORKDIR /app
 
 COPY . .
 
 ENV SQLX_OFFLINE=true
-ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release --target x86_64-unknown-linux-musl && \
-    cp target/x86_64-unknown-linux-musl/release/filehost2 /filehost2
+    cargo zigbuild --release --target "$(cat /rust_target)" && \
+    cp "target/$(cat /rust_target)/release/filehost2" /filehost2
 
 FROM scratch
 
