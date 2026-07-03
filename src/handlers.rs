@@ -41,22 +41,38 @@ fn error_page(status: StatusCode, message: &str) -> HttpResponse {
         .body(body)
 }
 
+/// Runs a `db::is_*_banned` check and turns it into a response: forbidden if
+/// banned, a logged 500 if the check itself failed, otherwise `Ok(())`.
+async fn check_not_banned(
+    check: impl std::future::Future<Output = Result<bool, sqlx::Error>>,
+    check_name: &str,
+    forbidden_message: &str,
+) -> Result<(), HttpResponse> {
+    match check.await {
+        Ok(true) => Err(error_page(StatusCode::FORBIDDEN, forbidden_message)),
+        Ok(false) => Ok(()),
+        Err(e) => {
+            log::error!("{check_name} check failed: {e}");
+            Err(error_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong.",
+            ))
+        }
+    }
+}
+
 fn determine_content_type(file: &HashedTempFile, original_name: &str) -> (String, Option<String>) {
-    let content_type_str = if let Some(ref ct) = file.content_type {
-        ct.to_string()
-    } else {
-        mime_guess::from_path(original_name)
-            .first_or_octet_stream()
-            .to_string()
-    };
-    let ct_subtype = if let Some(ref ct) = file.content_type {
-        Some(ct.subtype().to_string())
-    } else {
-        mime_guess::from_path(original_name)
-            .first()
-            .map(|m| m.subtype().as_str().to_string())
-    };
-    (content_type_str, ct_subtype)
+    if let Some(ref ct) = file.content_type {
+        return (ct.to_string(), Some(ct.subtype().to_string()));
+    }
+    let guess = mime_guess::from_path(original_name).first();
+    (
+        guess
+            .as_ref()
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| mime_guess::mime::APPLICATION_OCTET_STREAM.to_string()),
+        guess.map(|m| m.subtype().as_str().to_string()),
+    )
 }
 
 fn save_file(tmp: tempfile::NamedTempFile, dest: &Path) -> std::io::Result<()> {
@@ -84,14 +100,12 @@ async fn process_file(
     let internal_err = || error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
 
     if let Some(ext) = Path::new(&original_name).extension().and_then(|e| e.to_str()) {
-        match db::is_extension_banned(db, ext).await {
-            Ok(true) => return Err(error_page(StatusCode::FORBIDDEN, "File type not allowed.")),
-            Err(e) => {
-                log::error!("banned extension check failed: {e}");
-                return Err(internal_err());
-            }
-            Ok(false) => {}
-        }
+        check_not_banned(
+            db::is_extension_banned(db, ext),
+            "banned extension",
+            "File type not allowed.",
+        )
+        .await?;
     }
 
     let (content_type_str, ct_subtype) = determine_content_type(&file, &original_name);
@@ -106,25 +120,21 @@ async fn process_file(
     let expiry = calculate_expiry(file_size, settings);
     let save_path = uuid_to_path(Path::new(&settings.store_path), &uuid);
 
-    match db::is_mime_banned(db, &content_type_str).await {
-        Ok(true) => return Err(error_page(StatusCode::FORBIDDEN, "Your upload was rejected.")),
-        Err(e) => {
-            log::error!("banned mime check failed: {e}");
-            return Err(internal_err());
-        }
-        Ok(false) => {}
-    }
+    check_not_banned(
+        db::is_mime_banned(db, &content_type_str),
+        "banned mime",
+        "Your upload was rejected.",
+    )
+    .await?;
 
     let hash = file.hash;
 
-    match db::is_hash_banned(db, hash.as_slice()).await {
-        Ok(true) => return Err(error_page(StatusCode::FORBIDDEN, "Your upload was rejected.")),
-        Err(e) => {
-            log::error!("banned hash check failed: {e}");
-            return Err(internal_err());
-        }
-        Ok(false) => {}
-    }
+    check_not_banned(
+        db::is_hash_banned(db, hash.as_slice()),
+        "banned hash",
+        "Your upload was rejected.",
+    )
+    .await?;
 
     if let Err(e) = std::fs::create_dir_all(save_path.parent().unwrap()) {
         log::error!("Failed to create directory: {e}");
@@ -226,17 +236,15 @@ pub(crate) async fn upload(
 
     let uploader_ip = extract_ip(&req, settings.trust_xff);
 
-    if let Some(ip) = uploader_ip {
-        match db::is_ip_banned(db.get_ref(), ip).await {
-            Ok(true) => {
-                return error_page(StatusCode::FORBIDDEN, "Your IP is banned from uploading.")
-            }
-            Err(e) => {
-                log::error!("banned IP check failed: {e}");
-                return error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
-            }
-            Ok(false) => {}
-        }
+    if let Some(ip) = uploader_ip
+        && let Err(resp) = check_not_banned(
+            db::is_ip_banned(db.get_ref(), ip),
+            "banned IP",
+            "Your IP is banned from uploading.",
+        )
+        .await
+    {
+        return resp;
     }
 
     if let Some(ip) = uploader_ip {

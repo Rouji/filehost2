@@ -32,7 +32,6 @@ pub(crate) struct Settings {
     pub max_id_length: usize, //max. length of the random file id, set to min_id_length to disable
     #[env_settings(default = "files/")]
     pub store_path: String, //directory to store uploaded files in
-    pub log_path: Option<String>, //path to log uploads + resulting links to
     #[env_settings(default = 7)]
     pub max_ext_len: usize, //max. length for file extensions
     #[env_settings(default = "false")]

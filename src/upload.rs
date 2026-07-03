@@ -56,16 +56,15 @@ impl<'t> FieldReader<'t> for HashedTempFile {
                 _ => None,
             });
 
-            let file = tempfile::NamedTempFile::new().map_err(|e| MultipartError::Field {
+            let to_field_err = |e: std::io::Error| MultipartError::Field {
                 name: field_name.clone(),
                 source: ErrorInternalServerError(e),
-            })?;
+            };
+
+            let file = tempfile::NamedTempFile::new().map_err(to_field_err)?;
 
             let mut file_async =
-                tokio::fs::File::from_std(file.reopen().map_err(|e| MultipartError::Field {
-                    name: field_name.clone(),
-                    source: ErrorInternalServerError(e),
-                })?);
+                tokio::fs::File::from_std(file.reopen().map_err(to_field_err)?);
 
             let mut hasher = blake3::Hasher::new();
             let mut size = 0usize;
@@ -80,19 +79,10 @@ impl<'t> FieldReader<'t> for HashedTempFile {
                 file_async
                     .write_all(chunk.as_ref())
                     .await
-                    .map_err(|e| MultipartError::Field {
-                        name: field_name.clone(),
-                        source: ErrorInternalServerError(e),
-                    })?;
+                    .map_err(to_field_err)?;
             }
 
-            file_async
-                .flush()
-                .await
-                .map_err(|e| MultipartError::Field {
-                    name: field_name,
-                    source: ErrorInternalServerError(e),
-                })?;
+            file_async.flush().await.map_err(to_field_err)?;
 
             Ok(HashedTempFile {
                 file,
@@ -165,7 +155,6 @@ mod tests {
             min_id_length: 3,
             max_id_length: 24,
             store_path: "files/".to_string(),
-            log_path: None,
             max_ext_len: 7,
             auto_file_ext: false,
             trust_xff: false,

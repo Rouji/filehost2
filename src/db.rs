@@ -51,31 +51,43 @@ pub(crate) async fn is_hash_banned(db: &MySqlPool, hash: &[u8]) -> Result<bool, 
     )
 }
 
-pub(crate) async fn delete_expired(db: &MySqlPool, settings: &Settings) -> Result<usize> {
-    let rows = sqlx::query!(
-        "SELECT id as `id: Uuid`, slug, original_name FROM uploads WHERE expiry_timestamp <= NOW() AND deleted_timestamp IS NULL"
-    )
-    .fetch_all(db)
-    .await?;
+/// Soft-deletes every upload matching a `WHERE` clause appended to the base
+/// select below, via `bind`. Shared by all the `delete_by_*`/`delete_expired`
+/// variants, which differ only in which rows they select.
+async fn delete_matching(
+    db: &MySqlPool,
+    settings: &Settings,
+    where_clause: &str,
+    bind: impl FnOnce(
+        sqlx::query::Query<'_, sqlx::MySql, sqlx::mysql::MySqlArguments>,
+    ) -> sqlx::query::Query<'_, sqlx::MySql, sqlx::mysql::MySqlArguments>,
+) -> Result<usize> {
+    let sql = format!(
+        "SELECT id, slug, original_name FROM uploads WHERE {where_clause} AND deleted_timestamp IS NULL"
+    );
+    let rows = bind(sqlx::query(&sql))
+        .try_map(|row: sqlx::mysql::MySqlRow| {
+            Ok((
+                row.try_get::<Uuid, _>("id")?,
+                row.try_get::<String, _>("slug")?,
+                row.try_get::<String, _>("original_name")?,
+            ))
+        })
+        .fetch_all(db)
+        .await?;
     let count = rows.len();
-    for r in rows {
-        delete_one(db, settings, r.id, &r.slug, &r.original_name).await?;
+    for (id, slug, original_name) in rows {
+        delete_one(db, settings, id, &slug, &original_name).await?;
     }
     Ok(count)
 }
 
+pub(crate) async fn delete_expired(db: &MySqlPool, settings: &Settings) -> Result<usize> {
+    delete_matching(db, settings, "expiry_timestamp <= NOW()", |q| q).await
+}
+
 pub(crate) async fn delete_by_id(db: &MySqlPool, settings: &Settings, id: Uuid) -> Result<usize> {
-    let rows = sqlx::query!(
-        "SELECT id as `id: Uuid`, slug, original_name FROM uploads WHERE id = ? AND deleted_timestamp IS NULL",
-        id
-    )
-    .fetch_all(db)
-    .await?;
-    let count = rows.len();
-    for r in rows {
-        delete_one(db, settings, r.id, &r.slug, &r.original_name).await?;
-    }
-    Ok(count)
+    delete_matching(db, settings, "id = ?", |q| q.bind(id)).await
 }
 
 pub(crate) async fn delete_by_slug(
@@ -83,31 +95,11 @@ pub(crate) async fn delete_by_slug(
     settings: &Settings,
     slug: &str,
 ) -> Result<usize> {
-    let rows = sqlx::query!(
-        "SELECT id as `id: Uuid`, slug, original_name FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
-        slug
-    )
-    .fetch_all(db)
-    .await?;
-    let count = rows.len();
-    for r in rows {
-        delete_one(db, settings, r.id, &r.slug, &r.original_name).await?;
-    }
-    Ok(count)
+    delete_matching(db, settings, "slug = ?", |q| q.bind(slug.to_owned())).await
 }
 
 pub(crate) async fn delete_by_ip(db: &MySqlPool, settings: &Settings, ip: u32) -> Result<usize> {
-    let rows = sqlx::query!(
-        "SELECT id as `id: Uuid`, slug, original_name FROM uploads WHERE uploader_ip = ? AND deleted_timestamp IS NULL",
-        ip
-    )
-    .fetch_all(db)
-    .await?;
-    let count = rows.len();
-    for r in rows {
-        delete_one(db, settings, r.id, &r.slug, &r.original_name).await?;
-    }
-    Ok(count)
+    delete_matching(db, settings, "uploader_ip = ?", |q| q.bind(ip)).await
 }
 
 pub(crate) async fn delete_by_ip_range(
@@ -116,18 +108,10 @@ pub(crate) async fn delete_by_ip_range(
     start: u32,
     end: u32,
 ) -> Result<usize> {
-    let rows = sqlx::query!(
-        "SELECT id as `id: Uuid`, slug, original_name FROM uploads WHERE uploader_ip BETWEEN ? AND ? AND deleted_timestamp IS NULL",
-        start,
-        end
-    )
-    .fetch_all(db)
-    .await?;
-    let count = rows.len();
-    for r in rows {
-        delete_one(db, settings, r.id, &r.slug, &r.original_name).await?;
-    }
-    Ok(count)
+    delete_matching(db, settings, "uploader_ip BETWEEN ? AND ?", |q| {
+        q.bind(start).bind(end)
+    })
+    .await
 }
 
 pub(crate) struct NewUpload<'a> {

@@ -29,7 +29,6 @@ mod tests {
             min_id_length: 3,
             max_id_length: 24,
             store_path: format!("/tmp/filehost_test_{}/", uuid::Uuid::new_v4()),
-            log_path: None,
             max_ext_len: 7,
             auto_file_ext: false,
             trust_xff: false,
