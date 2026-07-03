@@ -130,21 +130,22 @@ pub(crate) async fn delete_by_ip_range(
     Ok(count)
 }
 
-pub(crate) async fn insert_upload(
-    db: &MySqlPool,
-    id: Uuid,
-    slug: &str,
-    original_name: &str,
-    upload_timestamp: time::PrimitiveDateTime,
-    expiry_timestamp: time::PrimitiveDateTime,
-    file_size: i64,
-    uploader_ip: Option<u32>,
-    content_type: Option<&str>,
-) -> anyhow::Result<bool> {
+pub(crate) struct NewUpload<'a> {
+    pub id: Uuid,
+    pub slug: &'a str,
+    pub original_name: &'a str,
+    pub upload_timestamp: time::PrimitiveDateTime,
+    pub expiry_timestamp: time::PrimitiveDateTime,
+    pub file_size: i64,
+    pub uploader_ip: Option<u32>,
+    pub content_type: Option<&'a str>,
+}
+
+pub(crate) async fn insert_upload(db: &MySqlPool, upload: &NewUpload<'_>) -> anyhow::Result<bool> {
     let exists = sqlx::query(
         "SELECT 1 FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
     )
-    .bind(slug)
+    .bind(upload.slug)
     .fetch_optional(db)
     .await?
     .is_some();
@@ -157,14 +158,14 @@ pub(crate) async fn insert_upload(
         "INSERT INTO uploads (id, slug, original_name, upload_timestamp, expiry_timestamp, file_size, uploader_ip, content_type) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(id)
-    .bind(slug)
-    .bind(original_name)
-    .bind(upload_timestamp)
-    .bind(expiry_timestamp)
-    .bind(file_size)
-    .bind(uploader_ip)
-    .bind(content_type)
+    .bind(upload.id)
+    .bind(upload.slug)
+    .bind(upload.original_name)
+    .bind(upload.upload_timestamp)
+    .bind(upload.expiry_timestamp)
+    .bind(upload.file_size)
+    .bind(upload.uploader_ip)
+    .bind(upload.content_type)
     .execute(db)
     .await?;
 
@@ -177,18 +178,11 @@ pub(crate) async fn insert_upload(
 /// one-time archival records, not something a slug should be allowed to reclaim.
 pub(crate) async fn insert_historical_upload(
     db: &MySqlPool,
-    id: Uuid,
-    slug: &str,
-    original_name: &str,
-    upload_timestamp: time::PrimitiveDateTime,
-    expiry_timestamp: time::PrimitiveDateTime,
+    upload: &NewUpload<'_>,
     deleted_timestamp: time::PrimitiveDateTime,
-    file_size: i64,
-    uploader_ip: Option<u32>,
-    content_type: Option<&str>,
 ) -> anyhow::Result<bool> {
     let exists = sqlx::query("SELECT 1 FROM uploads WHERE slug = ?")
-        .bind(slug)
+        .bind(upload.slug)
         .fetch_optional(db)
         .await?
         .is_some();
@@ -201,15 +195,15 @@ pub(crate) async fn insert_historical_upload(
         "INSERT INTO uploads (id, slug, original_name, upload_timestamp, expiry_timestamp, deleted_timestamp, file_size, uploader_ip, content_type) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(id)
-    .bind(slug)
-    .bind(original_name)
-    .bind(upload_timestamp)
-    .bind(expiry_timestamp)
+    .bind(upload.id)
+    .bind(upload.slug)
+    .bind(upload.original_name)
+    .bind(upload.upload_timestamp)
+    .bind(upload.expiry_timestamp)
     .bind(deleted_timestamp)
-    .bind(file_size)
-    .bind(uploader_ip)
-    .bind(content_type)
+    .bind(upload.file_size)
+    .bind(upload.uploader_ip)
+    .bind(upload.content_type)
     .execute(db)
     .await?;
 

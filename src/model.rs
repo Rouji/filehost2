@@ -2,6 +2,7 @@ use sqlx::types::time::PrimitiveDateTime;
 use uuid::Uuid;
 
 #[derive(Debug, sqlx::FromRow)]
+#[allow(dead_code)] // scaffolding for the not-yet-implemented access-logging feature
 pub(crate) struct Access {
     pub upload_id: Uuid,
     pub timestamp: PrimitiveDateTime,

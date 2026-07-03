@@ -1,6 +1,7 @@
 // these tests need a DB
 // go steal one at the database store
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use actix_http::Request;
     use actix_multipart::form::MultipartFormConfig;
@@ -153,7 +154,7 @@ mod tests {
                 "content-type",
                 format!("multipart/form-data; boundary={BOUNDARY}"),
             ))
-            .set_payload(format!("{}--{BOUNDARY}--\r\n", content.to_string()))
+            .set_payload(format!("{content}--{BOUNDARY}--\r\n"))
             .to_request()
     }
 

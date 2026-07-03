@@ -1,5 +1,4 @@
 use env_settings_derive::EnvSettings;
-use serde;
 
 #[derive(EnvSettings, Clone, serde::Serialize)]
 #[env_settings(case_insensitive, delay)]

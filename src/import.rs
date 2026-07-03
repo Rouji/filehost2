@@ -149,14 +149,16 @@ pub(crate) async fn import_php(
 
         match db::insert_upload(
             db,
-            uuid,
-            &slug,
-            &original_name,
-            upload_timestamp,
-            expiry,
-            file_size as i64,
-            uploader_ip,
-            content_type.as_deref(),
+            &db::NewUpload {
+                id: uuid,
+                slug: &slug,
+                original_name: &original_name,
+                upload_timestamp,
+                expiry_timestamp: expiry,
+                file_size: file_size as i64,
+                uploader_ip,
+                content_type: content_type.as_deref(),
+            },
         )
         .await
         {
@@ -193,15 +195,17 @@ pub(crate) async fn import_php(
 
         match db::insert_historical_upload(
             db,
-            Uuid::new_v4(),
-            slug,
-            &entry.original_name,
-            entry.upload_timestamp,
-            expiry,
+            &db::NewUpload {
+                id: Uuid::new_v4(),
+                slug,
+                original_name: &entry.original_name,
+                upload_timestamp: entry.upload_timestamp,
+                expiry_timestamp: expiry,
+                file_size: file_size as i64,
+                uploader_ip: entry.uploader_ip,
+                content_type: content_type.as_deref(),
+            },
             expiry, // no record of the actual deletion time; assume it lived out its expiry
-            file_size as i64,
-            entry.uploader_ip,
-            content_type.as_deref(),
         )
         .await
         {
