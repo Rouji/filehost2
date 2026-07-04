@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::settings::Settings;
-use crate::upload::uuid_to_path;
+use crate::upload::{life_expectancy_days, uuid_to_path};
 
 struct LogEntry {
     upload_timestamp: PrimitiveDateTime,
@@ -106,12 +106,7 @@ fn compute_expiry(
     file_size: u64,
     settings: &Settings,
 ) -> PrimitiveDateTime {
-    let max_bytes = (settings.max_filesize * 1024 * 1024) as f64;
-    let ratio = (file_size as f64 / max_bytes).min(1.0);
-    let life_days = settings.min_fileage as f64
-        + (settings.max_fileage - settings.min_fileage) as f64
-            * (1.0 - ratio).powi(settings.decay_exp as i32);
-    upload_timestamp + Duration::days(life_days as i64)
+    upload_timestamp + Duration::days(life_expectancy_days(file_size, settings) as i64)
 }
 
 pub(crate) async fn import_php(

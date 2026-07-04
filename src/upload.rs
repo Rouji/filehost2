@@ -118,13 +118,17 @@ impl<'t> FieldReader<'t> for HashedTempFile {
     }
 }
 
-pub(crate) fn calculate_expiry(file_size: usize, settings: &Settings) -> PrimitiveDateTime {
-    let max_size_bytes = settings.max_filesize * 1024 * 1024;
-    let ratio = (file_size as f64 / max_size_bytes as f64).min(1.0);
-    let life_expectancy = settings.min_fileage as f64
+pub(crate) fn life_expectancy_days(file_size: u64, settings: &Settings) -> f64 {
+    let max_bytes = (settings.max_filesize * 1024 * 1024) as f64;
+    let ratio = (file_size as f64 / max_bytes).min(1.0);
+    settings.min_fileage as f64
         + (settings.max_fileage - settings.min_fileage) as f64
-            * (1.0 - ratio).powi(settings.decay_exp as i32);
-    let expiry = OffsetDateTime::now_utc() + Duration::days(life_expectancy as i64);
+            * (1.0 - ratio).powi(settings.decay_exp as i32)
+}
+
+pub(crate) fn calculate_expiry(file_size: usize, settings: &Settings) -> PrimitiveDateTime {
+    let expiry = OffsetDateTime::now_utc()
+        + Duration::days(life_expectancy_days(file_size as u64, settings) as i64);
     PrimitiveDateTime::new(expiry.date(), expiry.time())
 }
 
