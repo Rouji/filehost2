@@ -70,7 +70,13 @@ impl<'t> FieldReader<'t> for HashedTempFile {
                 .cloned();
             let (rate, burst, trust_xff) = _req
                 .app_data::<actix_web::web::Data<Settings>>()
-                .map(|s| (s.max_upload_bytes_per_sec, s.max_upload_burst_bytes, s.trust_xff))
+                .map(|s| {
+                    (
+                        s.max_upload_bytes_per_sec,
+                        s.max_upload_burst_bytes,
+                        s.trust_xff,
+                    )
+                })
                 .unwrap_or((None, None, false));
             let ip: Option<u32> = extract_ip(_req, trust_xff);
 
