@@ -125,10 +125,26 @@ pub(crate) async fn import_php(
         None => HashMap::new(),
     };
 
+    // Repair rows left over by a previous broken run: a historical (soft-deleted)
+    // entry whose file is still actually present in `files_path` was never really
+    // deleted, and shouldn't have been recorded as such. Purge those so the loop
+    // below can import the file properly.
+    let mut reconciled = 0usize;
+    for (id, slug) in db::historical_upload_slugs(db).await? {
+        if files_path.join(&slug).is_file() {
+            db::hard_delete_upload(db, id).await?;
+            log::info!("Reconciled bogus historical entry: {slug}");
+            reconciled += 1;
+        }
+    }
+
     let store_path = Path::new(&settings.store_path);
     let mut imported = 0usize;
     let mut skipped = 0usize;
     let mut errors = 0usize;
+    // Slugs whose file was actually found on disk, so the historical pass below
+    // doesn't re-import them as soft-deleted entries with no file.
+    let mut seen = std::collections::HashSet::new();
 
     for entry in std::fs::read_dir(&files_path)
         .with_context(|| format!("Cannot read directory: {}", files_path.display()))?
@@ -147,6 +163,8 @@ pub(crate) async fn import_php(
                 continue;
             }
         };
+
+        seen.insert(slug.clone());
 
         let file_size = match std::fs::metadata(&path) {
             Ok(m) => m.len(),
@@ -232,6 +250,10 @@ pub(crate) async fn import_php(
     let mut historical_errors = 0usize;
 
     for (slug, entry) in &log {
+        if seen.contains(slug) {
+            continue;
+        }
+
         // The log's size field is unreliable (see LogEntry), so an unknown size falls
         // back to 0 — treated like a tiny file for expiry purposes, which barely matters
         // since the row is inserted already-expired/deleted anyway.
@@ -268,7 +290,8 @@ pub(crate) async fn import_php(
     }
 
     println!(
-        "Done: {imported} imported, {skipped} skipped, {errors} errors, \
+        "Done: {reconciled} bogus historical entries reconciled, {imported} imported, \
+         {skipped} skipped, {errors} errors, \
          {historical} historical entries imported ({historical_skipped} skipped, {historical_errors} errors)."
     );
     Ok(())

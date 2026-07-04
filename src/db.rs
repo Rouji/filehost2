@@ -192,6 +192,24 @@ pub(crate) async fn insert_historical_upload(
     Ok(true)
 }
 
+pub(crate) async fn historical_upload_slugs(
+    db: &MySqlPool,
+) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
+    sqlx::query("SELECT id, slug FROM uploads WHERE deleted_timestamp IS NOT NULL")
+        .try_map(|row: sqlx::mysql::MySqlRow| Ok((row.try_get("id")?, row.try_get("slug")?)))
+        .fetch_all(db)
+        .await
+}
+
+/// Hard-deletes a row outright, rather than soft-deleting it like `delete_by_id` does.
+pub(crate) async fn hard_delete_upload(db: &MySqlPool, id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM uploads WHERE id = ?")
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 pub(crate) async fn uploads_count_last_day(db: &MySqlPool, ip: u32) -> Result<i64, sqlx::Error> {
     let row = sqlx::query(
         "SELECT COUNT(*) FROM uploads \
