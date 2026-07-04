@@ -16,6 +16,31 @@ use crate::model::{
 };
 use crate::settings::Settings;
 
+/// Registers every `/admin/*` route. Shared by the real app (main.rs) and the test
+/// app (tests.rs) so the two can't drift out of sync — a route added to one but not
+/// the other used to be a silent gap rather than a compile error.
+pub(crate) fn configure(cfg: &mut web::ServiceConfig) {
+    cfg.service(stats)
+        .service(list_uploads)
+        .service(delete_upload)
+        .service(delete_upload_by_slug)
+        .service(list_banned_ips)
+        .service(add_banned_ip)
+        .service(remove_banned_ip)
+        .service(list_banned_extensions)
+        .service(add_banned_extension)
+        .service(remove_banned_extension)
+        .service(list_banned_mimes)
+        .service(add_banned_mime)
+        .service(remove_banned_mime)
+        .service(list_banned_hashes)
+        .service(add_banned_hash)
+        .service(remove_banned_hash)
+        .service(list_banned_user_agents)
+        .service(add_banned_user_agent)
+        .service(remove_banned_user_agent);
+}
+
 /// Extractor-as-guard for `/admin/*` routes: checks `Authorization: Bearer <admin_token>`
 /// against `Settings::admin_token`. Absent config -> 404 (route pretends not to exist).
 pub(crate) struct AdminAuth;
