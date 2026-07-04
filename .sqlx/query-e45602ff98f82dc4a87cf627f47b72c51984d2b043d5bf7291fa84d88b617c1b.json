@@ -1,0 +1,24 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT mime FROM banned_file_mimes ORDER BY mime",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mime",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | PRIMARY_KEY | NO_DEFAULT_VALUE",
+          "max_size": 1020
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e45602ff98f82dc4a87cf627f47b72c51984d2b043d5bf7291fa84d88b617c1b"
+}

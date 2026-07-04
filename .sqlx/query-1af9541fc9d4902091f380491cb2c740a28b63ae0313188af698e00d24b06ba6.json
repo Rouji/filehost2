@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO banned_ipv4_ranges (start_ip, end_ip, reason, expires_timestamp) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "1af9541fc9d4902091f380491cb2c740a28b63ae0313188af698e00d24b06ba6"
+}

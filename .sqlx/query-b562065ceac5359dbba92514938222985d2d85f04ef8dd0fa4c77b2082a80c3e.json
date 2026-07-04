@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT IGNORE INTO banned_user_agents (pattern, reason) VALUES (?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "b562065ceac5359dbba92514938222985d2d85f04ef8dd0fa4c77b2082a80c3e"
+}

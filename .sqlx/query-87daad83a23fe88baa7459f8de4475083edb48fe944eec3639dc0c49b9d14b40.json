@@ -1,0 +1,34 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT hash, reason FROM banned_file_hashes ORDER BY hash",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hash",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | PRIMARY_KEY | BINARY | NO_DEFAULT_VALUE",
+          "max_size": 32
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "reason",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "max_size": 1020
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "87daad83a23fe88baa7459f8de4475083edb48fe944eec3639dc0c49b9d14b40"
+}

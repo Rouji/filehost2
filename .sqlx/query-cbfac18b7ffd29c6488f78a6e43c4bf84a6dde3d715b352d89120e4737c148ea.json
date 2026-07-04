@@ -1,0 +1,24 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT COALESCE(SUM(file_size), 0) AS `bytes: i64` FROM uploads\n         WHERE uploader_ip = ?\n         AND upload_timestamp > NOW() - INTERVAL 1 DAY",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bytes: i64",
+        "type_info": {
+          "type": "NewDecimal",
+          "flags": "NOT_NULL | BINARY",
+          "max_size": 33
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cbfac18b7ffd29c6488f78a6e43c4bf84a6dde3d715b352d89120e4737c148ea"
+}

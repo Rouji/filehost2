@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT IGNORE INTO banned_file_hashes (hash, reason) VALUES (?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "fc61dd933197247e0ab1e9ed7d994a948bdfbd0fa2d03a851884eab98c38c17f"
+}

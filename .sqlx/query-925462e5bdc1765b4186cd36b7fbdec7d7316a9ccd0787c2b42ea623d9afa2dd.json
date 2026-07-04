@@ -1,0 +1,64 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT CAST(COALESCE(SUM(CASE WHEN deleted_timestamp IS NULL THEN 1 ELSE 0 END), 0) AS SIGNED) AS active_uploads, CAST(COALESCE(SUM(CASE WHEN deleted_timestamp IS NULL THEN file_size ELSE 0 END), 0) AS SIGNED) AS active_bytes, CAST(COALESCE(SUM(CASE WHEN deleted_timestamp IS NOT NULL THEN 1 ELSE 0 END), 0) AS SIGNED) AS deleted_uploads, CAST(COALESCE(SUM(CASE WHEN upload_timestamp > NOW() - INTERVAL 1 DAY THEN 1 ELSE 0 END), 0) AS SIGNED) AS uploads_last_24h, CAST(COALESCE(SUM(CASE WHEN upload_timestamp > NOW() - INTERVAL 1 DAY THEN file_size ELSE 0 END), 0) AS SIGNED) AS bytes_last_24h FROM uploads",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "active_uploads",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "max_size": 21
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "active_bytes",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "max_size": 21
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "deleted_uploads",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "max_size": 21
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "uploads_last_24h",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "max_size": 21
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "bytes_last_24h",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "max_size": 21
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "925462e5bdc1765b4186cd36b7fbdec7d7316a9ccd0787c2b42ea623d9afa2dd"
+}

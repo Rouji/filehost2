@@ -1,0 +1,24 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT extension FROM banned_file_extensions ORDER BY extension",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "extension",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | PRIMARY_KEY | NO_DEFAULT_VALUE",
+          "max_size": 1020
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cebfa1d781ced10ba4cc4a52c2ae3c69fe95968749f4ae43d70e67ae7faf9573"
+}

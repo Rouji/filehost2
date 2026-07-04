@@ -1,0 +1,34 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT pattern, reason FROM banned_user_agents ORDER BY pattern",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pattern",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | PRIMARY_KEY | NO_DEFAULT_VALUE",
+          "max_size": 1020
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "reason",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "max_size": 1020
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "cd8088e81fdf73a7da8c8abe46d888cc5fd8a92e6de100915453f3a35b8f06f6"
+}

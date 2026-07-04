@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM banned_user_agents WHERE pattern = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "47d08c325b39a09983cd78c83dc18cb5f50fa9aefb8a3dd2a197621791698653"
+}
