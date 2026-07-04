@@ -17,6 +17,8 @@ RUN case "$TARGETARCH" in \
     esac
 RUN rustup target add "$(cat /rust_target)"
 
+RUN mkdir /empty_dir
+
 WORKDIR /app
 
 COPY . .
@@ -32,6 +34,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-$TARGE
 FROM scratch
 
 COPY --from=builder /filehost2 /filehost2
+
+# from scratch image can't `chown` on its own
+COPY --from=builder --chown=65532:65532 /empty_dir /data
+COPY --from=builder --chown=65532:65532 /empty_dir /tmp
 
 VOLUME ["/data"]
 VOLUME ["/tmp"]
