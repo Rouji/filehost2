@@ -67,6 +67,16 @@ async fn main() -> std::io::Result<()> {
     let rendered_templates = templates::render(&settings);
     let throttle = web::Data::new(rate_limit::UploadThrottle::new());
 
+    // `%a` is the raw peer address, which is the reverse proxy's IP rather
+    // than the client's whenever trust_xff is set; `%{r}a` resolves the
+    // client IP from X-Forwarded-For/Forwarded instead, matching the
+    // XFF-aware IP resolution already used for the DB access log.
+    let log_format = if settings.trust_xff {
+        "%{r}a %t \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T"
+    } else {
+        "%a %t \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T"
+    };
+
     let s = settings.clone();
     HttpServer::new(move || {
         App::new()
@@ -92,7 +102,7 @@ async fn main() -> std::io::Result<()> {
                     .service(admin::add_banned_hash)
                     .service(admin::remove_banned_hash),
             )
-            .wrap(Logger::default())
+            .wrap(Logger::new(log_format))
             .app_data(web::Data::new(db.clone()))
             .app_data(web::Data::new(s.clone()))
             .app_data(web::Data::new(rendered_templates.clone()))

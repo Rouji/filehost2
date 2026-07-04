@@ -20,7 +20,7 @@ use crate::db;
 use crate::model::Upload;
 use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
-use crate::upload::{HashedTempFile, build_slug, calculate_expiry, uuid_to_path};
+use crate::upload::{HashedTempFile, build_slug, calculate_expiry, extract_ip, uuid_to_path};
 
 /// Characters that don't need percent-encoding in a URL path segment,
 /// on top of what `NON_ALPHANUMERIC` already leaves alone.
@@ -29,22 +29,6 @@ const PATH_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'.')
     .remove(b'_')
     .remove(b'~');
-
-fn extract_ip(req: &HttpRequest, trust_xff: bool) -> Option<u32> {
-    if trust_xff {
-        req.headers()
-            .get("X-Forwarded-For")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .and_then(|s| s.trim().parse::<std::net::Ipv4Addr>().ok())
-            .map(u32::from)
-    } else {
-        req.peer_addr().and_then(|addr| match addr.ip() {
-            std::net::IpAddr::V4(ip) => Some(u32::from(ip)),
-            std::net::IpAddr::V6(_) => None,
-        })
-    }
-}
 
 fn error_page(status: StatusCode, message: &str) -> HttpResponse {
     let body = format!("{status} {message}");

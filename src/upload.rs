@@ -22,6 +22,25 @@ pub(crate) fn uuid_to_path(root: &Path, uuid: &Uuid) -> PathBuf {
     root.join(folder).join(uuid.to_string())
 }
 
+/// Resolves the client's IPv4 address for a request, honoring `trust_xff`
+/// so every consumer (ban checks, quotas, throttling, access logs) agrees
+/// on the same notion of "client IP" behind a reverse proxy.
+pub(crate) fn extract_ip(req: &HttpRequest, trust_xff: bool) -> Option<u32> {
+    if trust_xff {
+        req.headers()
+            .get("X-Forwarded-For")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.trim().parse::<std::net::Ipv4Addr>().ok())
+            .map(u32::from)
+    } else {
+        req.peer_addr().and_then(|addr| match addr.ip() {
+            std::net::IpAddr::V4(ip) => Some(u32::from(ip)),
+            std::net::IpAddr::V6(_) => None,
+        })
+    }
+}
+
 /// A multipart field reader that writes the upload to a temp file and
 /// simultaneously feeds every chunk to a BLAKE3 hasher, so no second
 /// disk pass is needed after the upload completes.
@@ -49,14 +68,11 @@ impl<'t> FieldReader<'t> for HashedTempFile {
             let throttle = _req
                 .app_data::<actix_web::web::Data<UploadThrottle>>()
                 .cloned();
-            let (rate, burst) = _req
+            let (rate, burst, trust_xff) = _req
                 .app_data::<actix_web::web::Data<Settings>>()
-                .map(|s| (s.max_upload_bytes_per_sec, s.max_upload_burst_bytes))
-                .unwrap_or((None, None));
-            let ip: Option<u32> = _req.peer_addr().and_then(|a| match a.ip() {
-                std::net::IpAddr::V4(v4) => Some(u32::from(v4)),
-                _ => None,
-            });
+                .map(|s| (s.max_upload_bytes_per_sec, s.max_upload_burst_bytes, s.trust_xff))
+                .unwrap_or((None, None, false));
+            let ip: Option<u32> = extract_ip(_req, trust_xff);
 
             let to_field_err = |e: std::io::Error| MultipartError::Field {
                 name: field_name.clone(),
