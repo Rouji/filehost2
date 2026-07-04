@@ -17,7 +17,6 @@ use uuid::Uuid;
 
 use crate::clamd;
 use crate::db;
-use crate::model::Upload;
 use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
 use crate::upload::{HashedTempFile, build_slug, calculate_expiry, extract_ip, uuid_to_path};
@@ -373,15 +372,10 @@ pub(crate) async fn get_file(
 ) -> actix_web::Result<NamedFile> {
     let slug = &path.0;
 
-    let row = sqlx::query_as!(
-        Upload,
-        "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash as `hash: Vec<u8>`, uploader_ip, content_type, user_agent FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
-        slug
-    )
-    .fetch_optional(db.get_ref())
-    .await
-    .map_err(actix_web::error::ErrorInternalServerError)?
-    .ok_or_else(|| actix_web::error::ErrorNotFound("File not found"))?;
+    let row = db::get_upload_by_slug(db.get_ref(), slug)
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?
+        .ok_or_else(|| actix_web::error::ErrorNotFound("File not found"))?;
 
     let ipv4 = extract_ip(&req, settings.trust_xff);
     let user_agent = req

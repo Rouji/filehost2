@@ -24,30 +24,33 @@ pub(crate) async fn is_ip_banned(db: &MySqlPool, ip: u32) -> Result<bool, sqlx::
 }
 
 pub(crate) async fn is_extension_banned(db: &MySqlPool, ext: &str) -> Result<bool, sqlx::Error> {
-    Ok(
-        sqlx::query!("SELECT 1 AS found FROM banned_file_extensions WHERE extension = ?", ext)
-            .fetch_optional(db)
-            .await?
-            .is_some(),
+    Ok(sqlx::query!(
+        "SELECT 1 AS found FROM banned_file_extensions WHERE extension = ?",
+        ext
     )
+    .fetch_optional(db)
+    .await?
+    .is_some())
 }
 
 pub(crate) async fn is_mime_banned(db: &MySqlPool, mime: &str) -> Result<bool, sqlx::Error> {
-    Ok(
-        sqlx::query!("SELECT 1 AS found FROM banned_file_mimes WHERE mime = ?", mime)
-            .fetch_optional(db)
-            .await?
-            .is_some(),
+    Ok(sqlx::query!(
+        "SELECT 1 AS found FROM banned_file_mimes WHERE mime = ?",
+        mime
     )
+    .fetch_optional(db)
+    .await?
+    .is_some())
 }
 
 pub(crate) async fn is_hash_banned(db: &MySqlPool, hash: &[u8]) -> Result<bool, sqlx::Error> {
-    Ok(
-        sqlx::query!("SELECT 1 AS found FROM banned_file_hashes WHERE hash = ?", hash)
-            .fetch_optional(db)
-            .await?
-            .is_some(),
+    Ok(sqlx::query!(
+        "SELECT 1 AS found FROM banned_file_hashes WHERE hash = ?",
+        hash
     )
+    .fetch_optional(db)
+    .await?
+    .is_some())
 }
 
 pub(crate) async fn is_user_agent_banned(
@@ -326,6 +329,21 @@ pub(crate) async fn list_uploads(
     q.bind(limit).bind(offset).fetch_all(db).await
 }
 
+pub(crate) async fn get_upload_by_slug(
+    db: &MySqlPool,
+    slug: &str,
+) -> Result<Option<Upload>, sqlx::Error> {
+    sqlx::query_as!(
+        Upload,
+        "SELECT id AS `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, \
+         slug, file_size, hash AS `hash: Vec<u8>`, uploader_ip, content_type, user_agent \
+         FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+        slug
+    )
+    .fetch_optional(db)
+    .await
+}
+
 pub(crate) async fn list_banned_ips(db: &MySqlPool) -> Result<Vec<BannedIpv4Range>, sqlx::Error> {
     sqlx::query_as!(
         BannedIpv4Range,
@@ -386,9 +404,12 @@ pub(crate) async fn delete_banned_extension(
     db: &MySqlPool,
     ext: &str,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query!("DELETE FROM banned_file_extensions WHERE extension = ?", ext)
-        .execute(db)
-        .await?;
+    let result = sqlx::query!(
+        "DELETE FROM banned_file_extensions WHERE extension = ?",
+        ext
+    )
+    .execute(db)
+    .await?;
     Ok(result.rows_affected() > 0)
 }
 
