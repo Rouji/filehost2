@@ -210,7 +210,9 @@ pub(crate) async fn index(
                 settings.name.clone() + ".sxcu",
             ))
             .body(rendered_templates.sharex.clone()),
-        None => HttpResponse::Ok().body(rendered_templates.index.clone()),
+        None => HttpResponse::Ok()
+            .content_type(ContentType::html())
+            .body(rendered_templates.index.clone()),
     }
 }
 
