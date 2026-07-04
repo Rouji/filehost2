@@ -126,13 +126,11 @@ pub(crate) struct NewUpload<'a> {
 }
 
 pub(crate) async fn insert_upload(db: &MySqlPool, upload: &NewUpload<'_>) -> anyhow::Result<bool> {
-    let exists = sqlx::query(
-        "SELECT 1 FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
-    )
-    .bind(upload.slug)
-    .fetch_optional(db)
-    .await?
-    .is_some();
+    let exists = sqlx::query("SELECT 1 FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL")
+        .bind(upload.slug)
+        .fetch_optional(db)
+        .await?
+        .is_some();
 
     if exists {
         return Ok(false);
@@ -348,7 +346,10 @@ pub(crate) async fn insert_banned_extension(db: &MySqlPool, ext: &str) -> Result
     Ok(())
 }
 
-pub(crate) async fn delete_banned_extension(db: &MySqlPool, ext: &str) -> Result<bool, sqlx::Error> {
+pub(crate) async fn delete_banned_extension(
+    db: &MySqlPool,
+    ext: &str,
+) -> Result<bool, sqlx::Error> {
     let result = sqlx::query("DELETE FROM banned_file_extensions WHERE extension = ?")
         .bind(ext)
         .execute(db)

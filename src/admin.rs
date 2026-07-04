@@ -1,11 +1,8 @@
 use std::net::Ipv4Addr;
 
 use actix_web::{
-    HttpRequest, HttpResponse, Responder,
-    dev::Payload,
-    delete,
-    http::StatusCode,
-    get, post, web, FromRequest,
+    FromRequest, HttpRequest, HttpResponse, Responder, delete, dev::Payload, get, http::StatusCode,
+    post, web,
 };
 use futures_util::future::{Ready, ready};
 use serde::{Deserialize, Serialize};
@@ -262,9 +259,11 @@ pub(crate) struct BannedIpRangeCreate {
 #[get("/bans/ips")]
 pub(crate) async fn list_banned_ips(_auth: AdminAuth, db: web::Data<MySqlPool>) -> impl Responder {
     match db::list_banned_ips(db.get_ref()).await {
-        Ok(rows) => {
-            HttpResponse::Ok().json(rows.into_iter().map(BannedIpRangeDto::from).collect::<Vec<_>>())
-        }
+        Ok(rows) => HttpResponse::Ok().json(
+            rows.into_iter()
+                .map(BannedIpRangeDto::from)
+                .collect::<Vec<_>>(),
+        ),
         Err(e) => internal_err(e, "list_banned_ips"),
     }
 }
@@ -385,7 +384,10 @@ pub(crate) struct MimeCreate {
 }
 
 #[get("/bans/mimes")]
-pub(crate) async fn list_banned_mimes(_auth: AdminAuth, db: web::Data<MySqlPool>) -> impl Responder {
+pub(crate) async fn list_banned_mimes(
+    _auth: AdminAuth,
+    db: web::Data<MySqlPool>,
+) -> impl Responder {
     match db::list_banned_mimes(db.get_ref()).await {
         Ok(rows) => HttpResponse::Ok().json(
             rows.into_iter()
@@ -453,11 +455,16 @@ pub(crate) struct HashCreate {
 }
 
 #[get("/bans/hashes")]
-pub(crate) async fn list_banned_hashes(_auth: AdminAuth, db: web::Data<MySqlPool>) -> impl Responder {
+pub(crate) async fn list_banned_hashes(
+    _auth: AdminAuth,
+    db: web::Data<MySqlPool>,
+) -> impl Responder {
     match db::list_banned_hashes(db.get_ref()).await {
-        Ok(rows) => {
-            HttpResponse::Ok().json(rows.into_iter().map(BannedHashDto::from).collect::<Vec<_>>())
-        }
+        Ok(rows) => HttpResponse::Ok().json(
+            rows.into_iter()
+                .map(BannedHashDto::from)
+                .collect::<Vec<_>>(),
+        ),
         Err(e) => internal_err(e, "list_banned_hashes"),
     }
 }
@@ -469,10 +476,16 @@ pub(crate) async fn add_banned_hash(
     body: web::Json<HashCreate>,
 ) -> impl Responder {
     let Some(hash) = hex_decode(&body.hash) else {
-        return json_error(StatusCode::BAD_REQUEST, "Invalid hash (expected lowercase hex)");
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "Invalid hash (expected lowercase hex)",
+        );
     };
     if hash.len() != 32 {
-        return json_error(StatusCode::BAD_REQUEST, "Invalid hash length (expected 32-byte BLAKE3)");
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "Invalid hash length (expected 32-byte BLAKE3)",
+        );
     }
     match db::insert_banned_hash(db.get_ref(), &hash, body.reason.as_deref()).await {
         Ok(()) => {
@@ -491,7 +504,10 @@ pub(crate) async fn remove_banned_hash(
 ) -> impl Responder {
     let hex = path.into_inner().0;
     let Some(hash) = hex_decode(&hex) else {
-        return json_error(StatusCode::BAD_REQUEST, "Invalid hash (expected lowercase hex)");
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "Invalid hash (expected lowercase hex)",
+        );
     };
     match db::delete_banned_hash(db.get_ref(), &hash).await {
         Ok(true) => {

@@ -4,7 +4,10 @@ use actix_files::NamedFile;
 use actix_multipart::form::{MultipartForm, text::Text};
 use actix_web::{
     HttpRequest, HttpResponse, Responder, get,
-    http::{StatusCode, header::{ContentDisposition, ContentType, DispositionParam, DispositionType}},
+    http::{
+        StatusCode,
+        header::{ContentDisposition, ContentType, DispositionParam, DispositionType},
+    },
     post, web,
 };
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
@@ -17,7 +20,7 @@ use crate::db;
 use crate::model::Upload;
 use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
-use crate::upload::{build_slug, calculate_expiry, uuid_to_path, HashedTempFile};
+use crate::upload::{HashedTempFile, build_slug, calculate_expiry, uuid_to_path};
 
 /// Characters that don't need percent-encoding in a URL path segment,
 /// on top of what `NON_ALPHANUMERIC` already leaves alone.
@@ -109,7 +112,10 @@ async fn process_file(
 
     let internal_err = || error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
 
-    if let Some(ext) = Path::new(&original_name).extension().and_then(|e| e.to_str()) {
+    if let Some(ext) = Path::new(&original_name)
+        .extension()
+        .and_then(|e| e.to_str())
+    {
         check_not_banned(
             db::is_extension_banned(db, ext),
             "banned extension",
@@ -188,7 +194,11 @@ async fn process_file(
     }
 
     let encoded_slug = utf8_percent_encode(&slug, PATH_SEGMENT);
-    Ok(format!("{}{}\n", settings.base_url.as_ref().unwrap(), encoded_slug))
+    Ok(format!(
+        "{}{}\n",
+        settings.base_url.as_ref().unwrap(),
+        encoded_slug
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -267,7 +277,7 @@ pub(crate) async fn upload(
         if let Some(limit) = settings.max_uploads_per_day {
             match db::uploads_count_last_day(db.get_ref(), ip).await {
                 Ok(n) if n >= limit as i64 => {
-                    return error_page(StatusCode::TOO_MANY_REQUESTS, "Upload limit reached.")
+                    return error_page(StatusCode::TOO_MANY_REQUESTS, "Upload limit reached.");
                 }
                 Err(e) => {
                     log::error!("upload count rate limit check failed: {e}");
@@ -279,7 +289,7 @@ pub(crate) async fn upload(
         if let Some(limit) = settings.max_bytes_per_day {
             match db::uploads_bytes_last_day(db.get_ref(), ip).await {
                 Ok(b) if b >= limit as i64 => {
-                    return error_page(StatusCode::TOO_MANY_REQUESTS, "Daily byte quota reached.")
+                    return error_page(StatusCode::TOO_MANY_REQUESTS, "Daily byte quota reached.");
                 }
                 Err(e) => {
                     log::error!("byte quota rate limit check failed: {e}");
@@ -292,7 +302,16 @@ pub(crate) async fn upload(
 
     let mut response = String::new();
     for file in form.files {
-        match process_file(db.get_ref(), &settings, file, uploader_ip, id_len, keep_name).await {
+        match process_file(
+            db.get_ref(),
+            &settings,
+            file,
+            uploader_ip,
+            id_len,
+            keep_name,
+        )
+        .await
+        {
             Ok(link) => response.push_str(&link),
             Err(resp) => return resp,
         }

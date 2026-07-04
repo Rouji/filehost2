@@ -312,16 +312,16 @@ mod tests {
     }
 
     async fn upload_and_get_slug(
-        app: &impl actix_web::dev::Service<
-            Request,
-            Response = ServiceResponse,
-            Error = Error,
-        >,
+        app: &impl actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error>,
         filename: &str,
     ) -> String {
         let req = multipart_request(&multipart_body(filename, "content"));
         let resp = test::call_service(app, req).await;
-        assert!(resp.status().is_success(), "upload failed: {}", resp.status());
+        assert!(
+            resp.status().is_success(),
+            "upload failed: {}",
+            resp.status()
+        );
         let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
         url.trim()
             .trim_start_matches("http://localhost:8080/")
@@ -468,12 +468,11 @@ mod tests {
         assert_eq!(row.0, "original name.txt");
         assert_eq!(row.1, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
 
-        let row: (String, i64) = sqlx::query_as(
-            "SELECT original_name, file_size FROM uploads WHERE slug = 'gone.txt'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let row: (String, i64) =
+            sqlx::query_as("SELECT original_name, file_size FROM uploads WHERE slug = 'gone.txt'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(row.0, "old upload.bin");
         assert_eq!(row.1, 0, "unknown historical size should fall back to 0");
 
@@ -547,11 +546,8 @@ mod tests {
 
         // No file backs it, so it must never be served.
         let app = full_app(settings, pool).await;
-        let resp = test::call_service(
-            &app,
-            test::TestRequest::get().uri("/gone.txt").to_request(),
-        )
-        .await;
+        let resp =
+            test::call_service(&app, test::TestRequest::get().uri("/gone.txt").to_request()).await;
         assert_eq!(resp.status(), 404);
 
         std::fs::remove_dir_all(&src).ok();
@@ -572,9 +568,14 @@ mod tests {
         )
         .unwrap();
 
-        crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.clone().into()))
-            .await
-            .unwrap();
+        crate::import::import_php(
+            &pool,
+            &settings,
+            src.clone().into(),
+            Some(log_path.clone().into()),
+        )
+        .await
+        .unwrap();
         crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
             .await
             .unwrap();
@@ -583,7 +584,10 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count, 1, "second import should not duplicate the historical row");
+        assert_eq!(
+            count, 1,
+            "second import should not duplicate the historical row"
+        );
 
         std::fs::remove_dir_all(&src).ok();
     }
@@ -892,11 +896,7 @@ mod tests {
 
         let resp = test::call_service(
             &app,
-            admin_req(
-                test::TestRequest::delete(),
-                "/admin/bans/extensions/exe",
-            )
-            .to_request(),
+            admin_req(test::TestRequest::delete(), "/admin/bans/extensions/exe").to_request(),
         )
         .await;
         assert_eq!(resp.status(), 204);

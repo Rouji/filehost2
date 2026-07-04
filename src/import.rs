@@ -50,7 +50,10 @@ fn parse_log(log_path: &Path) -> Result<HashMap<String, LogEntry>> {
 
         let parts: Vec<&str> = line.splitn(5, '\t').collect();
         if parts.len() < 5 {
-            log::warn!("Log line {line_no}: expected 5 tab-separated fields, got {}", parts.len());
+            log::warn!(
+                "Log line {line_no}: expected 5 tab-separated fields, got {}",
+                parts.len()
+            );
             continue;
         }
 
@@ -67,7 +70,15 @@ fn parse_log(log_path: &Path) -> Result<HashMap<String, LogEntry>> {
         let slug = parts[4].to_string();
 
         // Overwrite any earlier entry — slugs are reused over time, last occurrence wins.
-        map.insert(slug, LogEntry { upload_timestamp, uploader_ip, original_name, file_size });
+        map.insert(
+            slug,
+            LogEntry {
+                upload_timestamp,
+                uploader_ip,
+                original_name,
+                file_size,
+            },
+        );
     }
 
     Ok(map)
@@ -90,7 +101,11 @@ fn mtime_to_primitive(path: &Path) -> Result<PrimitiveDateTime> {
     Ok(PrimitiveDateTime::new(odt.date(), odt.time()))
 }
 
-fn compute_expiry(upload_timestamp: PrimitiveDateTime, file_size: u64, settings: &Settings) -> PrimitiveDateTime {
+fn compute_expiry(
+    upload_timestamp: PrimitiveDateTime,
+    file_size: u64,
+    settings: &Settings,
+) -> PrimitiveDateTime {
     let max_bytes = (settings.max_filesize * 1024 * 1024) as f64;
     let ratio = (file_size as f64 / max_bytes).min(1.0);
     let life_days = settings.min_fileage as f64
@@ -135,15 +150,27 @@ pub(crate) async fn import_php(
 
         let file_size = match std::fs::metadata(&path) {
             Ok(m) => m.len(),
-            Err(e) => { log::error!("Cannot stat {slug}: {e}"); errors += 1; continue; }
+            Err(e) => {
+                log::error!("Cannot stat {slug}: {e}");
+                errors += 1;
+                continue;
+            }
         };
 
         let (upload_timestamp, uploader_ip, original_name) = if let Some(entry) = log.get(&slug) {
-            (entry.upload_timestamp, entry.uploader_ip, entry.original_name.clone())
+            (
+                entry.upload_timestamp,
+                entry.uploader_ip,
+                entry.original_name.clone(),
+            )
         } else {
             let ts = match mtime_to_primitive(&path) {
                 Ok(t) => t,
-                Err(e) => { log::error!("Cannot read mtime for {slug}: {e}"); errors += 1; continue; }
+                Err(e) => {
+                    log::error!("Cannot read mtime for {slug}: {e}");
+                    errors += 1;
+                    continue;
+                }
             };
             (ts, None, slug.clone())
         };

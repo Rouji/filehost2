@@ -1,11 +1,11 @@
 mod admin;
 mod clamd;
 mod cli;
-mod rate_limit;
 mod db;
 mod handlers;
 mod import;
 mod model;
+mod rate_limit;
 mod settings;
 mod templates;
 mod upload;
@@ -46,7 +46,9 @@ async fn main() -> std::io::Result<()> {
             cli::Command::Migrate => cli::migrate(&db).await,
             cli::Command::DeleteExpired => cli::delete_expired(&db, &settings).await,
             cli::Command::Delete { target } => cli::delete(&db, &settings, target).await,
-            cli::Command::ImportPhp { files, log } => cli::import_php(&db, &settings, files, log).await,
+            cli::Command::ImportPhp { files, log } => {
+                cli::import_php(&db, &settings, files, log).await
+            }
         };
         if let Err(e) = result {
             eprintln!("Error: {e}");
