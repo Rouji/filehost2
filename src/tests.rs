@@ -245,6 +245,44 @@ mod tests {
         );
     }
 
+    #[sqlx::test]
+    async fn formatted_upload_returns_html_link(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool).await;
+
+        let content = format!(
+            "--{BOUNDARY}\r\n\
+             Content-Disposition: form-data; name=\"formatted\"\r\n\
+             \r\n\
+             true\r\n\
+             {}",
+            multipart_body("test.txt", "hello")
+        );
+        let req = multipart_request(&content);
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "upload failed: {}",
+            resp.status()
+        );
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            ct.contains("text/html"),
+            "expected html content-type, got: {ct}"
+        );
+
+        let body = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+        assert!(
+            body.contains("<a href=\"http://localhost:8080/"),
+            "expected formatted link in body, got: {body}"
+        );
+    }
+
     async fn ban_ip(pool: &MySqlPool, ip: std::net::Ipv4Addr) {
         let ip_int = u32::from(ip);
         sqlx::query(

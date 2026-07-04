@@ -176,12 +176,9 @@ async fn process_file(
         });
     }
 
-    let encoded_slug = utf8_percent_encode(&slug, PATH_SEGMENT);
-    Ok(format!(
-        "{}{}\n",
-        settings.base_url.as_ref().unwrap(),
-        encoded_slug
-    ))
+    let encoded_slug = utf8_percent_encode(&slug, PATH_SEGMENT).to_string();
+    let base_url = settings.base_url.as_ref().unwrap();
+    Ok(format!("{base_url}{encoded_slug}"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,6 +224,15 @@ pub(crate) struct UploadForm {
     files: Vec<HashedTempFile>,
     id_length: Option<Text<usize>>,
     keep_name: Option<Text<String>>,
+    formatted: Option<Text<String>>,
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#039;")
 }
 
 #[post("/")]
@@ -283,7 +289,9 @@ pub(crate) async fn upload(
         }
     }
 
-    let mut response = String::new();
+    let formatted = form.formatted.is_some();
+
+    let mut links = Vec::new();
     for file in form.files {
         match process_file(
             db.get_ref(),
@@ -295,12 +303,30 @@ pub(crate) async fn upload(
         )
         .await
         {
-            Ok(link) => response.push_str(&link),
+            Ok(link) => links.push(link),
             Err(resp) => return resp,
         }
     }
 
-    HttpResponse::Ok().body(response)
+    if formatted {
+        let body: String = links
+            .iter()
+            .map(|url| {
+                format!(
+                    "<pre>Access your file here: <a href=\"{url}\">{}</a></pre>\n",
+                    escape_html(url)
+                )
+            })
+            .collect();
+        HttpResponse::Ok()
+            .content_type(ContentType::html())
+            .body(body)
+    } else {
+        let body: String = links.iter().map(|url| format!("{url}\n")).collect();
+        HttpResponse::Ok()
+            .content_type(ContentType::plaintext())
+            .body(body)
+    }
 }
 
 #[get("/{slug}")]
