@@ -57,6 +57,28 @@ async fn check_not_banned(
     }
 }
 
+async fn check_under_limit(
+    limit: Option<i64>,
+    check: impl std::future::Future<Output = Result<i64, sqlx::Error>>,
+    check_name: &str,
+    too_many_message: &str,
+) -> Result<(), HttpResponse> {
+    let Some(limit) = limit else {
+        return Ok(());
+    };
+    match check.await {
+        Ok(n) if n >= limit => Err(error_page(StatusCode::TOO_MANY_REQUESTS, too_many_message)),
+        Ok(_) => Ok(()),
+        Err(e) => {
+            log::error!("{check_name} check failed: {e}");
+            Err(error_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong.",
+            ))
+        }
+    }
+}
+
 fn determine_content_type(file: &HashedTempFile, original_name: &str) -> (String, Option<String>) {
     if let Some(ref ct) = file.content_type {
         return (ct.to_string(), Some(ct.subtype().to_string()));
@@ -279,29 +301,25 @@ pub(crate) async fn upload(
     }
 
     if let Some(ip) = uploader_ip {
-        if let Some(limit) = settings.max_uploads_per_day {
-            match db::uploads_count_last_day(db.get_ref(), ip).await {
-                Ok(n) if n >= limit as i64 => {
-                    return error_page(StatusCode::TOO_MANY_REQUESTS, "Upload limit reached.");
-                }
-                Err(e) => {
-                    log::error!("upload count rate limit check failed: {e}");
-                    return error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
-                }
-                Ok(_) => {}
-            }
+        if let Err(resp) = check_under_limit(
+            settings.max_uploads_per_day.map(|n| n as i64),
+            db::uploads_count_last_day(db.get_ref(), ip),
+            "upload count rate limit",
+            "Upload limit reached.",
+        )
+        .await
+        {
+            return resp;
         }
-        if let Some(limit) = settings.max_bytes_per_day {
-            match db::uploads_bytes_last_day(db.get_ref(), ip).await {
-                Ok(b) if b >= limit as i64 => {
-                    return error_page(StatusCode::TOO_MANY_REQUESTS, "Daily byte quota reached.");
-                }
-                Err(e) => {
-                    log::error!("byte quota rate limit check failed: {e}");
-                    return error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
-                }
-                Ok(_) => {}
-            }
+        if let Err(resp) = check_under_limit(
+            settings.max_bytes_per_day.map(|n| n as i64),
+            db::uploads_bytes_last_day(db.get_ref(), ip),
+            "byte quota rate limit",
+            "Daily byte quota reached.",
+        )
+        .await
+        {
+            return resp;
         }
     }
 
