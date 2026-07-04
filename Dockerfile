@@ -11,9 +11,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && cargo install cargo-zigbuild
 
 RUN case "$TARGETARCH" in \
-      amd64) echo x86_64-unknown-linux-musl > /rust_target ;; \
-      arm64) echo aarch64-unknown-linux-musl > /rust_target ;; \
-      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    amd64) echo x86_64-unknown-linux-musl > /rust_target ;; \
+    arm64) echo aarch64-unknown-linux-musl > /rust_target ;; \
+    *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac
 RUN rustup target add "$(cat /rust_target)"
 
@@ -34,6 +34,9 @@ FROM scratch
 COPY --from=builder /filehost2 /filehost2
 
 VOLUME ["/data"]
+VOLUME ["/tmp"]
 EXPOSE 8080
+
+USER 65532:65532
 
 ENTRYPOINT ["/filehost2"]
