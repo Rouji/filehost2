@@ -23,9 +23,9 @@ COPY . .
 
 ENV SQLX_OFFLINE=true
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-$TARGETARCH \
+    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git-$TARGETARCH \
+    --mount=type=cache,target=/app/target,id=cargo-target-$TARGETARCH \
     cargo zigbuild --release --target "$(cat /rust_target)" && \
     cp "target/$(cat /rust_target)/release/filehost2" /filehost2
 
