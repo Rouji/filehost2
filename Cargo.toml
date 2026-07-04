@@ -16,7 +16,7 @@ actix-files = "0.6.10"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 actix-multipart = "0.7.2"
-actix-web = "4.0"
+actix-web = { version = "4.0", features = ["http2"] }
 env-settings-derive = "0.1.15"
 env-settings-utils = "0.1.15"
 env_logger = "0.11.8"

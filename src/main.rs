@@ -113,7 +113,7 @@ async fn main() -> std::io::Result<()> {
                     .error_handler(handle_multipart_error),
             )
     })
-    .bind((settings.listen_addr, settings.listen_port))?
+    .bind_auto_h2c((settings.listen_addr, settings.listen_port))?
     .run()
     .await
 }
