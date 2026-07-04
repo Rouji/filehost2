@@ -6,6 +6,7 @@ mod tests {
     use actix_http::Request;
     use actix_multipart::form::MultipartFormConfig;
     use actix_web::{App, Error, dev::ServiceResponse, test, web};
+    use serde::de::DeserializeOwned;
     use serde::{Deserialize, Serialize};
     use sqlx::MySqlPool;
 
@@ -149,15 +150,22 @@ mod tests {
         )
     }
 
-    fn multipart_request(content: &str) -> actix_http::Request {
-        test::TestRequest::post()
-            .uri("/")
-            .insert_header((
-                "content-type",
-                format!("multipart/form-data; boundary={BOUNDARY}"),
-            ))
-            .set_payload(format!("{content}--{BOUNDARY}--\r\n"))
+    /// Builds a POST / multipart request, optionally with extra headers (e.g. User-Agent,
+    /// X-Forwarded-For) — shared by every test that needs to twiddle upload request headers.
+    fn upload_req(content: &str, headers: &[(&str, &str)]) -> actix_http::Request {
+        let mut req = test::TestRequest::post().uri("/").insert_header((
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        ));
+        for (k, v) in headers {
+            req = req.insert_header((*k, *v));
+        }
+        req.set_payload(format!("{content}--{BOUNDARY}--\r\n"))
             .to_request()
+    }
+
+    fn multipart_request(content: &str) -> actix_http::Request {
+        upload_req(content, &[])
     }
 
     #[sqlx::test]
@@ -307,19 +315,10 @@ mod tests {
         settings.trust_xff = true;
         let app = full_app(settings, pool).await;
 
-        let req = test::TestRequest::post()
-            .uri("/")
-            .insert_header((
-                "content-type",
-                format!("multipart/form-data; boundary={BOUNDARY}"),
-            ))
-            .insert_header(("X-Forwarded-For", "1.2.3.4"))
-            .set_payload(format!(
-                "{}--{BOUNDARY}--\r\n",
-                multipart_body("test.txt", "hello")
-            ))
-            .to_request();
-
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "1.2.3.4")],
+        );
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 403);
     }
@@ -331,19 +330,10 @@ mod tests {
 
         let app = full_app(test_settings(), pool).await;
 
-        let req = test::TestRequest::post()
-            .uri("/")
-            .insert_header((
-                "content-type",
-                format!("multipart/form-data; boundary={BOUNDARY}"),
-            ))
-            .insert_header(("X-Forwarded-For", "1.2.3.4"))
-            .set_payload(format!(
-                "{}--{BOUNDARY}--\r\n",
-                multipart_body("test.txt", "hello")
-            ))
-            .to_request();
-
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "1.2.3.4")],
+        );
         let resp = test::call_service(&app, req).await;
         assert!(
             resp.status().is_success(),
@@ -365,19 +355,10 @@ mod tests {
         ban_user_agent(&pool, "curl").await;
         let app = full_app(test_settings(), pool).await;
 
-        let req = test::TestRequest::post()
-            .uri("/")
-            .insert_header((
-                "content-type",
-                format!("multipart/form-data; boundary={BOUNDARY}"),
-            ))
-            .insert_header(("User-Agent", "curl/8.0.1"))
-            .set_payload(format!(
-                "{}--{BOUNDARY}--\r\n",
-                multipart_body("test.txt", "hello")
-            ))
-            .to_request();
-
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("User-Agent", "curl/8.0.1")],
+        );
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 403);
     }
@@ -387,19 +368,10 @@ mod tests {
         ban_user_agent(&pool, "curl").await;
         let app = full_app(test_settings(), pool).await;
 
-        let req = test::TestRequest::post()
-            .uri("/")
-            .insert_header((
-                "content-type",
-                format!("multipart/form-data; boundary={BOUNDARY}"),
-            ))
-            .insert_header(("User-Agent", "Mozilla/5.0"))
-            .set_payload(format!(
-                "{}--{BOUNDARY}--\r\n",
-                multipart_body("test.txt", "hello")
-            ))
-            .to_request();
-
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("User-Agent", "Mozilla/5.0")],
+        );
         let resp = test::call_service(&app, req).await;
         assert!(
             resp.status().is_success(),
@@ -408,10 +380,10 @@ mod tests {
         );
     }
 
-    async fn upload_and_get_slug(
-        app: &impl actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error>,
-        filename: &str,
-    ) -> String {
+    async fn upload_and_get_slug<S>(app: &S, filename: &str) -> String
+    where
+        S: actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error>,
+    {
         let req = multipart_request(&multipart_body(filename, "content"));
         let resp = test::call_service(app, req).await;
         assert!(
@@ -470,47 +442,49 @@ mod tests {
         assert_eq!(ipv4, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
     }
 
-    fn php_source_dir() -> String {
-        format!("/tmp/filehost_php_test_{}/", uuid::Uuid::new_v4())
-    }
-
     fn php_log_path() -> String {
         format!("/tmp/filehost_php_test_log_{}.log", uuid::Uuid::new_v4())
     }
 
-    #[sqlx::test]
-    async fn import_php_imports_file(pool: MySqlPool) {
+    /// Creates a fresh store dir plus a "source" dir seeded with `files`, ready to hand to
+    /// `import::import_php`. Shared setup for every php-import test below.
+    fn setup_import(files: &[(&str, &[u8])]) -> (Settings, String) {
         let settings = test_settings();
         std::fs::create_dir_all(&settings.store_path).unwrap();
-
-        let src = php_source_dir();
+        let src = format!("/tmp/filehost_php_test_{}/", uuid::Uuid::new_v4());
         std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(format!("{src}abc123.txt"), b"hello").unwrap();
+        for (name, content) in files {
+            std::fs::write(format!("{src}{name}"), content).unwrap();
+        }
+        (settings, src)
+    }
+
+    async fn upload_name_and_ip(pool: &MySqlPool, slug: &str) -> (String, Option<u32>) {
+        sqlx::query_as("SELECT original_name, uploader_ip FROM uploads WHERE slug = ?")
+            .bind(slug)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test]
+    async fn import_php_imports_file(pool: MySqlPool) {
+        let (settings, src) = setup_import(&[("abc123.txt", b"hello")]);
 
         crate::import::import_php(&pool, &settings, src.clone().into(), None)
             .await
             .unwrap();
 
-        let row: (String, Option<u32>) = sqlx::query_as(
-            "SELECT original_name, uploader_ip FROM uploads WHERE slug = 'abc123.txt'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(row.0, "abc123.txt"); // falls back to slug
-        assert_eq!(row.1, None);
+        let (name, ip) = upload_name_and_ip(&pool, "abc123.txt").await;
+        assert_eq!(name, "abc123.txt"); // falls back to slug
+        assert_eq!(ip, None);
 
         std::fs::remove_dir_all(&src).ok();
     }
 
     #[sqlx::test]
     async fn import_php_uses_log(pool: MySqlPool) {
-        let settings = test_settings();
-        std::fs::create_dir_all(&settings.store_path).unwrap();
-
-        let src = php_source_dir();
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(format!("{src}abc123.txt"), b"hello").unwrap();
+        let (settings, src) = setup_import(&[("abc123.txt", b"hello")]);
 
         // Log file lives outside the files dir so it isn't imported as a file.
         let log_path = php_log_path();
@@ -524,14 +498,9 @@ mod tests {
             .await
             .unwrap();
 
-        let row: (String, Option<u32>) = sqlx::query_as(
-            "SELECT original_name, uploader_ip FROM uploads WHERE slug = 'abc123.txt'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(row.0, "original name.txt");
-        assert_eq!(row.1, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
+        let (name, ip) = upload_name_and_ip(&pool, "abc123.txt").await;
+        assert_eq!(name, "original name.txt");
+        assert_eq!(ip, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
 
         std::fs::remove_dir_all(&src).ok();
     }
@@ -541,12 +510,7 @@ mod tests {
         // single_php_filehost's log always has an empty size field in practice (it calls
         // filesize() on the temp file *after* already moving it away). Import must still
         // pick up the name/IP from the log rather than dropping the line entirely.
-        let settings = test_settings();
-        std::fs::create_dir_all(&settings.store_path).unwrap();
-
-        let src = php_source_dir();
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(format!("{src}present.txt"), b"hello").unwrap();
+        let (settings, src) = setup_import(&[("present.txt", b"hello")]);
 
         let log_path = php_log_path();
         std::fs::write(
@@ -560,14 +524,9 @@ mod tests {
             .await
             .unwrap();
 
-        let row: (String, Option<u32>) = sqlx::query_as(
-            "SELECT original_name, uploader_ip FROM uploads WHERE slug = 'present.txt'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(row.0, "original name.txt");
-        assert_eq!(row.1, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
+        let (name, ip) = upload_name_and_ip(&pool, "present.txt").await;
+        assert_eq!(name, "original name.txt");
+        assert_eq!(ip, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
 
         let row: (String, i64) =
             sqlx::query_as("SELECT original_name, file_size FROM uploads WHERE slug = 'gone.txt'")
@@ -582,12 +541,7 @@ mod tests {
 
     #[sqlx::test]
     async fn import_php_log_uses_last_occurrence(pool: MySqlPool) {
-        let settings = test_settings();
-        std::fs::create_dir_all(&settings.store_path).unwrap();
-
-        let src = php_source_dir();
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(format!("{src}abc123.txt"), b"hello").unwrap();
+        let (settings, src) = setup_import(&[("abc123.txt", b"hello")]);
 
         let log_path = php_log_path();
         std::fs::write(
@@ -601,26 +555,17 @@ mod tests {
             .await
             .unwrap();
 
-        let original_name: String =
-            sqlx::query_scalar("SELECT original_name FROM uploads WHERE slug = 'abc123.txt'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(original_name, "new.txt");
+        let (name, _) = upload_name_and_ip(&pool, "abc123.txt").await;
+        assert_eq!(name, "new.txt");
 
         std::fs::remove_dir_all(&src).ok();
     }
 
     #[sqlx::test]
     async fn import_php_imports_historical_entry_without_file(pool: MySqlPool) {
-        let settings = test_settings();
-        std::fs::create_dir_all(&settings.store_path).unwrap();
-
         // The files dir only has "present.txt" — "gone.txt" is referenced by the log
         // but its file no longer exists anywhere.
-        let src = php_source_dir();
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(format!("{src}present.txt"), b"hello").unwrap();
+        let (settings, src) = setup_import(&[("present.txt", b"hello")]);
 
         let log_path = php_log_path();
         std::fs::write(
@@ -656,11 +601,7 @@ mod tests {
 
     #[sqlx::test]
     async fn import_php_historical_entry_is_idempotent(pool: MySqlPool) {
-        let settings = test_settings();
-        std::fs::create_dir_all(&settings.store_path).unwrap();
-
-        let src = php_source_dir();
-        std::fs::create_dir_all(&src).unwrap();
+        let (settings, src) = setup_import(&[]);
 
         let log_path = php_log_path();
         std::fs::write(
@@ -695,12 +636,7 @@ mod tests {
 
     #[sqlx::test]
     async fn import_php_is_idempotent(pool: MySqlPool) {
-        let settings = test_settings();
-        std::fs::create_dir_all(&settings.store_path).unwrap();
-
-        let src = php_source_dir();
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(format!("{src}abc123.txt"), b"hello").unwrap();
+        let (settings, src) = setup_import(&[("abc123.txt", b"hello")]);
 
         crate::import::import_php(&pool, &settings, src.clone().into(), None)
             .await
@@ -756,6 +692,41 @@ mod tests {
             .insert_header(("Authorization", "Bearer secret"))
     }
 
+    async fn admin_get<S>(app: &S, path: &str) -> ServiceResponse
+    where
+        S: actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error>,
+    {
+        test::call_service(app, admin_req(test::TestRequest::get(), path).to_request()).await
+    }
+
+    async fn admin_post<S>(app: &S, path: &str, body: &impl Serialize) -> ServiceResponse
+    where
+        S: actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error>,
+    {
+        test::call_service(
+            app,
+            admin_req(test::TestRequest::post(), path)
+                .set_json(body)
+                .to_request(),
+        )
+        .await
+    }
+
+    async fn admin_delete<S>(app: &S, path: &str) -> ServiceResponse
+    where
+        S: actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error>,
+    {
+        test::call_service(app, admin_req(test::TestRequest::delete(), path).to_request()).await
+    }
+
+    /// GETs `path` as admin and decodes the JSON body — used for every "list" endpoint.
+    async fn admin_list<S, T: DeserializeOwned>(app: &S, path: &str) -> Vec<T>
+    where
+        S: actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error>,
+    {
+        test::read_body_json(admin_get(app, path).await).await
+    }
+
     #[derive(Deserialize)]
     struct StatsResponse {
         active_uploads: i64,
@@ -800,11 +771,7 @@ mod tests {
     #[sqlx::test]
     async fn admin_correct_token_returns_stats(pool: MySqlPool) {
         let app = full_app(admin_settings(), pool).await;
-        let resp = test::call_service(
-            &app,
-            admin_req(test::TestRequest::get(), "/admin/stats").to_request(),
-        )
-        .await;
+        let resp = admin_get(&app, "/admin/stats").await;
         assert!(resp.status().is_success());
         let body: StatsResponse = test::read_body_json(resp).await;
         assert_eq!(body.active_uploads, 0);
@@ -822,37 +789,18 @@ mod tests {
         let app = full_app(admin_settings(), pool).await;
         let slug = upload_and_get_slug(&app, "test.txt").await;
 
-        let resp = test::call_service(
-            &app,
-            admin_req(test::TestRequest::get(), "/admin/uploads").to_request(),
-        )
-        .await;
-        assert!(resp.status().is_success());
-        let uploads: Vec<UploadResponse> = test::read_body_json(resp).await;
+        let uploads: Vec<UploadResponse> = admin_list(&app, "/admin/uploads").await;
         let upload = uploads
             .iter()
             .find(|u| u.slug == slug)
             .expect("uploaded file should be listed");
         assert!(!upload.deleted);
 
-        let resp = test::call_service(
-            &app,
-            admin_req(
-                test::TestRequest::delete(),
-                &format!("/admin/uploads/{}", upload.id),
-            )
-            .to_request(),
-        )
-        .await;
+        let resp = admin_delete(&app, &format!("/admin/uploads/{}", upload.id)).await;
         assert!(resp.status().is_success());
 
         // Deleted uploads are excluded from the default listing.
-        let resp = test::call_service(
-            &app,
-            admin_req(test::TestRequest::get(), "/admin/uploads").to_request(),
-        )
-        .await;
-        let uploads: Vec<UploadResponse> = test::read_body_json(resp).await;
+        let uploads: Vec<UploadResponse> = admin_list(&app, "/admin/uploads").await;
         assert!(!uploads.iter().any(|u| u.slug == slug));
 
         // And the file is no longer servable.
@@ -871,15 +819,7 @@ mod tests {
         let app = full_app(admin_settings(), pool).await;
         let slug = upload_and_get_slug(&app, "test.txt").await;
 
-        let resp = test::call_service(
-            &app,
-            admin_req(
-                test::TestRequest::delete(),
-                &format!("/admin/uploads/slug/{slug}"),
-            )
-            .to_request(),
-        )
-        .await;
+        let resp = admin_delete(&app, &format!("/admin/uploads/slug/{slug}")).await;
         assert!(resp.status().is_success());
 
         let resp = test::call_service(
@@ -916,27 +856,21 @@ mod tests {
     async fn admin_bans_ip_range_add_list_delete(pool: MySqlPool) {
         let app = full_app(admin_settings(), pool).await;
 
-        let resp = test::call_service(
+        let resp = admin_post(
             &app,
-            admin_req(test::TestRequest::post(), "/admin/bans/ips")
-                .set_json(&IpRangeBody {
-                    start_ip: "1.2.3.0",
-                    end_ip: "1.2.3.255",
-                    reason: Some("spam"),
-                    expires_timestamp: None,
-                })
-                .to_request(),
+            "/admin/bans/ips",
+            &IpRangeBody {
+                start_ip: "1.2.3.0",
+                end_ip: "1.2.3.255",
+                reason: Some("spam"),
+                expires_timestamp: None,
+            },
         )
         .await;
         assert_eq!(resp.status(), 201);
         let created: IdResponse = test::read_body_json(resp).await;
 
-        let resp = test::call_service(
-            &app,
-            admin_req(test::TestRequest::get(), "/admin/bans/ips").to_request(),
-        )
-        .await;
-        let ranges: Vec<IpRangeResponse> = test::read_body_json(resp).await;
+        let ranges: Vec<IpRangeResponse> = admin_list(&app, "/admin/bans/ips").await;
         let range = ranges
             .iter()
             .find(|r| r.id == created.id)
@@ -944,23 +878,10 @@ mod tests {
         assert_eq!(range.start_ip, "1.2.3.0");
         assert_eq!(range.end_ip, "1.2.3.255");
 
-        let resp = test::call_service(
-            &app,
-            admin_req(
-                test::TestRequest::delete(),
-                &format!("/admin/bans/ips/{}", created.id),
-            )
-            .to_request(),
-        )
-        .await;
+        let resp = admin_delete(&app, &format!("/admin/bans/ips/{}", created.id)).await;
         assert_eq!(resp.status(), 204);
 
-        let resp = test::call_service(
-            &app,
-            admin_req(test::TestRequest::get(), "/admin/bans/ips").to_request(),
-        )
-        .await;
-        let ranges: Vec<IpRangeResponse> = test::read_body_json(resp).await;
+        let ranges: Vec<IpRangeResponse> = admin_list(&app, "/admin/bans/ips").await;
         assert!(!ranges.iter().any(|r| r.id == created.id));
     }
 
@@ -973,21 +894,15 @@ mod tests {
     async fn admin_bans_extension_add_list_delete_and_enforced(pool: MySqlPool) {
         let app = full_app(admin_settings(), pool).await;
 
-        let resp = test::call_service(
+        let resp = admin_post(
             &app,
-            admin_req(test::TestRequest::post(), "/admin/bans/extensions")
-                .set_json(&ExtensionBody { extension: "exe" })
-                .to_request(),
+            "/admin/bans/extensions",
+            &ExtensionBody { extension: "exe" },
         )
         .await;
         assert_eq!(resp.status(), 201);
 
-        let resp = test::call_service(
-            &app,
-            admin_req(test::TestRequest::get(), "/admin/bans/extensions").to_request(),
-        )
-        .await;
-        let extensions: Vec<String> = test::read_body_json(resp).await;
+        let extensions: Vec<String> = admin_list(&app, "/admin/bans/extensions").await;
         assert!(extensions.contains(&"exe".to_string()));
 
         // Banned extension is rejected at upload time.
@@ -995,11 +910,7 @@ mod tests {
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 403);
 
-        let resp = test::call_service(
-            &app,
-            admin_req(test::TestRequest::delete(), "/admin/bans/extensions/exe").to_request(),
-        )
-        .await;
+        let resp = admin_delete(&app, "/admin/bans/extensions/exe").await;
         assert_eq!(resp.status(), 204);
 
         // Upload succeeds again once the ban is lifted.
@@ -1017,43 +928,24 @@ mod tests {
     async fn admin_bans_mime_add_list_delete(pool: MySqlPool) {
         let app = full_app(admin_settings(), pool).await;
 
-        let resp = test::call_service(
+        let resp = admin_post(
             &app,
-            admin_req(test::TestRequest::post(), "/admin/bans/mimes")
-                .set_json(&MimeBody {
-                    mime: "application/x-msdownload",
-                })
-                .to_request(),
+            "/admin/bans/mimes",
+            &MimeBody {
+                mime: "application/x-msdownload",
+            },
         )
         .await;
         assert_eq!(resp.status(), 201);
 
-        let resp = test::call_service(
-            &app,
-            admin_req(test::TestRequest::get(), "/admin/bans/mimes").to_request(),
-        )
-        .await;
-        let mimes: Vec<String> = test::read_body_json(resp).await;
+        let mimes: Vec<String> = admin_list(&app, "/admin/bans/mimes").await;
         assert!(mimes.contains(&"application/x-msdownload".to_string()));
 
         // Mime types contain a slash, so the delete route uses a greedy path match.
-        let resp = test::call_service(
-            &app,
-            admin_req(
-                test::TestRequest::delete(),
-                "/admin/bans/mimes/application/x-msdownload",
-            )
-            .to_request(),
-        )
-        .await;
+        let resp = admin_delete(&app, "/admin/bans/mimes/application/x-msdownload").await;
         assert_eq!(resp.status(), 204);
 
-        let resp = test::call_service(
-            &app,
-            admin_req(test::TestRequest::get(), "/admin/bans/mimes").to_request(),
-        )
-        .await;
-        let mimes: Vec<String> = test::read_body_json(resp).await;
+        let mimes: Vec<String> = admin_list(&app, "/admin/bans/mimes").await;
         assert!(!mimes.contains(&"application/x-msdownload".to_string()));
     }
 
@@ -1073,43 +965,24 @@ mod tests {
         let app = full_app(admin_settings(), pool).await;
         let hash = "a".repeat(64); // 32 bytes of 0xaa, hex-encoded
 
-        let resp = test::call_service(
+        let resp = admin_post(
             &app,
-            admin_req(test::TestRequest::post(), "/admin/bans/hashes")
-                .set_json(&HashBody {
-                    hash: &hash,
-                    reason: Some("known malware"),
-                })
-                .to_request(),
+            "/admin/bans/hashes",
+            &HashBody {
+                hash: &hash,
+                reason: Some("known malware"),
+            },
         )
         .await;
         assert_eq!(resp.status(), 201);
 
-        let resp = test::call_service(
-            &app,
-            admin_req(test::TestRequest::get(), "/admin/bans/hashes").to_request(),
-        )
-        .await;
-        let hashes: Vec<HashResponse> = test::read_body_json(resp).await;
+        let hashes: Vec<HashResponse> = admin_list(&app, "/admin/bans/hashes").await;
         assert!(hashes.iter().any(|h| h.hash == hash));
 
-        let resp = test::call_service(
-            &app,
-            admin_req(
-                test::TestRequest::delete(),
-                &format!("/admin/bans/hashes/{hash}"),
-            )
-            .to_request(),
-        )
-        .await;
+        let resp = admin_delete(&app, &format!("/admin/bans/hashes/{hash}")).await;
         assert_eq!(resp.status(), 204);
 
-        let resp = test::call_service(
-            &app,
-            admin_req(test::TestRequest::get(), "/admin/bans/hashes").to_request(),
-        )
-        .await;
-        let hashes: Vec<HashResponse> = test::read_body_json(resp).await;
+        let hashes: Vec<HashResponse> = admin_list(&app, "/admin/bans/hashes").await;
         assert!(!hashes.iter().any(|h| h.hash == hash));
     }
 
@@ -1128,66 +1001,36 @@ mod tests {
     async fn admin_bans_user_agent_add_list_delete_and_enforced(pool: MySqlPool) {
         let app = full_app(admin_settings(), pool).await;
 
-        let resp = test::call_service(
+        let resp = admin_post(
             &app,
-            admin_req(test::TestRequest::post(), "/admin/bans/user-agents")
-                .set_json(&UserAgentBody {
-                    pattern: "python-requests",
-                    reason: Some("scraper"),
-                })
-                .to_request(),
+            "/admin/bans/user-agents",
+            &UserAgentBody {
+                pattern: "python-requests",
+                reason: Some("scraper"),
+            },
         )
         .await;
         assert_eq!(resp.status(), 201);
 
-        let resp = test::call_service(
-            &app,
-            admin_req(test::TestRequest::get(), "/admin/bans/user-agents").to_request(),
-        )
-        .await;
-        let patterns: Vec<UserAgentResponse> = test::read_body_json(resp).await;
+        let patterns: Vec<UserAgentResponse> = admin_list(&app, "/admin/bans/user-agents").await;
         assert!(patterns.iter().any(|p| p.pattern == "python-requests"));
 
         // Banned user agent is rejected at upload time.
-        let req = test::TestRequest::post()
-            .uri("/")
-            .insert_header((
-                "content-type",
-                format!("multipart/form-data; boundary={BOUNDARY}"),
-            ))
-            .insert_header(("User-Agent", "python-requests/2.31.0"))
-            .set_payload(format!(
-                "{}--{BOUNDARY}--\r\n",
-                multipart_body("test.txt", "hello")
-            ))
-            .to_request();
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("User-Agent", "python-requests/2.31.0")],
+        );
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 403);
 
-        let resp = test::call_service(
-            &app,
-            admin_req(
-                test::TestRequest::delete(),
-                "/admin/bans/user-agents/python-requests",
-            )
-            .to_request(),
-        )
-        .await;
+        let resp = admin_delete(&app, "/admin/bans/user-agents/python-requests").await;
         assert_eq!(resp.status(), 204);
 
         // Upload succeeds again once the ban is lifted.
-        let req = test::TestRequest::post()
-            .uri("/")
-            .insert_header((
-                "content-type",
-                format!("multipart/form-data; boundary={BOUNDARY}"),
-            ))
-            .insert_header(("User-Agent", "python-requests/2.31.0"))
-            .set_payload(format!(
-                "{}--{BOUNDARY}--\r\n",
-                multipart_body("test.txt", "hello")
-            ))
-            .to_request();
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("User-Agent", "python-requests/2.31.0")],
+        );
         let resp = test::call_service(&app, req).await;
         assert!(resp.status().is_success());
     }
@@ -1196,18 +1039,10 @@ mod tests {
     async fn upload_and_download_log_user_agent(pool: MySqlPool) {
         let app = full_app(test_settings(), pool.clone()).await;
 
-        let req = test::TestRequest::post()
-            .uri("/")
-            .insert_header((
-                "content-type",
-                format!("multipart/form-data; boundary={BOUNDARY}"),
-            ))
-            .insert_header(("User-Agent", "UploaderAgent/1.0"))
-            .set_payload(format!(
-                "{}--{BOUNDARY}--\r\n",
-                multipart_body("test.txt", "hello")
-            ))
-            .to_request();
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("User-Agent", "UploaderAgent/1.0")],
+        );
         let resp = test::call_service(&app, req).await;
         assert!(resp.status().is_success());
         let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
