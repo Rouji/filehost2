@@ -90,11 +90,10 @@ fn determine_content_type(file: &HashedTempFile, original_name: &str) -> (String
 fn save_file(tmp: tempfile::NamedTempFile, dest: &Path) -> std::io::Result<()> {
     match tmp.persist(dest) {
         Ok(_) => Ok(()),
-        Err(e) if e.error.kind() == std::io::ErrorKind::CrossesDevices => {
+        Err(e) => {
             std::fs::copy(e.file.path(), dest)?;
             Ok(())
         }
-        Err(e) => Err(e.error),
     }
 }
 
