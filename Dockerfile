@@ -33,6 +33,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-$TARGE
 
 COPY . .
 
+# make sure mtime is newer than the stub main.rs
+RUN find . -path ./target -prune -o -type f -exec touch {} +
+
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-$TARGETARCH \
     --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git-$TARGETARCH \
     cargo zigbuild --release --target "$(cat /rust_target)" && \
