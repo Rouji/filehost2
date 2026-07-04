@@ -16,6 +16,9 @@ echo "hello" | curl -F "file=@-;filename=file.txt" {base_url}
 
 To use a longer file ID (up to {max_id_length} characters), add -F id_length=&lt;number&gt;
 
+To keep the (sanitised) filename in the generated link, add "keep_name":
+curl -F "file=@/path/to/your/file.jpg" -F "keep_name=1" {base_url}
+
 On Windows, you can use <a href="https://getsharex.com/">ShareX</a> and import <a href="/?config=ShareX">this</a> custom uploader.
 On Android, you can use an app called <a href="https://github.com/Rouji/Hupl">Hupl</a> with <a href="/?config=Hupl">this</a> uploader.
 
@@ -27,7 +30,9 @@ selection input.)
 <form id="frm" method="post" enctype="multipart/form-data">
 <input type="file" name="file" id="file" />
 <input type="hidden" name="formatted" value="true" />
-<input type="submit" value="Upload"/>
+<input type="submit" value="Upload"/><br/>
+<label for="keep_name">Keep filename</label>
+<input type="checkbox" name="keep_name" id="keep_name" />
 </form>
 <pre>
 

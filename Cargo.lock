@@ -892,6 +892,7 @@ dependencies = [
  "log",
  "mime",
  "mime_guess",
+ "percent-encoding",
  "rand 0.10.0",
  "serde",
  "sqlx",

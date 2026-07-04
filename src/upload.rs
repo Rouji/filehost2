@@ -46,7 +46,9 @@ impl<'t> FieldReader<'t> for HashedTempFile {
                 .map(ToOwned::to_owned);
             let field_name = field.name().unwrap_or("file").to_owned();
 
-            let throttle = _req.app_data::<actix_web::web::Data<UploadThrottle>>().cloned();
+            let throttle = _req
+                .app_data::<actix_web::web::Data<UploadThrottle>>()
+                .cloned();
             let (rate, burst) = _req
                 .app_data::<actix_web::web::Data<Settings>>()
                 .map(|s| (s.max_upload_bytes_per_sec, s.max_upload_burst_bytes))
@@ -63,8 +65,7 @@ impl<'t> FieldReader<'t> for HashedTempFile {
 
             let file = tempfile::NamedTempFile::new().map_err(to_field_err)?;
 
-            let mut file_async =
-                tokio::fs::File::from_std(file.reopen().map_err(to_field_err)?);
+            let mut file_async = tokio::fs::File::from_std(file.reopen().map_err(to_field_err)?);
 
             let mut hasher = blake3::Hasher::new();
             let mut size = 0usize;
@@ -105,14 +106,47 @@ pub(crate) fn calculate_expiry(file_size: usize, settings: &Settings) -> Primiti
     PrimitiveDateTime::new(expiry.date(), expiry.time())
 }
 
+/// Sanitises the extension-less part of a filename for use in a slug,
+/// replacing anything that isn't a unicode letter/number, '.', '_' or '-'
+/// with '_'.
+pub(crate) fn sanitize_filename_stem(name: &str) -> String {
+    Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|stem| {
+            stem.chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) fn build_slug(
     original_name: &str,
     content_type_subtype: Option<&str>,
     id_len: usize,
     auto_ext: bool,
     max_ext_len: usize,
+    keep_name: bool,
 ) -> String {
-    let base = random_string(id_len);
+    let id = random_string(id_len);
+
+    let base = if keep_name {
+        let stem = sanitize_filename_stem(original_name);
+        if stem.is_empty() {
+            id
+        } else {
+            format!("{}_{}", stem, id)
+        }
+    } else {
+        id
+    };
 
     let ext = Path::new(original_name)
         .extension()
@@ -227,33 +261,33 @@ mod tests {
 
     #[test]
     fn build_slug_propagates_extension() {
-        let slug = build_slug("photo.jpg", None, 5, false, 7);
+        let slug = build_slug("photo.jpg", None, 5, false, 7, false);
         assert!(slug.ends_with(".jpg"));
         assert_eq!(slug.len(), 9); // 5 + dot + 3
     }
 
     #[test]
     fn build_slug_no_extension_when_auto_ext_disabled() {
-        let slug = build_slug("binary", None, 5, false, 7);
+        let slug = build_slug("binary", None, 5, false, 7, false);
         assert!(!slug.contains('.'));
         assert_eq!(slug.len(), 5);
     }
 
     #[test]
     fn build_slug_uses_mime_when_auto_ext_enabled_and_no_filename_ext() {
-        let slug = build_slug("binary", Some("png"), 5, true, 7);
+        let slug = build_slug("binary", Some("png"), 5, true, 7, false);
         assert!(slug.ends_with(".png"));
     }
 
     #[test]
     fn build_slug_filename_ext_takes_priority_over_mime() {
-        let slug = build_slug("image.jpg", Some("png"), 5, true, 7);
+        let slug = build_slug("image.jpg", Some("png"), 5, true, 7, false);
         assert!(slug.ends_with(".jpg"));
     }
 
     #[test]
     fn build_slug_drops_extension_exceeding_max_len() {
-        let slug = build_slug("file.toolongext", None, 5, false, 7);
+        let slug = build_slug("file.toolongext", None, 5, false, 7, false);
         assert!(!slug.contains('.'));
         assert_eq!(slug.len(), 5);
     }
@@ -261,8 +295,34 @@ mod tests {
     #[test]
     fn build_slug_respects_id_length() {
         for len in [3, 8, 16] {
-            let slug = build_slug("noext", None, len, false, 7);
+            let slug = build_slug("noext", None, len, false, 7, false);
             assert_eq!(slug.len(), len);
         }
+    }
+
+    #[test]
+    fn build_slug_keep_name_includes_sanitised_stem() {
+        let slug = build_slug("my report.pdf", None, 5, false, 7, true);
+        assert!(slug.starts_with("my_report_"));
+        assert!(slug.ends_with(".pdf"));
+        // "my_report_" + 5 random chars + ".pdf"
+        assert_eq!(slug.len(), "my_report_".len() + 5 + ".pdf".len());
+    }
+
+    #[test]
+    fn build_slug_keep_name_falls_back_when_stem_empty_after_sanitising() {
+        // an empty original name has no file stem to keep
+        let slug = build_slug("", None, 5, false, 7, true);
+        assert!(!slug.contains('_'));
+    }
+
+    #[test]
+    fn sanitize_filename_stem_replaces_disallowed_chars() {
+        assert_eq!(sanitize_filename_stem("a b*c d.txt"), "a_b_c_d");
+    }
+
+    #[test]
+    fn sanitize_filename_stem_keeps_unicode_letters() {
+        assert_eq!(sanitize_filename_stem("ほげ.txt"), "ほげ");
     }
 }

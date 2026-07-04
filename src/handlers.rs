@@ -7,6 +7,7 @@ use actix_web::{
     http::{StatusCode, header::{ContentDisposition, ContentType, DispositionParam, DispositionType}},
     post, web,
 };
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Deserialize;
 use sqlx::mysql::MySqlPool;
 use uuid::Uuid;
@@ -17,6 +18,14 @@ use crate::model::Upload;
 use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
 use crate::upload::{build_slug, calculate_expiry, uuid_to_path, HashedTempFile};
+
+/// Characters that don't need percent-encoding in a URL path segment,
+/// on top of what `NON_ALPHANUMERIC` already leaves alone.
+const PATH_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
 
 fn extract_ip(req: &HttpRequest, trust_xff: bool) -> Option<u32> {
     if trust_xff {
@@ -92,6 +101,7 @@ async fn process_file(
     file: HashedTempFile,
     uploader_ip: Option<u32>,
     id_len: usize,
+    keep_name: bool,
 ) -> Result<String, HttpResponse> {
     let uuid = Uuid::new_v4();
     let original_name = file.file_name.as_deref().unwrap_or("unknown").to_string();
@@ -116,6 +126,7 @@ async fn process_file(
         id_len,
         settings.auto_file_ext,
         settings.max_ext_len,
+        keep_name,
     );
     let expiry = calculate_expiry(file_size, settings);
     let save_path = uuid_to_path(Path::new(&settings.store_path), &uuid);
@@ -176,7 +187,8 @@ async fn process_file(
         });
     }
 
-    Ok(format!("{}{}\n", settings.base_url.as_ref().unwrap(), slug))
+    let encoded_slug = utf8_percent_encode(&slug, PATH_SEGMENT);
+    Ok(format!("{}{}\n", settings.base_url.as_ref().unwrap(), encoded_slug))
 }
 
 #[derive(Debug, Deserialize)]
@@ -221,6 +233,7 @@ pub(crate) struct UploadForm {
     #[multipart(rename = "file")]
     files: Vec<HashedTempFile>,
     id_length: Option<Text<usize>>,
+    keep_name: Option<Text<String>>,
 }
 
 #[post("/")]
@@ -235,6 +248,7 @@ pub(crate) async fn upload(
     } else {
         settings.min_id_length
     };
+    let keep_name = form.keep_name.is_some();
 
     let uploader_ip = extract_ip(&req, settings.trust_xff);
 
@@ -278,7 +292,7 @@ pub(crate) async fn upload(
 
     let mut response = String::new();
     for file in form.files {
-        match process_file(db.get_ref(), &settings, file, uploader_ip, id_len).await {
+        match process_file(db.get_ref(), &settings, file, uploader_ip, id_len, keep_name).await {
             Ok(link) => response.push_str(&link),
             Err(resp) => return resp,
         }
