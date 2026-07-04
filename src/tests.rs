@@ -474,6 +474,10 @@ mod tests {
         format!("/tmp/filehost_php_test_{}/", uuid::Uuid::new_v4())
     }
 
+    fn php_log_path() -> String {
+        format!("/tmp/filehost_php_test_log_{}.log", uuid::Uuid::new_v4())
+    }
+
     #[sqlx::test]
     async fn import_php_imports_file(pool: MySqlPool) {
         let settings = test_settings();
@@ -509,7 +513,7 @@ mod tests {
         std::fs::write(format!("{src}abc123.txt"), b"hello").unwrap();
 
         // Log file lives outside the files dir so it isn't imported as a file.
-        let log_path = format!("{src}../uploads.log");
+        let log_path = php_log_path();
         std::fs::write(
             &log_path,
             "2026-06-06T14:30:45+00:00\t10.0.0.1\t5\t'original name.txt'\tabc123.txt\n",
@@ -544,7 +548,7 @@ mod tests {
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(format!("{src}present.txt"), b"hello").unwrap();
 
-        let log_path = format!("{src}../uploads.log");
+        let log_path = php_log_path();
         std::fs::write(
             &log_path,
             "2026-06-06T14:30:45+00:00\t10.0.0.1\t\t'original name.txt'\tpresent.txt\n\
@@ -585,7 +589,7 @@ mod tests {
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(format!("{src}abc123.txt"), b"hello").unwrap();
 
-        let log_path = format!("{src}../uploads.log");
+        let log_path = php_log_path();
         std::fs::write(
             &log_path,
             "2026-01-01T00:00:00+00:00\t1.1.1.1\t5\t'old.txt'\tabc123.txt\n\
@@ -618,7 +622,7 @@ mod tests {
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(format!("{src}present.txt"), b"hello").unwrap();
 
-        let log_path = format!("{src}../uploads.log");
+        let log_path = php_log_path();
         std::fs::write(
             &log_path,
             "2026-01-01T00:00:00+00:00\t10.0.0.1\t5\t'present.txt'\tpresent.txt\n\
@@ -658,7 +662,7 @@ mod tests {
         let src = php_source_dir();
         std::fs::create_dir_all(&src).unwrap();
 
-        let log_path = format!("{src}../uploads.log");
+        let log_path = php_log_path();
         std::fs::write(
             &log_path,
             "2025-01-01T00:00:00+00:00\t10.0.0.2\t1234\t'old upload.bin'\tgone.txt\n",
