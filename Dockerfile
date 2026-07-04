@@ -21,13 +21,20 @@ RUN mkdir /empty_dir
 
 WORKDIR /app
 
-COPY . .
-
 ENV SQLX_OFFLINE=true
+
+# pre build and cache (in an image layer) dependencies only
+COPY Cargo.toml Cargo.lock ./
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-$TARGETARCH \
+    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git-$TARGETARCH \
+    mkdir src && echo "fn main() {}" > src/main.rs \
+    && cargo zigbuild --release --target "$(cat /rust_target)" \
+    && rm -rf src
+
+COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-$TARGETARCH \
     --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git-$TARGETARCH \
-    --mount=type=cache,target=/app/target,id=cargo-target-$TARGETARCH \
     cargo zigbuild --release --target "$(cat /rust_target)" && \
     cp "target/$(cat /rust_target)/release/filehost2" /filehost2
 
