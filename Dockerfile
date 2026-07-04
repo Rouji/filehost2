@@ -33,6 +33,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-$TARGE
 
 FROM scratch
 
+ENV STORE_PATH=/data
+
 COPY --from=builder /filehost2 /filehost2
 
 # from scratch image can't `chown` on its own
