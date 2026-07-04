@@ -83,7 +83,10 @@ mod tests {
                         .service(admin::remove_banned_mime)
                         .service(admin::list_banned_hashes)
                         .service(admin::add_banned_hash)
-                        .service(admin::remove_banned_hash),
+                        .service(admin::remove_banned_hash)
+                        .service(admin::list_banned_user_agents)
+                        .service(admin::add_banned_user_agent)
+                        .service(admin::remove_banned_user_agent),
                 )
                 .app_data(web::Data::new(pool))
                 .app_data(web::Data::new(settings.clone()))
@@ -345,6 +348,62 @@ mod tests {
         assert!(
             resp.status().is_success(),
             "XFF should be ignored when trust_xff=false, got: {}",
+            resp.status()
+        );
+    }
+
+    async fn ban_user_agent(pool: &MySqlPool, pattern: &str) {
+        sqlx::query("INSERT INTO banned_user_agents (pattern, banned_timestamp) VALUES (?, NOW())")
+            .bind(pattern)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn banned_user_agent_rejected_at_upload(pool: MySqlPool) {
+        ban_user_agent(&pool, "curl").await;
+        let app = full_app(test_settings(), pool).await;
+
+        let req = test::TestRequest::post()
+            .uri("/")
+            .insert_header((
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            ))
+            .insert_header(("User-Agent", "curl/8.0.1"))
+            .set_payload(format!(
+                "{}--{BOUNDARY}--\r\n",
+                multipart_body("test.txt", "hello")
+            ))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+    }
+
+    #[sqlx::test]
+    async fn non_banned_user_agent_upload_succeeds(pool: MySqlPool) {
+        ban_user_agent(&pool, "curl").await;
+        let app = full_app(test_settings(), pool).await;
+
+        let req = test::TestRequest::post()
+            .uri("/")
+            .insert_header((
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            ))
+            .insert_header(("User-Agent", "Mozilla/5.0"))
+            .set_payload(format!(
+                "{}--{BOUNDARY}--\r\n",
+                multipart_body("test.txt", "hello")
+            ))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "expected success, got: {}",
             resp.status()
         );
     }
@@ -1048,5 +1107,134 @@ mod tests {
         .await;
         let hashes: Vec<HashResponse> = test::read_body_json(resp).await;
         assert!(!hashes.iter().any(|h| h.hash == hash));
+    }
+
+    #[derive(Serialize)]
+    struct UserAgentBody<'a> {
+        pattern: &'a str,
+        reason: Option<&'a str>,
+    }
+
+    #[derive(Deserialize)]
+    struct UserAgentResponse {
+        pattern: String,
+    }
+
+    #[sqlx::test]
+    async fn admin_bans_user_agent_add_list_delete_and_enforced(pool: MySqlPool) {
+        let app = full_app(admin_settings(), pool).await;
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::post(), "/admin/bans/user-agents")
+                .set_json(&UserAgentBody {
+                    pattern: "python-requests",
+                    reason: Some("scraper"),
+                })
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 201);
+
+        let resp = test::call_service(
+            &app,
+            admin_req(test::TestRequest::get(), "/admin/bans/user-agents").to_request(),
+        )
+        .await;
+        let patterns: Vec<UserAgentResponse> = test::read_body_json(resp).await;
+        assert!(patterns.iter().any(|p| p.pattern == "python-requests"));
+
+        // Banned user agent is rejected at upload time.
+        let req = test::TestRequest::post()
+            .uri("/")
+            .insert_header((
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            ))
+            .insert_header(("User-Agent", "python-requests/2.31.0"))
+            .set_payload(format!(
+                "{}--{BOUNDARY}--\r\n",
+                multipart_body("test.txt", "hello")
+            ))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+
+        let resp = test::call_service(
+            &app,
+            admin_req(
+                test::TestRequest::delete(),
+                "/admin/bans/user-agents/python-requests",
+            )
+            .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 204);
+
+        // Upload succeeds again once the ban is lifted.
+        let req = test::TestRequest::post()
+            .uri("/")
+            .insert_header((
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            ))
+            .insert_header(("User-Agent", "python-requests/2.31.0"))
+            .set_payload(format!(
+                "{}--{BOUNDARY}--\r\n",
+                multipart_body("test.txt", "hello")
+            ))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+    }
+
+    #[sqlx::test]
+    async fn upload_and_download_log_user_agent(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool.clone()).await;
+
+        let req = test::TestRequest::post()
+            .uri("/")
+            .insert_header((
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            ))
+            .insert_header(("User-Agent", "UploaderAgent/1.0"))
+            .set_payload(format!(
+                "{}--{BOUNDARY}--\r\n",
+                multipart_body("test.txt", "hello")
+            ))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+        let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+        let slug = url
+            .trim()
+            .trim_start_matches("http://localhost:8080/")
+            .to_string();
+
+        let uploaded_ua: Option<String> =
+            sqlx::query_scalar("SELECT user_agent FROM uploads WHERE slug = ?")
+                .bind(&slug)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(uploaded_ua.as_deref(), Some("UploaderAgent/1.0"));
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/{slug}"))
+                .insert_header(("User-Agent", "DownloaderAgent/2.0"))
+                .to_request(),
+        )
+        .await;
+        assert!(resp.status().is_success());
+
+        let accessed_ua: Option<String> =
+            sqlx::query_scalar("SELECT user_agent FROM accesses LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(accessed_ua.as_deref(), Some("DownloaderAgent/2.0"));
     }
 }

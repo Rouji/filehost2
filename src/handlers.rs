@@ -86,6 +86,7 @@ async fn process_file(
     settings: &Settings,
     file: HashedTempFile,
     uploader_ip: Option<u32>,
+    user_agent: Option<&str>,
     id_len: usize,
     keep_name: bool,
 ) -> Result<String, HttpResponse> {
@@ -147,8 +148,8 @@ async fn process_file(
     }
 
     if let Err(e) = sqlx::query!(
-        "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        uuid, original_name, expiry, slug, file_size as i64, hash.as_slice(), uploader_ip, content_type_str,
+        "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        uuid, original_name, expiry, slug, file_size as i64, hash.as_slice(), uploader_ip, content_type_str, user_agent,
     )
     .execute(db)
     .await
@@ -250,12 +251,27 @@ pub(crate) async fn upload(
     let keep_name = form.keep_name.is_some();
 
     let uploader_ip = extract_ip(&req, settings.trust_xff);
+    let user_agent = req
+        .headers()
+        .get("User-Agent")
+        .and_then(|v| v.to_str().ok());
 
     if let Some(ip) = uploader_ip
         && let Err(resp) = check_not_banned(
             db::is_ip_banned(db.get_ref(), ip),
             "banned IP",
             "Your IP is banned from uploading.",
+        )
+        .await
+    {
+        return resp;
+    }
+
+    if let Some(ua) = user_agent
+        && let Err(resp) = check_not_banned(
+            db::is_user_agent_banned(db.get_ref(), ua),
+            "banned user agent",
+            "Your client is banned from uploading.",
         )
         .await
     {
@@ -298,6 +314,7 @@ pub(crate) async fn upload(
             &settings,
             file,
             uploader_ip,
+            user_agent,
             id_len,
             keep_name,
         )
@@ -340,7 +357,7 @@ pub(crate) async fn get_file(
 
     let row = sqlx::query_as!(
         Upload,
-        "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash as `hash: Vec<u8>`, uploader_ip, content_type FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+        "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash as `hash: Vec<u8>`, uploader_ip, content_type, user_agent FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
         slug
     )
     .fetch_optional(db.get_ref())
@@ -349,7 +366,11 @@ pub(crate) async fn get_file(
     .ok_or_else(|| actix_web::error::ErrorNotFound("File not found"))?;
 
     let ipv4 = extract_ip(&req, settings.trust_xff);
-    if let Err(e) = db::log_access(db.get_ref(), row.id, ipv4).await {
+    let user_agent = req
+        .headers()
+        .get("User-Agent")
+        .and_then(|v| v.to_str().ok());
+    if let Err(e) = db::log_access(db.get_ref(), row.id, ipv4, user_agent).await {
         log::warn!("Failed to log file access: {e}");
     }
 

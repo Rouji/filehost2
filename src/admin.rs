@@ -11,7 +11,9 @@ use time::{OffsetDateTime, PrimitiveDateTime, format_description::well_known::Rf
 use uuid::Uuid;
 
 use crate::db;
-use crate::model::{BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, Upload};
+use crate::model::{
+    BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, BannedUserAgent, Upload,
+};
 use crate::settings::Settings;
 
 /// Extractor-as-guard for `/admin/*` routes: checks `Authorization: Bearer <admin_token>`
@@ -120,6 +122,7 @@ struct UploadDto {
     hash: Option<String>,
     uploader_ip: Option<String>,
     content_type: Option<String>,
+    user_agent: Option<String>,
 }
 
 impl From<Upload> for UploadDto {
@@ -135,6 +138,7 @@ impl From<Upload> for UploadDto {
             hash: u.hash.map(|h| hex_encode(&h)),
             uploader_ip: u.uploader_ip.map(|ip| Ipv4Addr::from(ip).to_string()),
             content_type: u.content_type,
+            user_agent: u.user_agent,
         }
     }
 }
@@ -516,5 +520,74 @@ pub(crate) async fn remove_banned_hash(
         }
         Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),
         Err(e) => internal_err(e, "delete_banned_hash"),
+    }
+}
+
+#[derive(Serialize)]
+struct BannedUserAgentDto {
+    pattern: String,
+    reason: Option<String>,
+}
+
+impl From<BannedUserAgent> for BannedUserAgentDto {
+    fn from(b: BannedUserAgent) -> Self {
+        BannedUserAgentDto {
+            pattern: b.pattern,
+            reason: b.reason,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct UserAgentCreate {
+    pattern: String,
+    reason: Option<String>,
+}
+
+#[get("/bans/user-agents")]
+pub(crate) async fn list_banned_user_agents(
+    _auth: AdminAuth,
+    db: web::Data<MySqlPool>,
+) -> impl Responder {
+    match db::list_banned_user_agents(db.get_ref()).await {
+        Ok(rows) => HttpResponse::Ok().json(
+            rows.into_iter()
+                .map(BannedUserAgentDto::from)
+                .collect::<Vec<_>>(),
+        ),
+        Err(e) => internal_err(e, "list_banned_user_agents"),
+    }
+}
+
+#[post("/bans/user-agents")]
+pub(crate) async fn add_banned_user_agent(
+    _auth: AdminAuth,
+    db: web::Data<MySqlPool>,
+    body: web::Json<UserAgentCreate>,
+) -> impl Responder {
+    match db::insert_banned_user_agent(db.get_ref(), &body.pattern, body.reason.as_deref()).await {
+        Ok(()) => {
+            log::info!("admin: banned user agent pattern {:?}", body.pattern);
+            HttpResponse::Created().finish()
+        }
+        Err(e) => internal_err(e, "insert_banned_user_agent"),
+    }
+}
+
+// User agent patterns can contain '/', hence the greedy path match.
+#[delete("/bans/user-agents/{pattern:.*}")]
+pub(crate) async fn remove_banned_user_agent(
+    _auth: AdminAuth,
+    db: web::Data<MySqlPool>,
+    path: web::Path<(String,)>,
+) -> impl Responder {
+    let pattern = path.into_inner().0;
+    match db::delete_banned_user_agent(db.get_ref(), &pattern).await {
+        Ok(true) => {
+            log::info!("admin: removed banned user agent pattern {pattern:?}");
+            HttpResponse::NoContent().finish()
+        }
+        Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),
+        Err(e) => internal_err(e, "delete_banned_user_agent"),
     }
 }

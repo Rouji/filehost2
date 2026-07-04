@@ -100,7 +100,10 @@ async fn main() -> std::io::Result<()> {
                     .service(admin::remove_banned_mime)
                     .service(admin::list_banned_hashes)
                     .service(admin::add_banned_hash)
-                    .service(admin::remove_banned_hash),
+                    .service(admin::remove_banned_hash)
+                    .service(admin::list_banned_user_agents)
+                    .service(admin::add_banned_user_agent)
+                    .service(admin::remove_banned_user_agent),
             )
             .wrap(Logger::new(log_format))
             .app_data(web::Data::new(db.clone()))

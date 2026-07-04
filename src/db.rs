@@ -5,7 +5,9 @@ use sqlx::{Row, mysql::MySqlPool};
 use time::PrimitiveDateTime;
 use uuid::Uuid;
 
-use crate::model::{BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, Upload};
+use crate::model::{
+    BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, BannedUserAgent, Upload,
+};
 use crate::settings::Settings;
 use crate::upload::uuid_to_path;
 
@@ -49,6 +51,19 @@ pub(crate) async fn is_hash_banned(db: &MySqlPool, hash: &[u8]) -> Result<bool, 
             .await?
             .is_some(),
     )
+}
+
+pub(crate) async fn is_user_agent_banned(
+    db: &MySqlPool,
+    user_agent: &str,
+) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query(
+        "SELECT 1 FROM banned_user_agents WHERE ? LIKE CONCAT('%', pattern, '%') LIMIT 1",
+    )
+    .bind(user_agent)
+    .fetch_optional(db)
+    .await?
+    .is_some())
 }
 
 /// Soft-deletes every upload matching a `WHERE` clause appended to the base
@@ -123,6 +138,7 @@ pub(crate) struct NewUpload<'a> {
     pub file_size: i64,
     pub uploader_ip: Option<u32>,
     pub content_type: Option<&'a str>,
+    pub user_agent: Option<&'a str>,
 }
 
 pub(crate) async fn insert_upload(db: &MySqlPool, upload: &NewUpload<'_>) -> anyhow::Result<bool> {
@@ -137,8 +153,8 @@ pub(crate) async fn insert_upload(db: &MySqlPool, upload: &NewUpload<'_>) -> any
     }
 
     sqlx::query(
-        "INSERT INTO uploads (id, slug, original_name, upload_timestamp, expiry_timestamp, file_size, uploader_ip, content_type) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO uploads (id, slug, original_name, upload_timestamp, expiry_timestamp, file_size, uploader_ip, content_type, user_agent) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(upload.id)
     .bind(upload.slug)
@@ -148,6 +164,7 @@ pub(crate) async fn insert_upload(db: &MySqlPool, upload: &NewUpload<'_>) -> any
     .bind(upload.file_size)
     .bind(upload.uploader_ip)
     .bind(upload.content_type)
+    .bind(upload.user_agent)
     .execute(db)
     .await?;
 
@@ -174,8 +191,8 @@ pub(crate) async fn insert_historical_upload(
     }
 
     sqlx::query(
-        "INSERT INTO uploads (id, slug, original_name, upload_timestamp, expiry_timestamp, deleted_timestamp, file_size, uploader_ip, content_type) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO uploads (id, slug, original_name, upload_timestamp, expiry_timestamp, deleted_timestamp, file_size, uploader_ip, content_type, user_agent) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(upload.id)
     .bind(upload.slug)
@@ -186,6 +203,7 @@ pub(crate) async fn insert_historical_upload(
     .bind(upload.file_size)
     .bind(upload.uploader_ip)
     .bind(upload.content_type)
+    .bind(upload.user_agent)
     .execute(db)
     .await?;
 
@@ -238,10 +256,12 @@ pub(crate) async fn log_access(
     db: &MySqlPool,
     upload_id: Uuid,
     ipv4: Option<u32>,
+    user_agent: Option<&str>,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO accesses (upload_id, ipv4) VALUES (?, ?)")
+    sqlx::query("INSERT INTO accesses (upload_id, ipv4, user_agent) VALUES (?, ?, ?)")
         .bind(upload_id)
         .bind(ipv4)
+        .bind(user_agent)
         .execute(db)
         .await?;
     Ok(())
@@ -288,7 +308,7 @@ pub(crate) async fn list_uploads(
 ) -> Result<Vec<Upload>, sqlx::Error> {
     let mut sql = String::from(
         "SELECT id, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, \
-         slug, file_size, hash, uploader_ip, content_type FROM uploads WHERE 1=1",
+         slug, file_size, hash, uploader_ip, content_type, user_agent FROM uploads WHERE 1=1",
     );
     if !include_deleted {
         sql.push_str(" AND deleted_timestamp IS NULL");
@@ -419,6 +439,40 @@ pub(crate) async fn insert_banned_hash(
 pub(crate) async fn delete_banned_hash(db: &MySqlPool, hash: &[u8]) -> Result<bool, sqlx::Error> {
     let result = sqlx::query("DELETE FROM banned_file_hashes WHERE hash = ?")
         .bind(hash)
+        .execute(db)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub(crate) async fn list_banned_user_agents(
+    db: &MySqlPool,
+) -> Result<Vec<BannedUserAgent>, sqlx::Error> {
+    sqlx::query_as::<_, BannedUserAgent>(
+        "SELECT pattern, reason FROM banned_user_agents ORDER BY pattern",
+    )
+    .fetch_all(db)
+    .await
+}
+
+pub(crate) async fn insert_banned_user_agent(
+    db: &MySqlPool,
+    pattern: &str,
+    reason: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT IGNORE INTO banned_user_agents (pattern, reason) VALUES (?, ?)")
+        .bind(pattern)
+        .bind(reason)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn delete_banned_user_agent(
+    db: &MySqlPool,
+    pattern: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM banned_user_agents WHERE pattern = ?")
+        .bind(pattern)
         .execute(db)
         .await?;
     Ok(result.rows_affected() > 0)

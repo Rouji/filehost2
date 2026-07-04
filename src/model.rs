@@ -2,11 +2,12 @@ use sqlx::types::time::PrimitiveDateTime;
 use uuid::Uuid;
 
 #[derive(Debug, sqlx::FromRow)]
-#[allow(dead_code)] // scaffolding for the not-yet-implemented access-logging feature
+#[allow(dead_code)]
 pub(crate) struct Access {
     pub upload_id: Uuid,
     pub timestamp: PrimitiveDateTime,
     pub ipv4: Option<u32>,
+    pub user_agent: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -21,6 +22,7 @@ pub(crate) struct Upload {
     pub hash: Option<Vec<u8>>,
     pub uploader_ip: Option<u32>,
     pub content_type: Option<String>,
+    pub user_agent: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -47,4 +49,10 @@ pub(crate) struct BannedFileExtension {
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct BannedFileMime {
     pub mime: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub(crate) struct BannedUserAgent {
+    pub pattern: String,
+    pub reason: Option<String>,
 }

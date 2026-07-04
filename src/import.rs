@@ -222,6 +222,7 @@ pub(crate) async fn import_php(
                 file_size: file_size as i64,
                 uploader_ip,
                 content_type: content_type.as_deref(),
+                user_agent: None,
             },
         )
         .await
@@ -272,6 +273,7 @@ pub(crate) async fn import_php(
                 file_size: file_size as i64,
                 uploader_ip: entry.uploader_ip,
                 content_type: content_type.as_deref(),
+                user_agent: None,
             },
             expiry, // no record of the actual deletion time; assume it lived out its expiry
         )

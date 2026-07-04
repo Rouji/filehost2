@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash as `hash: Vec<u8>`, uploader_ip, content_type FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+  "query": "SELECT id as `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash as `hash: Vec<u8>`, uploader_ip, content_type, user_agent FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
   "describe": {
     "columns": [
       {
@@ -26,7 +26,7 @@
         "name": "expiry_timestamp",
         "type_info": {
           "type": "Datetime",
-          "flags": "NOT_NULL | BINARY | NO_DEFAULT_VALUE",
+          "flags": "NOT_NULL | MULTIPLE_KEY | BINARY | NO_DEFAULT_VALUE",
           "max_size": 19
         }
       },
@@ -53,7 +53,7 @@
         "name": "slug",
         "type_info": {
           "type": "VarString",
-          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "flags": "NOT_NULL | MULTIPLE_KEY | NO_DEFAULT_VALUE",
           "max_size": 1020
         }
       },
@@ -72,7 +72,7 @@
         "type_info": {
           "type": "String",
           "flags": "BINARY",
-          "max_size": 16
+          "max_size": 32
         }
       },
       {
@@ -80,7 +80,7 @@
         "name": "uploader_ip",
         "type_info": {
           "type": "Long",
-          "flags": "UNSIGNED",
+          "flags": "MULTIPLE_KEY | UNSIGNED",
           "max_size": 10
         }
       },
@@ -91,6 +91,15 @@
           "type": "VarString",
           "flags": "",
           "max_size": 1020
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "user_agent",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "max_size": 2048
         }
       }
     ],
@@ -107,8 +116,9 @@
       false,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "e114062e0063abae2f145a266b36e0d0f273296ecff0bd946ffd69aa9c90d3bb"
+  "hash": "10e5b63a609535b91c13ffb3a6f52d0a9eeb0a484727a358df537a32c9d6724f"
 }
