@@ -225,6 +225,8 @@ mod tests {
             max_bytes_per_day: None,
             max_upload_bytes_per_sec: None,
             max_upload_burst_bytes: None,
+            db_min_connections: 5,
+            db_max_connections: 20,
         }
     }
 

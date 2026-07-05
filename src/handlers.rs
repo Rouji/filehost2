@@ -381,10 +381,17 @@ pub(crate) async fn get_file(
     let user_agent = req
         .headers()
         .get("User-Agent")
-        .and_then(|v| v.to_str().ok());
-    if let Err(e) = db::log_access(db.get_ref(), row.id, ipv4, user_agent).await {
-        log::warn!("Failed to log file access: {e}");
-    }
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let upload_id = row.id;
+    let db_log = db.clone();
+    tokio::spawn(async move {
+        if let Err(e) =
+            db::log_access(db_log.get_ref(), upload_id, ipv4, user_agent.as_deref()).await
+        {
+            log::warn!("Failed to log file access: {e}");
+        }
+    });
 
     let mime: mime_guess::Mime = row
         .content_type

@@ -17,7 +17,7 @@ use actix_multipart::{MultipartError, form::MultipartFormConfig};
 use actix_web::{App, Error, HttpRequest, HttpServer, middleware::Logger, web};
 use clap::Parser;
 use settings::Settings;
-use sqlx::mysql::MySqlPool;
+use sqlx::mysql::MySqlPoolOptions;
 
 fn handle_multipart_error(err: MultipartError, _req: &HttpRequest) -> Error {
     match err {
@@ -37,7 +37,10 @@ async fn main() -> std::io::Result<()> {
     let mut settings =
         Settings::from_env().expect("Failed to load settings from environment variables");
 
-    let db = MySqlPool::connect(&settings.database_url)
+    let db = MySqlPoolOptions::new()
+        .max_connections(settings.db_max_connections)
+        .min_connections(settings.db_min_connections)
+        .connect(&settings.database_url)
         .await
         .expect("Failed to connect to database");
 

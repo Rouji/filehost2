@@ -40,6 +40,8 @@ mod tests {
             max_bytes_per_day: None,
             max_upload_bytes_per_sec: None,
             max_upload_burst_bytes: None,
+            db_min_connections: 5,
+            db_max_connections: 20,
         }
     }
 
@@ -376,6 +378,21 @@ mod tests {
             .to_string()
     }
 
+    // since log_access is a background task ...
+    async fn wait_for_accesses_count(pool: &MySqlPool, expected: i64) {
+        for _ in 0..100 {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accesses")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            if count >= expected {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("accesses row did not appear within timeout");
+    }
+
     #[sqlx::test]
     async fn download_is_logged(pool: MySqlPool) {
         let app = full_app(test_settings(), pool.clone()).await;
@@ -390,6 +407,7 @@ mod tests {
         .await;
         assert!(resp.status().is_success());
 
+        wait_for_accesses_count(&pool, 1).await;
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accesses")
             .fetch_one(&pool)
             .await
@@ -414,6 +432,7 @@ mod tests {
         .await;
         assert!(resp.status().is_success());
 
+        wait_for_accesses_count(&pool, 1).await;
         let ipv4: Option<u32> = sqlx::query_scalar("SELECT ipv4 FROM accesses LIMIT 1")
             .fetch_one(&pool)
             .await
@@ -695,7 +714,11 @@ mod tests {
     where
         S: actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error>,
     {
-        test::call_service(app, admin_req(test::TestRequest::delete(), path).to_request()).await
+        test::call_service(
+            app,
+            admin_req(test::TestRequest::delete(), path).to_request(),
+        )
+        .await
     }
 
     /// GETs `path` as admin and decodes the JSON body — used for every "list" endpoint.
@@ -1048,6 +1071,7 @@ mod tests {
         .await;
         assert!(resp.status().is_success());
 
+        wait_for_accesses_count(&pool, 1).await;
         let accessed_ua: Option<String> =
             sqlx::query_scalar("SELECT user_agent FROM accesses LIMIT 1")
                 .fetch_one(&pool)
