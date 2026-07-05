@@ -245,7 +245,7 @@ pub(crate) async fn uploads_count_last_day(db: &MySqlPool, ip: u32) -> Result<i6
 
 pub(crate) async fn uploads_bytes_last_day(db: &MySqlPool, ip: u32) -> Result<i64, sqlx::Error> {
     let bytes = sqlx::query_scalar!(
-        r#"SELECT COALESCE(SUM(file_size), 0) AS `bytes: i64` FROM uploads
+        r#"SELECT CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS `bytes: i64` FROM uploads
          WHERE uploader_ip = ?
          AND upload_timestamp > NOW() - INTERVAL 1 DAY"#,
         ip
