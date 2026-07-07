@@ -1,12 +1,13 @@
+use actix_web::web::Bytes;
 use tinytemplate::TinyTemplate;
 
 use crate::settings::Settings;
 
 #[derive(Clone)]
 pub(crate) struct RenderedTemplates {
-    pub(crate) index: String,
-    pub(crate) hupl: String,
-    pub(crate) sharex: String,
+    pub(crate) index: Bytes,
+    pub(crate) hupl: Bytes,
+    pub(crate) sharex: Bytes,
 }
 
 pub(crate) fn render(settings: &Settings) -> RenderedTemplates {
@@ -19,14 +20,17 @@ pub(crate) fn render(settings: &Settings) -> RenderedTemplates {
         .expect("Failed to add template");
 
     RenderedTemplates {
-        index: tt
-            .render("index", &settings)
-            .expect("Failed to render index template"),
-        hupl: tt
-            .render("hupl", &settings)
-            .expect("Failed to render hupl template"),
-        sharex: tt
-            .render("sharex", &settings)
-            .expect("Failed to render sharex template"),
+        index: Bytes::from(
+            tt.render("index", &settings)
+                .expect("Failed to render index template"),
+        ),
+        hupl: Bytes::from(
+            tt.render("hupl", &settings)
+                .expect("Failed to render hupl template"),
+        ),
+        sharex: Bytes::from(
+            tt.render("sharex", &settings)
+                .expect("Failed to render sharex template"),
+        ),
     }
 }
