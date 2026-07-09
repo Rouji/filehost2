@@ -131,14 +131,42 @@ async fn process_file(
 
     let (content_type_str, ct_subtype) = determine_content_type(&file, &original_name);
 
-    let slug = build_slug(
-        &original_name,
-        ct_subtype.as_deref(),
-        id_len,
-        settings.auto_file_ext,
-        settings.max_ext_len,
-        keep_name,
-    );
+    let slug = {
+        const MAX_SLUG_ATTEMPTS: u32 = 3;
+        let slug;
+        let mut id_len = id_len;
+        'outer: loop {
+            for _ in 0..MAX_SLUG_ATTEMPTS {
+                let candidate = build_slug(
+                    &original_name,
+                    ct_subtype.as_deref(),
+                    id_len,
+                    settings.auto_file_ext,
+                    settings.max_ext_len,
+                    keep_name,
+                );
+                match db::is_slug_taken(db, &candidate).await {
+                    Ok(true) => continue,
+                    Ok(false) => {
+                        slug = Some(candidate);
+                        break 'outer;
+                    }
+                    Err(e) => {
+                        log::error!("failed to check slug availability: {e}");
+                        return Err(internal_err());
+                    }
+                }
+            }
+            id_len += 1;
+        }
+        match slug {
+            Some(slug) => slug,
+            None => {
+                log::error!("could not find an unused slug");
+                return Err(internal_err());
+            }
+        }
+    };
     let expiry = calculate_expiry(file_size, settings);
     let save_path = uuid_to_path(Path::new(&settings.store_path), &uuid);
 

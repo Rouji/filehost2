@@ -11,6 +11,16 @@ use crate::model::{
 use crate::settings::Settings;
 use crate::upload::uuid_to_path;
 
+pub(crate) async fn is_slug_taken(db: &MySqlPool, slug: &str) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query!(
+        "SELECT 1 AS found FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+        slug
+    )
+    .fetch_optional(db)
+    .await?
+    .is_some())
+}
+
 pub(crate) async fn is_ip_banned(db: &MySqlPool, ip: u32) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query!(
         "SELECT 1 AS found FROM banned_ipv4_ranges \
