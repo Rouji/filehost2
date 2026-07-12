@@ -81,10 +81,10 @@ async fn check_under_limit(
 /// get content_type from the file
 /// or guess from file name, if it's octet-stream or not set at all
 fn determine_content_type(file: &HashedTempFile, original_name: &str) -> (String, Option<String>) {
-    if let Some(ref ct) = file.content_type {
-        if *ct != mime_guess::mime::APPLICATION_OCTET_STREAM {
-            return (ct.to_string(), Some(ct.subtype().to_string()));
-        }
+    if let Some(ref ct) = file.content_type
+        && *ct != mime_guess::mime::APPLICATION_OCTET_STREAM
+    {
+        return (ct.to_string(), Some(ct.subtype().to_string()));
     }
 
     let guess = mime_guess::from_path(original_name).first();
