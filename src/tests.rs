@@ -238,6 +238,55 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn octet_stream_upload_falls_back_to_extension_guess(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool).await;
+
+        let req = multipart_request(&multipart_body_with_type(
+            "clip.mp4",
+            "application/octet-stream",
+            "fake mp4 bytes",
+        ));
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "upload failed: {}",
+            resp.status()
+        );
+
+        let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+        let slug = url.trim().trim_start_matches("http://localhost:8080/");
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/{slug}"))
+                .to_request(),
+        )
+        .await;
+        assert!(resp.status().is_success());
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ct.contains("video/mp4"),
+            "expected extension-based guess of video/mp4, got: {ct}"
+        );
+
+        let cd = resp
+            .headers()
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            cd.starts_with("inline"),
+            "expected inline disposition, got: {cd}"
+        );
+    }
+
+    #[sqlx::test]
     async fn formatted_upload_returns_html_link(pool: MySqlPool) {
         let app = full_app(test_settings(), pool).await;
 
