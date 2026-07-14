@@ -91,7 +91,7 @@ async fn delete_matching(
     let sql = format!(
         "SELECT id, slug, original_name FROM uploads WHERE {where_clause} AND deleted_timestamp IS NULL"
     );
-    let rows = bind(sqlx::query(&sql))
+    let rows = bind(sqlx::query(sqlx::AssertSqlSafe(sql)))
         .try_map(|row: sqlx::mysql::MySqlRow| {
             Ok((
                 row.try_get::<Uuid, _>("id")?,
@@ -329,7 +329,7 @@ pub(crate) async fn list_uploads(
     }
     sql.push_str(" ORDER BY upload_timestamp DESC LIMIT ? OFFSET ?");
 
-    let mut q = sqlx::query_as::<_, Upload>(&sql);
+    let mut q = sqlx::query_as::<_, Upload>(sqlx::AssertSqlSafe(sql));
     if let Some(ip) = ip {
         q = q.bind(ip);
     }

@@ -16,22 +16,22 @@ actix-files = "0.6.10"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 actix-multipart = "0.7.2"
-actix-web = { version = "4.0", features = ["http2"] }
+actix-web = { version = "4.14", features = ["http2"] }
 env-settings-derive = "0.1.15"
 env-settings-utils = "0.1.15"
-env_logger = "0.11.8"
+env_logger = "0.11.11"
 log = "0.4"
 blake3 = "1"
 futures-util = "0.3"
 mime = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "sync", "time"] }
-rand = "0.10.0"
+rand = "0.10.2"
 time = { version = "0.3", features = ["parsing", "formatting"] }
 serde = { version = "1.0.228", features = ["derive"] }
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "mysql", "macros", "migrate", "time", "uuid"] }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "mysql", "macros", "migrate", "time", "uuid"] }
 tempfile = "3"
 tinytemplate = "1.2.1"
-uuid = { version="1.21.0", features=["v4"] }
+uuid = { version="1.23.5", features=["v4"] }
 mime_guess = "2"
 dotenvy = "0.15.7"
 percent-encoding = "2.3.2"

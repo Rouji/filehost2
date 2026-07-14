@@ -9,7 +9,14 @@
         "type_info": {
           "type": "String",
           "flags": "NOT_NULL | PRIMARY_KEY | BINARY | NO_DEFAULT_VALUE",
+          "collation": 63,
           "max_size": 16
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "id"
+          }
         }
       },
       {
@@ -18,7 +25,14 @@
         "type_info": {
           "type": "Datetime",
           "flags": "NOT_NULL | BINARY",
+          "collation": 63,
           "max_size": 19
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "upload_timestamp"
+          }
         }
       },
       {
@@ -27,7 +41,14 @@
         "type_info": {
           "type": "Datetime",
           "flags": "NOT_NULL | MULTIPLE_KEY | BINARY | NO_DEFAULT_VALUE",
+          "collation": 63,
           "max_size": 19
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "expiry_timestamp"
+          }
         }
       },
       {
@@ -36,7 +57,14 @@
         "type_info": {
           "type": "Datetime",
           "flags": "BINARY",
+          "collation": 63,
           "max_size": 19
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "deleted_timestamp"
+          }
         }
       },
       {
@@ -45,7 +73,14 @@
         "type_info": {
           "type": "VarString",
           "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "collation": 224,
           "max_size": 1020
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "original_name"
+          }
         }
       },
       {
@@ -54,7 +89,14 @@
         "type_info": {
           "type": "VarString",
           "flags": "NOT_NULL | MULTIPLE_KEY | NO_DEFAULT_VALUE",
+          "collation": 224,
           "max_size": 1020
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "slug"
+          }
         }
       },
       {
@@ -63,7 +105,14 @@
         "type_info": {
           "type": "Long",
           "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "collation": 63,
           "max_size": 11
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "file_size"
+          }
         }
       },
       {
@@ -72,7 +121,14 @@
         "type_info": {
           "type": "String",
           "flags": "BINARY",
+          "collation": 63,
           "max_size": 32
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "hash"
+          }
         }
       },
       {
@@ -81,7 +137,14 @@
         "type_info": {
           "type": "Long",
           "flags": "MULTIPLE_KEY | UNSIGNED",
+          "collation": 63,
           "max_size": 10
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "uploader_ip"
+          }
         }
       },
       {
@@ -90,7 +153,14 @@
         "type_info": {
           "type": "VarString",
           "flags": "",
+          "collation": 224,
           "max_size": 1020
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "content_type"
+          }
         }
       },
       {
@@ -99,7 +169,14 @@
         "type_info": {
           "type": "VarString",
           "flags": "",
+          "collation": 224,
           "max_size": 2048
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "user_agent"
+          }
         }
       }
     ],

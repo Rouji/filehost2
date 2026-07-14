@@ -9,7 +9,14 @@
         "type_info": {
           "type": "VarString",
           "flags": "NOT_NULL | PRIMARY_KEY | NO_DEFAULT_VALUE",
+          "collation": 224,
           "max_size": 1020
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.banned_file_mimes",
+            "name": "mime"
+          }
         }
       }
     ],

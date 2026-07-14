@@ -9,7 +9,14 @@
         "type_info": {
           "type": "String",
           "flags": "NOT_NULL | PRIMARY_KEY | BINARY | NO_DEFAULT_VALUE",
+          "collation": 63,
           "max_size": 32
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.banned_file_hashes",
+            "name": "hash"
+          }
         }
       },
       {
@@ -18,7 +25,14 @@
         "type_info": {
           "type": "VarString",
           "flags": "",
+          "collation": 224,
           "max_size": 1020
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.banned_file_hashes",
+            "name": "reason"
+          }
         }
       }
     ],
