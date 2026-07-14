@@ -9,8 +9,6 @@ pub(crate) struct Settings {
     pub database_url: String,
     #[env_settings(default = 20)]
     pub db_max_connections: u32,
-    #[env_settings(default = 5)]
-    pub db_min_connections: u32,
 
     pub base_url: Option<String>,
 

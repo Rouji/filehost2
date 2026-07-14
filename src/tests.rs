@@ -11,6 +11,7 @@ mod tests {
     use sqlx::MySqlPool;
 
     use crate::admin;
+    use crate::db_pool;
     use crate::handlers;
     use crate::settings::Settings;
     use crate::templates;
@@ -40,7 +41,6 @@ mod tests {
             max_bytes_per_day: None,
             max_upload_bytes_per_sec: None,
             max_upload_burst_bytes: None,
-            db_min_connections: 5,
             db_max_connections: 20,
         }
     }
@@ -58,19 +58,29 @@ mod tests {
         .await
     }
 
+    // `#[sqlx::test]` only knows how to hand back a real `sqlx::MySqlPool` (it's what
+    // creates/migrates/tears down the isolated per-test database), but application code
+    // runs on a deadpool-backed pool in production — so point a deadpool pool at that same
+    // per-test database instead of handing the raw sqlx pool to app/CLI code under test.
+    fn to_db_pool(pool: &MySqlPool) -> db_pool::DbPool {
+        db_pool::build_pool((*pool.connect_options()).clone(), 5)
+            .expect("Failed to build test database pool")
+    }
+
     async fn full_app(
         settings: Settings,
         pool: MySqlPool,
     ) -> impl actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error> {
         std::fs::create_dir_all(&settings.store_path).unwrap();
         let tmpl = templates::render(&settings);
+        let db_pool = to_db_pool(&pool);
         test::init_service(
             App::new()
                 .service(handlers::index)
                 .service(handlers::upload)
                 .service(handlers::get_file)
                 .service(web::scope("/admin").configure(admin::configure))
-                .app_data(web::Data::new(pool))
+                .app_data(web::Data::new(db_pool))
                 .app_data(web::Data::new(settings.clone()))
                 .app_data(web::Data::new(tmpl))
                 .app_data(
@@ -518,7 +528,7 @@ mod tests {
     async fn import_php_imports_file(pool: MySqlPool) {
         let (settings, src) = setup_import(&[("abc123.txt", b"hello")]);
 
-        crate::import::import_php(&pool, &settings, src.clone().into(), None)
+        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), None)
             .await
             .unwrap();
 
@@ -541,7 +551,7 @@ mod tests {
         )
         .unwrap();
 
-        crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
+        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), Some(log_path.into()))
             .await
             .unwrap();
 
@@ -567,7 +577,7 @@ mod tests {
         )
         .unwrap();
 
-        crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
+        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), Some(log_path.into()))
             .await
             .unwrap();
 
@@ -598,7 +608,7 @@ mod tests {
         )
         .unwrap();
 
-        crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
+        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), Some(log_path.into()))
             .await
             .unwrap();
 
@@ -622,7 +632,7 @@ mod tests {
         )
         .unwrap();
 
-        crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
+        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), Some(log_path.into()))
             .await
             .unwrap();
 
@@ -658,14 +668,14 @@ mod tests {
         .unwrap();
 
         crate::import::import_php(
-            &pool,
+            &to_db_pool(&pool),
             &settings,
             src.clone().into(),
             Some(log_path.clone().into()),
         )
         .await
         .unwrap();
-        crate::import::import_php(&pool, &settings, src.clone().into(), Some(log_path.into()))
+        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), Some(log_path.into()))
             .await
             .unwrap();
 
@@ -685,10 +695,10 @@ mod tests {
     async fn import_php_is_idempotent(pool: MySqlPool) {
         let (settings, src) = setup_import(&[("abc123.txt", b"hello")]);
 
-        crate::import::import_php(&pool, &settings, src.clone().into(), None)
+        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), None)
             .await
             .unwrap();
-        crate::import::import_php(&pool, &settings, src.clone().into(), None)
+        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), None)
             .await
             .unwrap();
 

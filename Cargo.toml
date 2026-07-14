@@ -35,3 +35,4 @@ uuid = { version="1.23.5", features=["v4"] }
 mime_guess = "2"
 dotenvy = "0.15.7"
 percent-encoding = "2.3.2"
+deadpool = { version = "0.13.0", features = ["managed", "rt_tokio_1"] }

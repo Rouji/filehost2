@@ -3,10 +3,10 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use sqlx::mysql::MySqlPool;
 use uuid::Uuid;
 
 use crate::db;
+use crate::db_pool::{self, DbPool};
 use crate::import;
 use crate::settings::Settings;
 
@@ -43,20 +43,21 @@ pub(crate) enum DeleteTarget {
     IpRange { start: Ipv4Addr, end: Ipv4Addr },
 }
 
-pub(crate) async fn migrate(db: &MySqlPool) -> Result<()> {
-    sqlx::migrate!().run(db).await?;
+pub(crate) async fn migrate(db: &DbPool) -> Result<()> {
+    let mut conn = db_pool::conn(db).await?;
+    sqlx::migrate!().run(&mut *conn).await?;
     println!("Migrations applied.");
     Ok(())
 }
 
-pub(crate) async fn delete_expired(db: &MySqlPool, settings: &Settings) -> Result<()> {
+pub(crate) async fn delete_expired(db: &DbPool, settings: &Settings) -> Result<()> {
     let count = db::delete_expired(db, settings).await?;
     println!("Deleted {count} expired upload(s).");
     Ok(())
 }
 
 pub(crate) async fn import_php(
-    db: &MySqlPool,
+    db: &DbPool,
     settings: &Settings,
     files: PathBuf,
     log: Option<PathBuf>,
@@ -65,7 +66,7 @@ pub(crate) async fn import_php(
 }
 
 pub(crate) async fn delete(
-    db: &MySqlPool,
+    db: &DbPool,
     settings: &Settings,
     target: DeleteTarget,
 ) -> Result<()> {

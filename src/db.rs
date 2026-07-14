@@ -1,77 +1,84 @@
 use std::path::Path;
 
 use anyhow::Result;
-use sqlx::{Row, mysql::MySqlPool};
+use sqlx::Row;
 use time::PrimitiveDateTime;
 use uuid::Uuid;
 
+use crate::db_pool::{self, DbPool};
 use crate::model::{
     BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, BannedUserAgent, Upload,
 };
 use crate::settings::Settings;
 use crate::upload::uuid_to_path;
 
-pub(crate) async fn is_slug_taken(db: &MySqlPool, slug: &str) -> Result<bool, sqlx::Error> {
+pub(crate) async fn is_slug_taken(db: &DbPool, slug: &str) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     Ok(sqlx::query!(
         "SELECT 1 AS found FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
         slug
     )
-    .fetch_optional(db)
+    .fetch_optional(&mut *conn)
     .await?
     .is_some())
 }
 
-pub(crate) async fn is_ip_banned(db: &MySqlPool, ip: u32) -> Result<bool, sqlx::Error> {
+pub(crate) async fn is_ip_banned(db: &DbPool, ip: u32) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     Ok(sqlx::query!(
         "SELECT 1 AS found FROM banned_ipv4_ranges \
          WHERE ? BETWEEN start_ip AND end_ip \
          AND (expires_timestamp IS NULL OR expires_timestamp > NOW())",
         ip
     )
-    .fetch_optional(db)
+    .fetch_optional(&mut *conn)
     .await?
     .is_some())
 }
 
-pub(crate) async fn is_extension_banned(db: &MySqlPool, ext: &str) -> Result<bool, sqlx::Error> {
+pub(crate) async fn is_extension_banned(db: &DbPool, ext: &str) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     Ok(sqlx::query!(
         "SELECT 1 AS found FROM banned_file_extensions WHERE extension = ?",
         ext
     )
-    .fetch_optional(db)
+    .fetch_optional(&mut *conn)
     .await?
     .is_some())
 }
 
-pub(crate) async fn is_mime_banned(db: &MySqlPool, mime: &str) -> Result<bool, sqlx::Error> {
+pub(crate) async fn is_mime_banned(db: &DbPool, mime: &str) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     Ok(sqlx::query!(
         "SELECT 1 AS found FROM banned_file_mimes WHERE mime = ?",
         mime
     )
-    .fetch_optional(db)
+    .fetch_optional(&mut *conn)
     .await?
     .is_some())
 }
 
-pub(crate) async fn is_hash_banned(db: &MySqlPool, hash: &[u8]) -> Result<bool, sqlx::Error> {
+pub(crate) async fn is_hash_banned(db: &DbPool, hash: &[u8]) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     Ok(sqlx::query!(
         "SELECT 1 AS found FROM banned_file_hashes WHERE hash = ?",
         hash
     )
-    .fetch_optional(db)
+    .fetch_optional(&mut *conn)
     .await?
     .is_some())
 }
 
 pub(crate) async fn is_user_agent_banned(
-    db: &MySqlPool,
+    db: &DbPool,
     user_agent: &str,
 ) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     Ok(sqlx::query!(
         "SELECT 1 AS found FROM banned_user_agents WHERE ? LIKE CONCAT('%', pattern, '%') LIMIT 1",
         user_agent
     )
-    .fetch_optional(db)
+    .fetch_optional(&mut *conn)
     .await?
     .is_some())
 }
@@ -81,7 +88,7 @@ pub(crate) async fn is_user_agent_banned(
 /// variants, which differ only in which rows they select. The clause is built
 /// at runtime, so this can't use the compile-time-checked query macros.
 async fn delete_matching(
-    db: &MySqlPool,
+    db: &DbPool,
     settings: &Settings,
     where_clause: &str,
     bind: impl FnOnce(
@@ -91,16 +98,19 @@ async fn delete_matching(
     let sql = format!(
         "SELECT id, slug, original_name FROM uploads WHERE {where_clause} AND deleted_timestamp IS NULL"
     );
-    let rows = bind(sqlx::query(sqlx::AssertSqlSafe(sql)))
-        .try_map(|row: sqlx::mysql::MySqlRow| {
-            Ok((
-                row.try_get::<Uuid, _>("id")?,
-                row.try_get::<String, _>("slug")?,
-                row.try_get::<String, _>("original_name")?,
-            ))
-        })
-        .fetch_all(db)
-        .await?;
+    let rows = {
+        let mut conn = db_pool::conn(db).await?;
+        bind(sqlx::query(sqlx::AssertSqlSafe(sql)))
+            .try_map(|row: sqlx::mysql::MySqlRow| {
+                Ok((
+                    row.try_get::<Uuid, _>("id")?,
+                    row.try_get::<String, _>("slug")?,
+                    row.try_get::<String, _>("original_name")?,
+                ))
+            })
+            .fetch_all(&mut *conn)
+            .await?
+    };
     let count = rows.len();
     for (id, slug, original_name) in rows {
         delete_one(db, settings, id, &slug, &original_name).await?;
@@ -108,28 +118,28 @@ async fn delete_matching(
     Ok(count)
 }
 
-pub(crate) async fn delete_expired(db: &MySqlPool, settings: &Settings) -> Result<usize> {
+pub(crate) async fn delete_expired(db: &DbPool, settings: &Settings) -> Result<usize> {
     delete_matching(db, settings, "expiry_timestamp <= NOW()", |q| q).await
 }
 
-pub(crate) async fn delete_by_id(db: &MySqlPool, settings: &Settings, id: Uuid) -> Result<usize> {
+pub(crate) async fn delete_by_id(db: &DbPool, settings: &Settings, id: Uuid) -> Result<usize> {
     delete_matching(db, settings, "id = ?", |q| q.bind(id)).await
 }
 
 pub(crate) async fn delete_by_slug(
-    db: &MySqlPool,
+    db: &DbPool,
     settings: &Settings,
     slug: &str,
 ) -> Result<usize> {
     delete_matching(db, settings, "slug = ?", |q| q.bind(slug.to_owned())).await
 }
 
-pub(crate) async fn delete_by_ip(db: &MySqlPool, settings: &Settings, ip: u32) -> Result<usize> {
+pub(crate) async fn delete_by_ip(db: &DbPool, settings: &Settings, ip: u32) -> Result<usize> {
     delete_matching(db, settings, "uploader_ip = ?", |q| q.bind(ip)).await
 }
 
 pub(crate) async fn delete_by_ip_range(
-    db: &MySqlPool,
+    db: &DbPool,
     settings: &Settings,
     start: u32,
     end: u32,
@@ -152,12 +162,14 @@ pub(crate) struct NewUpload<'a> {
     pub user_agent: Option<&'a str>,
 }
 
-pub(crate) async fn insert_upload(db: &MySqlPool, upload: &NewUpload<'_>) -> anyhow::Result<bool> {
+pub(crate) async fn insert_upload(db: &DbPool, upload: &NewUpload<'_>) -> anyhow::Result<bool> {
+    let mut conn = db_pool::conn(db).await?;
+
     let exists = sqlx::query!(
         "SELECT 1 AS found FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
         upload.slug
     )
-    .fetch_optional(db)
+    .fetch_optional(&mut *conn)
     .await?
     .is_some();
 
@@ -178,7 +190,7 @@ pub(crate) async fn insert_upload(db: &MySqlPool, upload: &NewUpload<'_>) -> any
         upload.content_type,
         upload.user_agent,
     )
-    .execute(db)
+    .execute(&mut *conn)
     .await?;
 
     Ok(true)
@@ -189,12 +201,14 @@ pub(crate) async fn insert_upload(db: &MySqlPool, upload: &NewUpload<'_>) -> any
 /// `insert_upload`, existence is checked regardless of `deleted_timestamp` — these are
 /// one-time archival records, not something a slug should be allowed to reclaim.
 pub(crate) async fn insert_historical_upload(
-    db: &MySqlPool,
+    db: &DbPool,
     upload: &NewUpload<'_>,
     deleted_timestamp: time::PrimitiveDateTime,
 ) -> anyhow::Result<bool> {
+    let mut conn = db_pool::conn(db).await?;
+
     let exists = sqlx::query!("SELECT 1 AS found FROM uploads WHERE slug = ?", upload.slug)
-        .fetch_optional(db)
+        .fetch_optional(&mut *conn)
         .await?
         .is_some();
 
@@ -216,68 +230,99 @@ pub(crate) async fn insert_historical_upload(
         upload.content_type,
         upload.user_agent,
     )
-    .execute(db)
+    .execute(&mut *conn)
     .await?;
 
     Ok(true)
 }
 
 pub(crate) async fn historical_upload_slugs(
-    db: &MySqlPool,
+    db: &DbPool,
 ) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     let rows = sqlx::query!(
         r#"SELECT id AS `id: Uuid`, slug FROM uploads WHERE deleted_timestamp IS NOT NULL"#
     )
-    .fetch_all(db)
+    .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().map(|r| (r.id, r.slug)).collect())
 }
 
+/// Inserts a freshly-uploaded file's row. Distinct from `insert_upload`: this one
+/// carries the content hash and lets the DB default `upload_timestamp`, matching
+/// what `handlers::process_file` needs right after saving the file to disk.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn insert_upload_row(
+    db: &DbPool,
+    id: Uuid,
+    original_name: &str,
+    expiry_timestamp: PrimitiveDateTime,
+    slug: &str,
+    file_size: i64,
+    hash: &[u8],
+    uploader_ip: Option<u32>,
+    content_type: &str,
+    user_agent: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    sqlx::query!(
+        "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type, user_agent,
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// Hard-deletes a row outright, rather than soft-deleting it like `delete_by_id` does.
-pub(crate) async fn hard_delete_upload(db: &MySqlPool, id: Uuid) -> Result<(), sqlx::Error> {
+pub(crate) async fn hard_delete_upload(db: &DbPool, id: Uuid) -> Result<(), sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query!("DELETE FROM uploads WHERE id = ?", id)
-        .execute(db)
+        .execute(&mut *conn)
         .await?;
     Ok(())
 }
 
-pub(crate) async fn uploads_count_last_day(db: &MySqlPool, ip: u32) -> Result<i64, sqlx::Error> {
+pub(crate) async fn uploads_count_last_day(db: &DbPool, ip: u32) -> Result<i64, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     let count = sqlx::query_scalar!(
         "SELECT COUNT(*) FROM uploads \
          WHERE uploader_ip = ? \
          AND upload_timestamp > NOW() - INTERVAL 1 DAY",
         ip
     )
-    .fetch_one(db)
+    .fetch_one(&mut *conn)
     .await?;
     Ok(count)
 }
 
-pub(crate) async fn uploads_bytes_last_day(db: &MySqlPool, ip: u32) -> Result<i64, sqlx::Error> {
+pub(crate) async fn uploads_bytes_last_day(db: &DbPool, ip: u32) -> Result<i64, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     let bytes = sqlx::query_scalar!(
         r#"SELECT CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS `bytes: i64` FROM uploads
          WHERE uploader_ip = ?
          AND upload_timestamp > NOW() - INTERVAL 1 DAY"#,
         ip
     )
-    .fetch_one(db)
+    .fetch_one(&mut *conn)
     .await?;
     Ok(bytes)
 }
 
 pub(crate) async fn log_access(
-    db: &MySqlPool,
+    db: &DbPool,
     upload_id: Uuid,
     ipv4: Option<u32>,
     user_agent: Option<&str>,
 ) -> Result<(), sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query!(
         "INSERT INTO accesses (upload_id, ipv4, user_agent) VALUES (?, ?, ?)",
         upload_id,
         ipv4,
         user_agent
     )
-    .execute(db)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
@@ -291,7 +336,8 @@ pub(crate) struct GlobalStats {
     pub bytes_last_24h: i64,
 }
 
-pub(crate) async fn global_stats(db: &MySqlPool) -> Result<GlobalStats, sqlx::Error> {
+pub(crate) async fn global_stats(db: &DbPool) -> Result<GlobalStats, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
         GlobalStats,
         "SELECT \
@@ -302,12 +348,12 @@ pub(crate) async fn global_stats(db: &MySqlPool) -> Result<GlobalStats, sqlx::Er
            CAST(COALESCE(SUM(CASE WHEN upload_timestamp > NOW() - INTERVAL 1 DAY THEN file_size ELSE 0 END), 0) AS SIGNED) AS bytes_last_24h \
          FROM uploads"
     )
-    .fetch_one(db)
+    .fetch_one(&mut *conn)
     .await
 }
 
 pub(crate) async fn list_uploads(
-    db: &MySqlPool,
+    db: &DbPool,
     ip: Option<u32>,
     slug: Option<&str>,
     include_deleted: bool,
@@ -336,13 +382,15 @@ pub(crate) async fn list_uploads(
     if let Some(slug) = slug {
         q = q.bind(slug);
     }
-    q.bind(limit).bind(offset).fetch_all(db).await
+    let mut conn = db_pool::conn(db).await?;
+    q.bind(limit).bind(offset).fetch_all(&mut *conn).await
 }
 
 pub(crate) async fn get_upload_by_slug(
-    db: &MySqlPool,
+    db: &DbPool,
     slug: &str,
 ) -> Result<Option<Upload>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
         Upload,
         "SELECT id AS `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, \
@@ -350,26 +398,28 @@ pub(crate) async fn get_upload_by_slug(
          FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
         slug
     )
-    .fetch_optional(db)
+    .fetch_optional(&mut *conn)
     .await
 }
 
-pub(crate) async fn list_banned_ips(db: &MySqlPool) -> Result<Vec<BannedIpv4Range>, sqlx::Error> {
+pub(crate) async fn list_banned_ips(db: &DbPool) -> Result<Vec<BannedIpv4Range>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
         BannedIpv4Range,
         "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp FROM banned_ipv4_ranges ORDER BY id DESC"
     )
-    .fetch_all(db)
+    .fetch_all(&mut *conn)
     .await
 }
 
 pub(crate) async fn insert_banned_ip(
-    db: &MySqlPool,
+    db: &DbPool,
     start_ip: u32,
     end_ip: u32,
     reason: Option<&str>,
     expires_timestamp: Option<PrimitiveDateTime>,
 ) -> Result<i64, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!(
         "INSERT INTO banned_ipv4_ranges (start_ip, end_ip, reason, expires_timestamp) VALUES (?, ?, ?, ?)",
         start_ip,
@@ -377,147 +427,160 @@ pub(crate) async fn insert_banned_ip(
         reason,
         expires_timestamp
     )
-    .execute(db)
+    .execute(&mut *conn)
     .await?;
     Ok(result.last_insert_id() as i64)
 }
 
-pub(crate) async fn delete_banned_ip(db: &MySqlPool, id: i64) -> Result<bool, sqlx::Error> {
+pub(crate) async fn delete_banned_ip(db: &DbPool, id: i64) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!("DELETE FROM banned_ipv4_ranges WHERE id = ?", id)
-        .execute(db)
+        .execute(&mut *conn)
         .await?;
     Ok(result.rows_affected() > 0)
 }
 
 pub(crate) async fn list_banned_extensions(
-    db: &MySqlPool,
+    db: &DbPool,
 ) -> Result<Vec<BannedFileExtension>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
         BannedFileExtension,
         "SELECT extension FROM banned_file_extensions ORDER BY extension"
     )
-    .fetch_all(db)
+    .fetch_all(&mut *conn)
     .await
 }
 
-pub(crate) async fn insert_banned_extension(db: &MySqlPool, ext: &str) -> Result<(), sqlx::Error> {
+pub(crate) async fn insert_banned_extension(db: &DbPool, ext: &str) -> Result<(), sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query!(
         "INSERT IGNORE INTO banned_file_extensions (extension) VALUES (?)",
         ext
     )
-    .execute(db)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
 
 pub(crate) async fn delete_banned_extension(
-    db: &MySqlPool,
+    db: &DbPool,
     ext: &str,
 ) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!(
         "DELETE FROM banned_file_extensions WHERE extension = ?",
         ext
     )
-    .execute(db)
+    .execute(&mut *conn)
     .await?;
     Ok(result.rows_affected() > 0)
 }
 
-pub(crate) async fn list_banned_mimes(db: &MySqlPool) -> Result<Vec<BannedFileMime>, sqlx::Error> {
+pub(crate) async fn list_banned_mimes(db: &DbPool) -> Result<Vec<BannedFileMime>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
         BannedFileMime,
         "SELECT mime FROM banned_file_mimes ORDER BY mime"
     )
-    .fetch_all(db)
+    .fetch_all(&mut *conn)
     .await
 }
 
-pub(crate) async fn insert_banned_mime(db: &MySqlPool, mime: &str) -> Result<(), sqlx::Error> {
+pub(crate) async fn insert_banned_mime(db: &DbPool, mime: &str) -> Result<(), sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query!(
         "INSERT IGNORE INTO banned_file_mimes (mime) VALUES (?)",
         mime
     )
-    .execute(db)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
 
-pub(crate) async fn delete_banned_mime(db: &MySqlPool, mime: &str) -> Result<bool, sqlx::Error> {
+pub(crate) async fn delete_banned_mime(db: &DbPool, mime: &str) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!("DELETE FROM banned_file_mimes WHERE mime = ?", mime)
-        .execute(db)
+        .execute(&mut *conn)
         .await?;
     Ok(result.rows_affected() > 0)
 }
 
-pub(crate) async fn list_banned_hashes(db: &MySqlPool) -> Result<Vec<BannedFileHash>, sqlx::Error> {
+pub(crate) async fn list_banned_hashes(db: &DbPool) -> Result<Vec<BannedFileHash>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
         BannedFileHash,
         "SELECT hash, reason FROM banned_file_hashes ORDER BY hash"
     )
-    .fetch_all(db)
+    .fetch_all(&mut *conn)
     .await
 }
 
 pub(crate) async fn insert_banned_hash(
-    db: &MySqlPool,
+    db: &DbPool,
     hash: &[u8],
     reason: Option<&str>,
 ) -> Result<(), sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query!(
         "INSERT IGNORE INTO banned_file_hashes (hash, reason) VALUES (?, ?)",
         hash,
         reason
     )
-    .execute(db)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
 
-pub(crate) async fn delete_banned_hash(db: &MySqlPool, hash: &[u8]) -> Result<bool, sqlx::Error> {
+pub(crate) async fn delete_banned_hash(db: &DbPool, hash: &[u8]) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!("DELETE FROM banned_file_hashes WHERE hash = ?", hash)
-        .execute(db)
+        .execute(&mut *conn)
         .await?;
     Ok(result.rows_affected() > 0)
 }
 
 pub(crate) async fn list_banned_user_agents(
-    db: &MySqlPool,
+    db: &DbPool,
 ) -> Result<Vec<BannedUserAgent>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
         BannedUserAgent,
         "SELECT pattern, reason FROM banned_user_agents ORDER BY pattern"
     )
-    .fetch_all(db)
+    .fetch_all(&mut *conn)
     .await
 }
 
 pub(crate) async fn insert_banned_user_agent(
-    db: &MySqlPool,
+    db: &DbPool,
     pattern: &str,
     reason: Option<&str>,
 ) -> Result<(), sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query!(
         "INSERT IGNORE INTO banned_user_agents (pattern, reason) VALUES (?, ?)",
         pattern,
         reason
     )
-    .execute(db)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
 
 pub(crate) async fn delete_banned_user_agent(
-    db: &MySqlPool,
+    db: &DbPool,
     pattern: &str,
 ) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!("DELETE FROM banned_user_agents WHERE pattern = ?", pattern)
-        .execute(db)
+        .execute(&mut *conn)
         .await?;
     Ok(result.rows_affected() > 0)
 }
 
 async fn delete_one(
-    db: &MySqlPool,
+    db: &DbPool,
     settings: &Settings,
     id: Uuid,
     slug: &str,
@@ -527,11 +590,12 @@ async fn delete_one(
     if let Err(e) = std::fs::remove_file(&path) {
         log::warn!("Failed to delete file {}: {e}", path.display());
     }
+    let mut conn = db_pool::conn(db).await?;
     sqlx::query!(
         "UPDATE uploads SET deleted_timestamp = NOW() WHERE id = ?",
         id,
     )
-    .execute(db)
+    .execute(&mut *conn)
     .await?;
     log::info!("Deleted file: {id} {slug} {original_name}");
     Ok(())

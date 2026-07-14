@@ -4,11 +4,11 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use sqlx::mysql::MySqlPool;
 use time::{Duration, OffsetDateTime, PrimitiveDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::db;
+use crate::db_pool::DbPool;
 use crate::settings::Settings;
 use crate::upload::{life_expectancy_days, uuid_to_path};
 
@@ -110,7 +110,7 @@ fn compute_expiry(
 }
 
 pub(crate) async fn import_php(
-    db: &MySqlPool,
+    db: &DbPool,
     settings: &Settings,
     files_path: PathBuf,
     log_path: Option<PathBuf>,

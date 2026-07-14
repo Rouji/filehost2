@@ -12,11 +12,11 @@ use actix_web::{
 };
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Deserialize;
-use sqlx::mysql::MySqlPool;
 use uuid::Uuid;
 
 use crate::clamd;
 use crate::db;
+use crate::db_pool::DbPool;
 use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
 use crate::upload::{HashedTempFile, build_slug, calculate_expiry, extract_ip, uuid_to_path};
@@ -108,7 +108,7 @@ fn save_file(tmp: tempfile::NamedTempFile, dest: &Path) -> std::io::Result<()> {
 }
 
 async fn process_file(
-    db: &MySqlPool,
+    db: &DbPool,
     settings: &Settings,
     file: HashedTempFile,
     uploader_ip: Option<u32>,
@@ -201,11 +201,18 @@ async fn process_file(
         return Err(internal_err());
     }
 
-    if let Err(e) = sqlx::query!(
-        "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        uuid, original_name, expiry, slug, file_size as i64, hash.as_slice(), uploader_ip, content_type_str, user_agent,
+    if let Err(e) = db::insert_upload_row(
+        db,
+        uuid,
+        &original_name,
+        expiry,
+        &slug,
+        file_size as i64,
+        hash.as_slice(),
+        uploader_ip,
+        &content_type_str,
+        user_agent,
     )
-    .execute(db)
     .await
     {
         log::error!("insert failed: {e}");
@@ -294,7 +301,7 @@ fn escape_html(s: &str) -> String {
 pub(crate) async fn upload(
     req: HttpRequest,
     MultipartForm(form): MultipartForm<UploadForm>,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     settings: web::Data<Settings>,
 ) -> impl Responder {
     let id_len = if let Some(ref t) = form.id_length {
@@ -400,7 +407,7 @@ pub(crate) async fn upload(
 pub(crate) async fn get_file(
     req: HttpRequest,
     path: web::Path<(String,)>,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     settings: web::Data<Settings>,
 ) -> actix_web::Result<NamedFile> {
     let slug = &path.0;

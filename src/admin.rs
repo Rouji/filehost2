@@ -6,11 +6,11 @@ use actix_web::{
 };
 use futures_util::future::{Ready, ready};
 use serde::{Deserialize, Serialize};
-use sqlx::mysql::MySqlPool;
 use time::{OffsetDateTime, PrimitiveDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::db;
+use crate::db_pool::DbPool;
 use crate::model::{
     BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, BannedUserAgent, Upload,
 };
@@ -169,7 +169,7 @@ impl From<Upload> for UploadDto {
 }
 
 #[get("/stats")]
-pub(crate) async fn stats(_auth: AdminAuth, db: web::Data<MySqlPool>) -> impl Responder {
+pub(crate) async fn stats(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Responder {
     match db::global_stats(db.get_ref()).await {
         Ok(stats) => HttpResponse::Ok().json(stats),
         Err(e) => internal_err(e, "global_stats"),
@@ -188,7 +188,7 @@ pub(crate) struct ListUploadsQuery {
 #[get("/uploads")]
 pub(crate) async fn list_uploads(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     query: web::Query<ListUploadsQuery>,
 ) -> impl Responder {
     let ip = match query.ip.as_deref().map(str::parse::<Ipv4Addr>) {
@@ -219,7 +219,7 @@ pub(crate) async fn list_uploads(
 #[delete("/uploads/{id}")]
 pub(crate) async fn delete_upload(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     settings: web::Data<Settings>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
@@ -238,7 +238,7 @@ pub(crate) async fn delete_upload(
 #[delete("/uploads/slug/{slug}")]
 pub(crate) async fn delete_upload_by_slug(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     settings: web::Data<Settings>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
@@ -286,7 +286,7 @@ pub(crate) struct BannedIpRangeCreate {
 }
 
 #[get("/bans/ips")]
-pub(crate) async fn list_banned_ips(_auth: AdminAuth, db: web::Data<MySqlPool>) -> impl Responder {
+pub(crate) async fn list_banned_ips(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Responder {
     match db::list_banned_ips(db.get_ref()).await {
         Ok(rows) => HttpResponse::Ok().json(
             rows.into_iter()
@@ -300,7 +300,7 @@ pub(crate) async fn list_banned_ips(_auth: AdminAuth, db: web::Data<MySqlPool>) 
 #[post("/bans/ips")]
 pub(crate) async fn add_banned_ip(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     body: web::Json<BannedIpRangeCreate>,
 ) -> impl Responder {
     let Ok(start_ip) = body.start_ip.parse::<Ipv4Addr>() else {
@@ -337,7 +337,7 @@ pub(crate) async fn add_banned_ip(
 #[delete("/bans/ips/{id}")]
 pub(crate) async fn remove_banned_ip(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     path: web::Path<(i64,)>,
 ) -> impl Responder {
     let id = path.into_inner().0;
@@ -361,7 +361,7 @@ pub(crate) struct ExtensionCreate {
 #[get("/bans/extensions")]
 pub(crate) async fn list_banned_extensions(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
 ) -> impl Responder {
     match db::list_banned_extensions(db.get_ref()).await {
         Ok(rows) => HttpResponse::Ok().json(
@@ -376,7 +376,7 @@ pub(crate) async fn list_banned_extensions(
 #[post("/bans/extensions")]
 pub(crate) async fn add_banned_extension(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     body: web::Json<ExtensionCreate>,
 ) -> impl Responder {
     match db::insert_banned_extension(db.get_ref(), &body.extension).await {
@@ -391,7 +391,7 @@ pub(crate) async fn add_banned_extension(
 #[delete("/bans/extensions/{extension}")]
 pub(crate) async fn remove_banned_extension(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let ext = path.into_inner().0;
@@ -415,7 +415,7 @@ pub(crate) struct MimeCreate {
 #[get("/bans/mimes")]
 pub(crate) async fn list_banned_mimes(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
 ) -> impl Responder {
     match db::list_banned_mimes(db.get_ref()).await {
         Ok(rows) => HttpResponse::Ok().json(
@@ -430,7 +430,7 @@ pub(crate) async fn list_banned_mimes(
 #[post("/bans/mimes")]
 pub(crate) async fn add_banned_mime(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     body: web::Json<MimeCreate>,
 ) -> impl Responder {
     match db::insert_banned_mime(db.get_ref(), &body.mime).await {
@@ -446,7 +446,7 @@ pub(crate) async fn add_banned_mime(
 #[delete("/bans/mimes/{mime:.*}")]
 pub(crate) async fn remove_banned_mime(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let mime = path.into_inner().0;
@@ -486,7 +486,7 @@ pub(crate) struct HashCreate {
 #[get("/bans/hashes")]
 pub(crate) async fn list_banned_hashes(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
 ) -> impl Responder {
     match db::list_banned_hashes(db.get_ref()).await {
         Ok(rows) => HttpResponse::Ok().json(
@@ -501,7 +501,7 @@ pub(crate) async fn list_banned_hashes(
 #[post("/bans/hashes")]
 pub(crate) async fn add_banned_hash(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     body: web::Json<HashCreate>,
 ) -> impl Responder {
     let Some(hash) = hex_decode(&body.hash) else {
@@ -528,7 +528,7 @@ pub(crate) async fn add_banned_hash(
 #[delete("/bans/hashes/{hash}")]
 pub(crate) async fn remove_banned_hash(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let hex = path.into_inner().0;
@@ -572,7 +572,7 @@ pub(crate) struct UserAgentCreate {
 #[get("/bans/user-agents")]
 pub(crate) async fn list_banned_user_agents(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
 ) -> impl Responder {
     match db::list_banned_user_agents(db.get_ref()).await {
         Ok(rows) => HttpResponse::Ok().json(
@@ -587,7 +587,7 @@ pub(crate) async fn list_banned_user_agents(
 #[post("/bans/user-agents")]
 pub(crate) async fn add_banned_user_agent(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     body: web::Json<UserAgentCreate>,
 ) -> impl Responder {
     match db::insert_banned_user_agent(db.get_ref(), &body.pattern, body.reason.as_deref()).await {
@@ -603,7 +603,7 @@ pub(crate) async fn add_banned_user_agent(
 #[delete("/bans/user-agents/{pattern:.*}")]
 pub(crate) async fn remove_banned_user_agent(
     _auth: AdminAuth,
-    db: web::Data<MySqlPool>,
+    db: web::Data<DbPool>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let pattern = path.into_inner().0;
