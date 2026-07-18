@@ -300,7 +300,7 @@ fn escape_html(s: &str) -> String {
 #[post("/")]
 pub(crate) async fn upload(
     req: HttpRequest,
-    mut payload: web::Payload,
+    payload: web::Payload,
     db: web::Data<DbPool>,
     settings: web::Data<Settings>,
 ) -> impl Responder {
