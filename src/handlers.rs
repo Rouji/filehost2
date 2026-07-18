@@ -464,6 +464,7 @@ pub(crate) async fn get_file(
     let file_path = uuid_to_path(Path::new(&settings.store_path), &row.id);
     Ok(NamedFile::open(file_path)?
         .use_last_modified(true)
+        .use_etag(true)
         .set_content_type(serve_mime)
         .set_content_disposition(ContentDisposition {
             disposition,
