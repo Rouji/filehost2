@@ -126,11 +126,7 @@ pub(crate) async fn delete_by_id(db: &DbPool, settings: &Settings, id: Uuid) -> 
     delete_matching(db, settings, "id = ?", |q| q.bind(id)).await
 }
 
-pub(crate) async fn delete_by_slug(
-    db: &DbPool,
-    settings: &Settings,
-    slug: &str,
-) -> Result<usize> {
+pub(crate) async fn delete_by_slug(db: &DbPool, settings: &Settings, slug: &str) -> Result<usize> {
     delete_matching(db, settings, "slug = ?", |q| q.bind(slug.to_owned())).await
 }
 
@@ -463,10 +459,7 @@ pub(crate) async fn insert_banned_extension(db: &DbPool, ext: &str) -> Result<()
     Ok(())
 }
 
-pub(crate) async fn delete_banned_extension(
-    db: &DbPool,
-    ext: &str,
-) -> Result<bool, sqlx::Error> {
+pub(crate) async fn delete_banned_extension(db: &DbPool, ext: &str) -> Result<bool, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!(
         "DELETE FROM banned_file_extensions WHERE extension = ?",

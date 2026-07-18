@@ -413,10 +413,7 @@ pub(crate) struct MimeCreate {
 }
 
 #[get("/bans/mimes")]
-pub(crate) async fn list_banned_mimes(
-    _auth: AdminAuth,
-    db: web::Data<DbPool>,
-) -> impl Responder {
+pub(crate) async fn list_banned_mimes(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Responder {
     match db::list_banned_mimes(db.get_ref()).await {
         Ok(rows) => HttpResponse::Ok().json(
             rows.into_iter()
@@ -484,10 +481,7 @@ pub(crate) struct HashCreate {
 }
 
 #[get("/bans/hashes")]
-pub(crate) async fn list_banned_hashes(
-    _auth: AdminAuth,
-    db: web::Data<DbPool>,
-) -> impl Responder {
+pub(crate) async fn list_banned_hashes(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Responder {
     match db::list_banned_hashes(db.get_ref()).await {
         Ok(rows) => HttpResponse::Ok().json(
             rows.into_iter()

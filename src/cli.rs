@@ -65,11 +65,7 @@ pub(crate) async fn import_php(
     import::import_php(db, settings, files, log).await
 }
 
-pub(crate) async fn delete(
-    db: &DbPool,
-    settings: &Settings,
-    target: DeleteTarget,
-) -> Result<()> {
+pub(crate) async fn delete(db: &DbPool, settings: &Settings, target: DeleteTarget) -> Result<()> {
     let count = match target {
         DeleteTarget::Id { id } => db::delete_by_id(db, settings, id).await?,
         DeleteTarget::Slug { slug } => db::delete_by_slug(db, settings, &slug).await?,

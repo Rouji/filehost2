@@ -551,9 +551,14 @@ mod tests {
         )
         .unwrap();
 
-        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), Some(log_path.into()))
-            .await
-            .unwrap();
+        crate::import::import_php(
+            &to_db_pool(&pool),
+            &settings,
+            src.clone().into(),
+            Some(log_path.into()),
+        )
+        .await
+        .unwrap();
 
         let (name, ip) = upload_name_and_ip(&pool, "abc123.txt").await;
         assert_eq!(name, "original name.txt");
@@ -577,9 +582,14 @@ mod tests {
         )
         .unwrap();
 
-        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), Some(log_path.into()))
-            .await
-            .unwrap();
+        crate::import::import_php(
+            &to_db_pool(&pool),
+            &settings,
+            src.clone().into(),
+            Some(log_path.into()),
+        )
+        .await
+        .unwrap();
 
         let (name, ip) = upload_name_and_ip(&pool, "present.txt").await;
         assert_eq!(name, "original name.txt");
@@ -608,9 +618,14 @@ mod tests {
         )
         .unwrap();
 
-        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), Some(log_path.into()))
-            .await
-            .unwrap();
+        crate::import::import_php(
+            &to_db_pool(&pool),
+            &settings,
+            src.clone().into(),
+            Some(log_path.into()),
+        )
+        .await
+        .unwrap();
 
         let (name, _) = upload_name_and_ip(&pool, "abc123.txt").await;
         assert_eq!(name, "new.txt");
@@ -632,9 +647,14 @@ mod tests {
         )
         .unwrap();
 
-        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), Some(log_path.into()))
-            .await
-            .unwrap();
+        crate::import::import_php(
+            &to_db_pool(&pool),
+            &settings,
+            src.clone().into(),
+            Some(log_path.into()),
+        )
+        .await
+        .unwrap();
 
         let row: (String, i64, Option<u32>, Option<time::PrimitiveDateTime>) = sqlx::query_as(
             "SELECT original_name, file_size, uploader_ip, deleted_timestamp FROM uploads WHERE slug = 'gone.txt'",
@@ -675,9 +695,14 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::import::import_php(&to_db_pool(&pool), &settings, src.clone().into(), Some(log_path.into()))
-            .await
-            .unwrap();
+        crate::import::import_php(
+            &to_db_pool(&pool),
+            &settings,
+            src.clone().into(),
+            Some(log_path.into()),
+        )
+        .await
+        .unwrap();
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads WHERE slug = 'gone.txt'")
             .fetch_one(&pool)
