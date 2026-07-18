@@ -214,12 +214,13 @@ async fn process_file(
         return Err(internal_err());
     }
 
-    let content_type_for_db = file
-        .detected_content_type
-        .as_ref()
-        .filter(|m| m.type_() != "text" || m.subtype() != "plain")
-        .map(|m| m.to_string())
-        .unwrap_or_else(|| content_type_str.clone());
+    let content_type_for_db = match (&file.detected_content_type, content_type_str.as_str()) {
+        (Some(detected), _) if detected.type_() != "text" || detected.subtype() != "plain" => {
+            detected.to_string()
+        }
+        (Some(_), "application/octet-stream") => "text/plain".to_string(),
+        _ => content_type_str,
+    };
 
     if let Err(e) = db::insert_upload_row(
         db,
