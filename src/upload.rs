@@ -13,6 +13,8 @@ use tokio::io::AsyncWriteExt as _;
 use crate::rate_limit::UploadThrottle;
 use crate::settings::Settings;
 
+use file_type::FileType;
+
 pub(crate) fn random_string(len: usize) -> String {
     Alphanumeric.sample_string(&mut rand::rng(), len)
 }
@@ -47,6 +49,7 @@ pub(crate) fn extract_ip(req: &HttpRequest, trust_xff: bool) -> Option<u32> {
 pub(crate) struct HashedTempFile {
     pub file: tempfile::NamedTempFile,
     pub content_type: Option<mime::Mime>,
+    pub detected_content_type: Option<mime::Mime>,
     pub file_name: Option<String>,
     pub size: usize,
     pub hash: [u8; 32],
@@ -107,9 +110,21 @@ impl<'t> FieldReader<'t> for HashedTempFile {
 
             file_async.flush().await.map_err(to_field_err)?;
 
+            let file_path = file.path().to_path_buf();
+            let detected = tokio::task::spawn_blocking(move || {
+                FileType::try_from_file(&file_path)
+                    .ok()
+                    .and_then(|ft| ft.media_types().first().map(|s| s.parse().ok()))
+                    .flatten()
+            })
+            .await
+            .ok()
+            .flatten();
+
             Ok(HashedTempFile {
                 file,
                 content_type,
+                detected_content_type: detected,
                 file_name,
                 size,
                 hash: hasher.finalize().into(),

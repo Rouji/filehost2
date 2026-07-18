@@ -175,12 +175,25 @@ async fn process_file(
     let expiry = calculate_expiry(file_size, settings);
     let save_path = uuid_to_path(Path::new(&settings.store_path), &uuid);
 
-    check_not_banned(
-        db::is_mime_banned(db, &content_type_str),
-        "banned mime",
-        "Your upload was rejected.",
-    )
-    .await?;
+    // Check banned MIME - header content-type
+    if let Some(ref ct) = file.content_type {
+        check_not_banned(
+            db::is_mime_banned(db, ct.as_ref()),
+            "banned mime (header)",
+            "Your upload was rejected.",
+        )
+        .await?;
+    }
+
+    // Check banned MIME - detected content-type
+    if let Some(ref ct) = file.detected_content_type {
+        check_not_banned(
+            db::is_mime_banned(db, ct.as_ref()),
+            "banned mime (detected)",
+            "Your upload was rejected.",
+        )
+        .await?;
+    }
 
     let hash = file.hash;
 
@@ -201,6 +214,13 @@ async fn process_file(
         return Err(internal_err());
     }
 
+    let content_type_for_db = file
+        .detected_content_type
+        .as_ref()
+        .filter(|m| m.type_() != "text" || m.subtype() != "plain")
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| content_type_str.clone());
+
     if let Err(e) = db::insert_upload_row(
         db,
         uuid,
@@ -210,7 +230,7 @@ async fn process_file(
         file_size as i64,
         hash.as_slice(),
         uploader_ip,
-        &content_type_str,
+        &content_type_for_db,
         user_agent,
     )
     .await
