@@ -3,7 +3,7 @@ use std::path::Path;
 use actix_files::NamedFile;
 use actix_multipart::form::{MultipartForm, text::Text};
 use actix_web::{
-    HttpRequest, HttpResponse, Responder, get,
+    FromRequest, HttpRequest, HttpResponse, Responder, get,
     http::{
         StatusCode,
         header::{ContentDisposition, ContentType, DispositionParam, DispositionType},
@@ -300,23 +300,17 @@ fn escape_html(s: &str) -> String {
 #[post("/")]
 pub(crate) async fn upload(
     req: HttpRequest,
-    MultipartForm(form): MultipartForm<UploadForm>,
+    mut payload: web::Payload,
     db: web::Data<DbPool>,
     settings: web::Data<Settings>,
 ) -> impl Responder {
-    let id_len = if let Some(ref t) = form.id_length {
-        t.0.clamp(settings.min_id_length, settings.max_id_length)
-    } else {
-        settings.min_id_length
-    };
-    let keep_name = form.keep_name.is_some();
-
     let uploader_ip = extract_ip(&req, settings.trust_xff);
     let user_agent = req
         .headers()
         .get("User-Agent")
         .and_then(|v| v.to_str().ok());
 
+    // ban checks before the multipart body is read
     if let Some(ip) = uploader_ip
         && let Err(resp) = check_not_banned(
             db::is_ip_banned(db.get_ref(), ip),
@@ -362,6 +356,19 @@ pub(crate) async fn upload(
         }
     }
 
+    let mut dev_payload = payload.into_inner();
+    let MultipartForm(form) =
+        match MultipartForm::<UploadForm>::from_request(&req, &mut dev_payload).await {
+            Ok(form) => form,
+            Err(e) => return HttpResponse::from_error(e),
+        };
+
+    let id_len = if let Some(ref t) = form.id_length {
+        t.0.clamp(settings.min_id_length, settings.max_id_length)
+    } else {
+        settings.min_id_length
+    };
+    let keep_name = form.keep_name.is_some();
     let formatted = form.formatted.is_some();
 
     let mut links = Vec::new();
