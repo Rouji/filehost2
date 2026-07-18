@@ -25,9 +25,7 @@ ENV SQLX_OFFLINE=true
 
 # pre build and cache (in an image layer) dependencies only
 COPY Cargo.toml Cargo.lock ./
-RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-$TARGETARCH \
-    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git-$TARGETARCH \
-    mkdir src && echo "fn main() {}" > src/main.rs \
+RUN mkdir src && echo "fn main() {}" > src/main.rs \
     && cargo zigbuild --release --target "$(cat /rust_target)" \
     && rm -rf src
 
@@ -36,9 +34,7 @@ COPY . .
 # make sure mtime is newer than the stub main.rs
 RUN find . -path ./target -prune -o -type f -exec touch {} +
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-$TARGETARCH \
-    --mount=type=cache,target=/usr/local/cargo/git,id=cargo-git-$TARGETARCH \
-    cargo zigbuild --release --target "$(cat /rust_target)" && \
+RUN cargo zigbuild --release --target "$(cat /rust_target)" && \
     cp "target/$(cat /rust_target)/release/filehost2" /filehost2
 
 FROM scratch
