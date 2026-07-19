@@ -41,6 +41,7 @@ mod tests {
             max_bytes_per_day: None,
             max_upload_bytes_per_sec: None,
             max_upload_burst_bytes: None,
+            dedup: true,
             db_max_connections: 20,
         }
     }
@@ -1211,5 +1212,69 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(accessed_ua.as_deref(), Some("DownloaderAgent/2.0"));
+    }
+
+    #[sqlx::test]
+    async fn dedup_reuses_existing_upload(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.dedup = true;
+        let app = full_app(settings, pool.clone()).await;
+
+        let slug1 = upload_and_get_slug(&app, "file.txt").await;
+
+        // Upload the same content with a different filename.
+        let slug2 = upload_and_get_slug(&app, "other.txt").await;
+
+        assert_eq!(slug1, slug2, "dedup should return the same slug");
+
+        // Only one DB row.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "should not create a duplicate row");
+    }
+
+    #[sqlx::test]
+    async fn dedup_disabled_uploads_twice(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.dedup = false;
+        let app = full_app(settings, pool.clone()).await;
+
+        let slug1 = upload_and_get_slug(&app, "file.txt").await;
+        let slug2 = upload_and_get_slug(&app, "file.txt").await;
+
+        assert_ne!(slug1, slug2, "with dedup off, each upload gets a new slug");
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2, "should create two rows when dedup is off");
+    }
+
+    #[sqlx::test]
+    async fn dedup_ignores_soft_deleted_upload(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.dedup = true;
+        settings.admin_token = Some("secret".to_string());
+        let app = full_app(settings, pool.clone()).await;
+
+        let slug1 = upload_and_get_slug(&app, "file.txt").await;
+
+        // Delete the upload via admin API.
+        let _resp = admin_delete(&app, &format!("/admin/uploads/slug/{slug1}")).await;
+        assert!(_resp.status().is_success());
+
+        // Upload the same content again — should get a new slug, not reuse the deleted one.
+        let slug2 = upload_and_get_slug(&app, "file.txt").await;
+
+        assert_ne!(slug2, slug1, "dedup should not reuse a soft-deleted upload");
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2, "both rows should exist (one soft-deleted)");
     }
 }

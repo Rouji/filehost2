@@ -69,6 +69,20 @@ pub(crate) async fn is_hash_banned(db: &DbPool, hash: &[u8]) -> Result<bool, sql
     .is_some())
 }
 
+pub(crate) async fn find_active_upload_by_hash(
+    db: &DbPool,
+    hash: &[u8],
+) -> Result<Option<(uuid::Uuid, String)>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    Ok(sqlx::query!(
+        r#"SELECT id AS `id: Uuid`, slug FROM uploads WHERE hash = ? AND deleted_timestamp IS NULL ORDER BY upload_timestamp DESC LIMIT 1"#,
+        hash
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .map(|r| (r.id, r.slug)))
+}
+
 pub(crate) async fn is_user_agent_banned(
     db: &DbPool,
     user_agent: &str,

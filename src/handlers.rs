@@ -116,7 +116,6 @@ async fn process_file(
     id_len: usize,
     keep_name: bool,
 ) -> Result<String, HttpResponse> {
-    let uuid = Uuid::new_v4();
     let original_name = file.file_name.as_deref().unwrap_or("unknown").to_string();
     let file_size = file.size;
 
@@ -135,6 +134,49 @@ async fn process_file(
     }
 
     let (content_type_str, ct_subtype) = determine_content_type(&file, &original_name);
+
+    if let Some(ref ct) = file.content_type {
+        check_not_banned(
+            db::is_mime_banned(db, ct.as_ref()),
+            "banned mime (header)",
+            "Your upload was rejected.",
+        )
+        .await?;
+    }
+
+    if let Some(ref ct) = file.detected_content_type {
+        check_not_banned(
+            db::is_mime_banned(db, ct.as_ref()),
+            "banned mime (detected)",
+            "Your upload was rejected.",
+        )
+        .await?;
+    }
+
+    let hash = file.hash;
+
+    check_not_banned(
+        db::is_hash_banned(db, hash.as_slice()),
+        "banned hash",
+        "Your upload was rejected.",
+    )
+    .await?;
+
+    if settings.dedup
+        && let Some((existing_id, existing_slug)) =
+            db::find_active_upload_by_hash(db, hash.as_slice())
+                .await
+                .map_err(|e| {
+                    log::error!("failed to check dedup: {e}");
+                    internal_err()
+                })?
+    {
+        log::info!("dedup: {existing_id} ({existing_slug}) already exists");
+        let encoded = utf8_percent_encode(&existing_slug, PATH_SEGMENT).to_string();
+        return Ok(format!("{}{encoded}", settings.base_url.as_ref().unwrap()));
+    }
+
+    let uuid = Uuid::new_v4();
 
     let slug = {
         const MAX_SLUG_ATTEMPTS: u32 = 3;
@@ -174,35 +216,6 @@ async fn process_file(
     };
     let expiry = calculate_expiry(file_size, settings);
     let save_path = uuid_to_path(Path::new(&settings.store_path), &uuid);
-
-    // Check banned MIME - header content-type
-    if let Some(ref ct) = file.content_type {
-        check_not_banned(
-            db::is_mime_banned(db, ct.as_ref()),
-            "banned mime (header)",
-            "Your upload was rejected.",
-        )
-        .await?;
-    }
-
-    // Check banned MIME - detected content-type
-    if let Some(ref ct) = file.detected_content_type {
-        check_not_banned(
-            db::is_mime_banned(db, ct.as_ref()),
-            "banned mime (detected)",
-            "Your upload was rejected.",
-        )
-        .await?;
-    }
-
-    let hash = file.hash;
-
-    check_not_banned(
-        db::is_hash_banned(db, hash.as_slice()),
-        "banned hash",
-        "Your upload was rejected.",
-    )
-    .await?;
 
     if let Err(e) = std::fs::create_dir_all(save_path.parent().unwrap()) {
         log::error!("Failed to create directory: {e}");
