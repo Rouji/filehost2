@@ -1,0 +1,31 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT id AS `id: Uuid` FROM uploads WHERE hash IS NULL AND deleted_timestamp IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: Uuid",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | PRIMARY_KEY | BINARY | NO_DEFAULT_VALUE",
+          "collation": 63,
+          "max_size": 16
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "82498725eda6121ea9ce1cff2d0b397f7fdaaaed7fa09a0f9def71a3f866cd68"
+}

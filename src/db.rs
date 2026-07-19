@@ -83,6 +83,28 @@ pub(crate) async fn find_active_upload_by_hash(
     .map(|r| (r.id, r.slug)))
 }
 
+pub(crate) async fn uploads_missing_hash(db: &DbPool) -> Result<Vec<Uuid>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let rows = sqlx::query!(
+        r#"SELECT id AS `id: Uuid` FROM uploads WHERE hash IS NULL AND deleted_timestamp IS NULL"#
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.id).collect())
+}
+
+pub(crate) async fn update_upload_hash(
+    db: &DbPool,
+    id: Uuid,
+    hash: &[u8],
+) -> Result<(), sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    sqlx::query!("UPDATE uploads SET hash = ? WHERE id = ?", hash, id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
 pub(crate) struct DedupPair {
     pub dup_id: Uuid,
     pub canonical_id: Uuid,

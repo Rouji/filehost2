@@ -39,6 +39,8 @@ pub(crate) enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// compute and store the BLAKE3 hash for uploads whose `hash` column is NULL
+    Rehash,
 }
 
 #[derive(Subcommand)]
@@ -73,6 +75,10 @@ pub(crate) async fn import_php(
 
 pub(crate) async fn dedup(db: &DbPool, settings: &Settings, dry_run: bool) -> Result<()> {
     dedup::dedup(db, settings, dry_run).await
+}
+
+pub(crate) async fn rehash(db: &DbPool, settings: &Settings) -> Result<()> {
+    dedup::rehash(db, settings).await
 }
 
 pub(crate) async fn delete(db: &DbPool, settings: &Settings, target: DeleteTarget) -> Result<()> {

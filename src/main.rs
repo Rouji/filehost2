@@ -54,6 +54,7 @@ async fn main() -> std::io::Result<()> {
                 cli::import_php(&db, &settings, files, log).await
             }
             cli::Command::Dedup { dry_run } => cli::dedup(&db, &settings, dry_run).await,
+            cli::Command::Rehash => cli::rehash(&db, &settings).await,
         };
         if let Err(e) = result {
             eprintln!("Error: {e}");

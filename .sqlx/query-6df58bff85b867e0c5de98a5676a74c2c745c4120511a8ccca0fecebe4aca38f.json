@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE uploads SET hash = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6df58bff85b867e0c5de98a5676a74c2c745c4120511a8ccca0fecebe4aca38f"
+}

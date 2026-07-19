@@ -126,6 +126,47 @@ pub(crate) async fn dedup(db: &DbPool, settings: &Settings, dry_run: bool) -> Re
     Ok(())
 }
 
+/// computes and stores the BLAKE3 hash for every upload whose `hash` column
+/// is NULL (e.g. left behind by the MD5->BLAKE3 migration, which cleared it)
+pub(crate) async fn rehash(db: &DbPool, settings: &Settings) -> Result<()> {
+    let ids = db::uploads_missing_hash(db).await?;
+    let store_path = Path::new(&settings.store_path);
+
+    let mut hashed = 0usize;
+    let mut skipped = 0usize;
+    let mut errors = 0usize;
+
+    for id in ids {
+        let path = uuid_to_path(store_path, &id);
+        let hash = match std::fs::File::open(&path).and_then(|mut f| {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update_reader(&mut f)?;
+            Ok(hasher.finalize())
+        }) {
+            Ok(h) => h,
+            Err(e) => {
+                log::warn!("rehash: cannot read file for {id}: {e}");
+                skipped += 1;
+                continue;
+            }
+        };
+
+        match db::update_upload_hash(db, id, hash.as_bytes()).await {
+            Ok(()) => {
+                log::info!("rehash: hashed {id}");
+                hashed += 1;
+            }
+            Err(e) => {
+                log::error!("rehash: failed to update hash for {id}: {e}");
+                errors += 1;
+            }
+        }
+    }
+
+    println!("Done: {hashed} file(s) hashed, {skipped} skipped (missing file), {errors} error(s).");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
