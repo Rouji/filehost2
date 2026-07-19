@@ -1,0 +1,1 @@
+CREATE INDEX idx_uploads_hash ON uploads(hash);

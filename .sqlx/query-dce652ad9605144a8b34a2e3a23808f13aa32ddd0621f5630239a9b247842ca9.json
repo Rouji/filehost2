@@ -1,0 +1,48 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT u.id AS `dup_id: Uuid`, c.canonical_id AS `canonical_id!: Uuid`\n           FROM uploads u\n           JOIN (\n               SELECT hash, id AS canonical_id,\n                      ROW_NUMBER() OVER (PARTITION BY hash ORDER BY upload_timestamp DESC, id DESC) AS rn\n               FROM uploads\n               WHERE deleted_timestamp IS NULL AND hash IS NOT NULL\n           ) c ON c.hash = u.hash AND c.rn = 1\n           WHERE u.deleted_timestamp IS NULL AND u.hash IS NOT NULL AND u.id <> c.canonical_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "dup_id: Uuid",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | PRIMARY_KEY | BINARY | NO_DEFAULT_VALUE",
+          "collation": 63,
+          "max_size": 16
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "canonical_id!: Uuid",
+        "type_info": {
+          "type": "String",
+          "flags": "BINARY | NO_DEFAULT_VALUE",
+          "collation": 63,
+          "max_size": 16
+        },
+        "origin": {
+          "Table": {
+            "table": "uploads",
+            "name": "canonical_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "dce652ad9605144a8b34a2e3a23808f13aa32ddd0621f5630239a9b247842ca9"
+}

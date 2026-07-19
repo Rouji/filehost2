@@ -3,6 +3,7 @@ mod clamd;
 mod cli;
 mod db;
 mod db_pool;
+mod dedup;
 mod handlers;
 mod import;
 mod model;
@@ -52,6 +53,7 @@ async fn main() -> std::io::Result<()> {
             cli::Command::ImportPhp { files, log } => {
                 cli::import_php(&db, &settings, files, log).await
             }
+            cli::Command::Dedup { dry_run } => cli::dedup(&db, &settings, dry_run).await,
         };
         if let Err(e) = result {
             eprintln!("Error: {e}");

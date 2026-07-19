@@ -83,6 +83,38 @@ pub(crate) async fn find_active_upload_by_hash(
     .map(|r| (r.id, r.slug)))
 }
 
+pub(crate) struct DedupPair {
+    pub dup_id: Uuid,
+    pub canonical_id: Uuid,
+}
+
+/// for every group of active uploads sharing a hash, pair each older
+/// duplicate with the most recently uploaded member of that group (the
+/// canonical copy)
+pub(crate) async fn find_dedup_pairs(db: &DbPool) -> Result<Vec<DedupPair>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let rows = sqlx::query!(
+        r#"SELECT u.id AS `dup_id: Uuid`, c.canonical_id AS `canonical_id!: Uuid`
+           FROM uploads u
+           JOIN (
+               SELECT hash, id AS canonical_id,
+                      ROW_NUMBER() OVER (PARTITION BY hash ORDER BY upload_timestamp DESC, id DESC) AS rn
+               FROM uploads
+               WHERE deleted_timestamp IS NULL AND hash IS NOT NULL
+           ) c ON c.hash = u.hash AND c.rn = 1
+           WHERE u.deleted_timestamp IS NULL AND u.hash IS NOT NULL AND u.id <> c.canonical_id"#
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| DedupPair {
+            dup_id: r.dup_id,
+            canonical_id: r.canonical_id,
+        })
+        .collect())
+}
+
 pub(crate) async fn is_user_agent_banned(
     db: &DbPool,
     user_agent: &str,

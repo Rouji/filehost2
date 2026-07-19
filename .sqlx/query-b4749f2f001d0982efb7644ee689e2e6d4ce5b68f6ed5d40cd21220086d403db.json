@@ -120,7 +120,7 @@
         "name": "hash: Vec<u8>",
         "type_info": {
           "type": "String",
-          "flags": "BINARY",
+          "flags": "MULTIPLE_KEY | BINARY",
           "collation": 63,
           "max_size": 32
         },

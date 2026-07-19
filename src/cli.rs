@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::db_pool::{self, DbPool};
+use crate::dedup;
 use crate::import;
 use crate::settings::Settings;
 
@@ -32,6 +33,11 @@ pub(crate) enum Command {
         /// Path to the PHP filehost's upload log
         #[arg(long)]
         log: Option<PathBuf>,
+    },
+    /// replace existing duplicate upload files with symlinks to the newest duplicate
+    Dedup {
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -63,6 +69,10 @@ pub(crate) async fn import_php(
     log: Option<PathBuf>,
 ) -> Result<()> {
     import::import_php(db, settings, files, log).await
+}
+
+pub(crate) async fn dedup(db: &DbPool, settings: &Settings, dry_run: bool) -> Result<()> {
+    dedup::dedup(db, settings, dry_run).await
 }
 
 pub(crate) async fn delete(db: &DbPool, settings: &Settings, target: DeleteTarget) -> Result<()> {
