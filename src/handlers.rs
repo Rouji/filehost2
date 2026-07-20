@@ -455,7 +455,7 @@ pub(crate) async fn get_file(
     path: web::Path<(String,)>,
     db: web::Data<DbPool>,
     settings: web::Data<Settings>,
-) -> actix_web::Result<NamedFile> {
+) -> actix_web::Result<HttpResponse> {
     let slug = &path.0;
 
     let row = db::get_upload_by_slug(db.get_ref(), slug)
@@ -501,12 +501,26 @@ pub(crate) async fn get_file(
     };
 
     let file_path = uuid_to_path(Path::new(&settings.store_path), &row.id);
-    Ok(NamedFile::open(file_path)?
+    let mut res = NamedFile::open(file_path)?
         .use_last_modified(true)
         .use_etag(true)
         .set_content_type(serve_mime)
         .set_content_disposition(ContentDisposition {
             disposition,
             parameters: vec![DispositionParam::Filename(row.original_name)],
-        }))
+        })
+        .into_response(&req);
+
+    // workaround for actix-files bug: https://github.com/actix/actix-web/issues/3191
+    // TODO: remove once actix-files > 0.6.10 is released.
+    let is_identity = res
+        .headers()
+        .get(actix_web::http::header::CONTENT_ENCODING)
+        .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"identity"));
+    if is_identity {
+        res.headers_mut()
+            .remove(actix_web::http::header::CONTENT_ENCODING);
+    }
+
+    Ok(res)
 }
