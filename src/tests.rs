@@ -298,6 +298,48 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn unrecognised_binary_keeps_extension_guess(pool: MySqlPool) {
+        // Binary bytes (contain control chars) that match no magic-byte signature make the
+        // sniffer fall back to application/octet-stream. That default must not clobber a valid
+        // extension-based guess.
+        let app = full_app(test_settings(), pool).await;
+
+        let req = multipart_request(&multipart_body_with_type(
+            "clip.mp4",
+            "application/octet-stream",
+            "\x01\x02\x03 not a real mp4 \x00\x1f",
+        ));
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "upload failed: {}",
+            resp.status()
+        );
+
+        let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+        let slug = url.trim().trim_start_matches("http://localhost:8080/");
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/{slug}"))
+                .to_request(),
+        )
+        .await;
+        assert!(resp.status().is_success());
+
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ct.contains("video/mp4"),
+            "expected extension-based guess of video/mp4, got: {ct}"
+        );
+    }
+
+    #[sqlx::test]
     async fn detected_plaintext_without_extension_is_served_as_text(pool: MySqlPool) {
         let app = full_app(test_settings(), pool).await;
 

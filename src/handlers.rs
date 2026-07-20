@@ -228,7 +228,12 @@ async fn process_file(
     }
 
     let content_type_for_db = match (&file.detected_content_type, content_type_str.as_str()) {
-        (Some(detected), _) if detected.type_() != "text" || detected.subtype() != "plain" => {
+        // plaintext and octet-stream are pretty much just fallbacks of the filetype lib; ignore
+        // them
+        (Some(detected), _)
+            if detected.type_() != "text"
+                && *detected != mime_guess::mime::APPLICATION_OCTET_STREAM =>
+        {
             detected.to_string()
         }
         (Some(_), "application/octet-stream") => "text/plain".to_string(),
