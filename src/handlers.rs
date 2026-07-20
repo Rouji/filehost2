@@ -135,22 +135,15 @@ async fn process_file(
 
     let (content_type_str, ct_subtype) = determine_content_type(&file, &original_name);
 
-    if let Some(ref ct) = file.content_type {
-        check_not_banned(
-            db::is_mime_banned(db, ct.as_ref()),
-            "banned mime (header)",
-            "Your upload was rejected.",
-        )
-        .await?;
-    }
-
-    if let Some(ref ct) = file.detected_content_type {
-        check_not_banned(
-            db::is_mime_banned(db, ct.as_ref()),
-            "banned mime (detected)",
-            "Your upload was rejected.",
-        )
-        .await?;
+    for check in [&file.content_type, &file.detected_content_type] {
+        if let Some(ct) = check {
+            check_not_banned(
+                db::is_mime_banned(db, ct.as_ref()),
+                "banned mime",
+                "Your upload was rejected.",
+            )
+            .await?;
+        }
     }
 
     let hash = file.hash;
