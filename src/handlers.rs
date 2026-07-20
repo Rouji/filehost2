@@ -1,3 +1,4 @@
+use core::iter::IntoIterator;
 use std::path::Path;
 
 use actix_files::NamedFile;
@@ -135,15 +136,16 @@ async fn process_file(
 
     let (content_type_str, ct_subtype) = determine_content_type(&file, &original_name);
 
-    for check in [&file.content_type, &file.detected_content_type] {
-        if let Some(ct) = check {
-            check_not_banned(
-                db::is_mime_banned(db, ct.as_ref()),
-                "banned mime",
-                "Your upload was rejected.",
-            )
-            .await?;
-        }
+    for ct in [&file.content_type, &file.detected_content_type]
+        .into_iter()
+        .flatten()
+    {
+        check_not_banned(
+            db::is_mime_banned(db, ct.as_ref()),
+            "banned mime",
+            "Your upload was rejected.",
+        )
+        .await?;
     }
 
     let hash = file.hash;
