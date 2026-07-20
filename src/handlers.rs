@@ -229,7 +229,9 @@ async fn process_file(
         {
             detected.to_string()
         }
-        (Some(_), "application/octet-stream") => "text/plain".to_string(),
+        (Some(detected), "application/octet-stream") if detected.type_() == "text" => {
+            "text/plain".to_string()
+        }
         _ => content_type_str,
     };
 

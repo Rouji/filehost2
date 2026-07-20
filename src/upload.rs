@@ -88,7 +88,17 @@ impl<'t> FieldReader<'t> for HashedTempFile {
                 source: ErrorInternalServerError(e),
             };
 
-            let file = tempfile::NamedTempFile::new().map_err(to_field_err)?;
+            let ext_suffix = file_name
+                .as_deref()
+                .and_then(|n| Path::new(n).extension())
+                .and_then(|e| e.to_str())
+                .map(|e| format!(".{e}"));
+
+            let file = match &ext_suffix {
+                Some(suffix) => tempfile::Builder::new().suffix(suffix).tempfile(),
+                None => tempfile::NamedTempFile::new(),
+            }
+            .map_err(to_field_err)?;
 
             let mut file_async = tokio::fs::File::from_std(file.reopen().map_err(to_field_err)?);
 
