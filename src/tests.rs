@@ -107,11 +107,7 @@ mod tests {
         )
         .await;
         assert!(resp.status().is_success());
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+        let ct = hdr(&resp, "content-type");
         assert!(ct.contains("application/json"), "expected JSON, got: {ct}");
     }
 
@@ -160,6 +156,18 @@ mod tests {
         upload_req(content, &[])
     }
 
+    fn hdr(resp: &ServiceResponse, name: &str) -> String {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn slug(url: &str) -> &str {
+        url.trim().trim_start_matches("http://localhost:8080/")
+    }
+
     #[sqlx::test]
     async fn upload_and_retrieve(pool: MySqlPool) {
         let app = full_app(test_settings(), pool).await;
@@ -176,11 +184,11 @@ mod tests {
         );
 
         let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
-        let url = url.trim();
-        assert!(url.starts_with("http://"), "expected URL, got: {url}");
-
-        // Fetch the file back by slug.
-        let slug = url.trim_start_matches("http://localhost:8080/");
+        assert!(
+            url.trim().starts_with("http://"),
+            "expected URL, got: {url}"
+        );
+        let slug = slug(&url);
         let resp = test::call_service(
             &app,
             test::TestRequest::get()
@@ -190,10 +198,7 @@ mod tests {
         .await;
         assert!(resp.status().is_success());
         assert_eq!(
-            resp.headers()
-                .get("content-disposition")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or(""),
+            hdr(&resp, "content-disposition"),
             format!("inline; filename=\"{file_name}\"")
         );
         assert_eq!(&test::read_body(resp).await[..], file_content.as_bytes());
@@ -216,7 +221,7 @@ mod tests {
         );
 
         let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
-        let slug = url.trim().trim_start_matches("http://localhost:8080/");
+        let slug = slug(&url);
 
         let resp = test::call_service(
             &app,
@@ -227,21 +232,13 @@ mod tests {
         .await;
         assert!(resp.status().is_success());
 
-        let cd = resp
-            .headers()
-            .get("content-disposition")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+        let cd = hdr(&resp, "content-disposition");
         assert!(
             cd.starts_with("attachment"),
             "expected attachment disposition, got: {cd}"
         );
 
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+        let ct = hdr(&resp, "content-type");
         assert!(
             !ct.contains("text/html"),
             "expected non-HTML content type, got: {ct}"
@@ -265,7 +262,7 @@ mod tests {
         );
 
         let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
-        let slug = url.trim().trim_start_matches("http://localhost:8080/");
+        let slug = slug(&url);
 
         let resp = test::call_service(
             &app,
@@ -276,21 +273,13 @@ mod tests {
         .await;
         assert!(resp.status().is_success());
 
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+        let ct = hdr(&resp, "content-type");
         assert!(
             ct.contains("video/mp4"),
             "expected extension-based guess of video/mp4, got: {ct}"
         );
 
-        let cd = resp
-            .headers()
-            .get("content-disposition")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+        let cd = hdr(&resp, "content-disposition");
         assert!(
             cd.starts_with("inline"),
             "expected inline disposition, got: {cd}"
@@ -317,7 +306,7 @@ mod tests {
         );
 
         let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
-        let slug = url.trim().trim_start_matches("http://localhost:8080/");
+        let slug = slug(&url);
 
         let resp = test::call_service(
             &app,
@@ -328,11 +317,7 @@ mod tests {
         .await;
         assert!(resp.status().is_success());
 
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+        let ct = hdr(&resp, "content-type");
         assert!(
             ct.contains("video/mp4"),
             "expected extension-based guess of video/mp4, got: {ct}"
@@ -356,7 +341,7 @@ mod tests {
         );
 
         let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
-        let slug = url.trim().trim_start_matches("http://localhost:8080/");
+        let slug = slug(&url);
 
         let resp = test::call_service(
             &app,
@@ -367,21 +352,13 @@ mod tests {
         .await;
         assert!(resp.status().is_success());
 
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+        let ct = hdr(&resp, "content-type");
         assert!(
             ct.contains("text/plain"),
             "expected text/plain for detected plaintext, got: {ct}"
         );
 
-        let cd = resp
-            .headers()
-            .get("content-disposition")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+        let cd = hdr(&resp, "content-disposition");
         assert!(
             cd.starts_with("inline"),
             "expected inline disposition for text, got: {cd}"
@@ -408,12 +385,7 @@ mod tests {
             resp.status()
         );
 
-        let ct = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
+        let ct = hdr(&resp, "content-type");
         assert!(
             ct.contains("text/html"),
             "expected html content-type, got: {ct}"
@@ -524,9 +496,7 @@ mod tests {
             resp.status()
         );
         let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
-        url.trim()
-            .trim_start_matches("http://localhost:8080/")
-            .to_string()
+        slug(&url).to_string()
     }
 
     // since log_access is a background task ...
@@ -1224,10 +1194,7 @@ mod tests {
         let resp = test::call_service(&app, req).await;
         assert!(resp.status().is_success());
         let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
-        let slug = url
-            .trim()
-            .trim_start_matches("http://localhost:8080/")
-            .to_string();
+        let slug = slug(&url).to_string();
 
         let uploaded_ua: Option<String> =
             sqlx::query_scalar("SELECT user_agent FROM uploads WHERE slug = ?")
