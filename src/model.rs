@@ -51,11 +51,12 @@ pub(crate) struct BannedIpv4Range {
     pub expires_timestamp: Option<PrimitiveDateTime>,
     #[sqlx(rename = "type")]
     pub type_: BanType,
+    pub blacklist_id: Option<i32>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct Blacklist {
-    pub id: i64,
+    pub id: i32,
     pub url: String,
     #[sqlx(rename = "type")]
     pub type_: BanType,

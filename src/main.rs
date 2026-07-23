@@ -9,6 +9,7 @@ mod import;
 mod model;
 mod rate_limit;
 mod settings;
+mod sync;
 mod templates;
 mod upload;
 
@@ -56,6 +57,7 @@ async fn main() -> std::io::Result<()> {
             cli::Command::Dedup { dry_run } => cli::dedup(&db, &settings, dry_run).await,
             cli::Command::Rehash => cli::rehash(&db, &settings).await,
             cli::Command::Blacklist { command } => cli::blacklist(&db, command).await,
+            cli::Command::SyncBlacklist => cli::sync_blacklist(&db).await,
         };
         if let Err(e) = result {
             eprintln!("Error: {e}");

@@ -262,6 +262,7 @@ struct BannedIpRangeDto {
     reason: Option<String>,
     banned_timestamp: String,
     expires_timestamp: Option<String>,
+    blacklist_id: Option<i32>,
 }
 
 impl From<BannedIpv4Range> for BannedIpRangeDto {
@@ -273,6 +274,7 @@ impl From<BannedIpv4Range> for BannedIpRangeDto {
             reason: b.reason,
             banned_timestamp: format_ts(b.banned_timestamp),
             expires_timestamp: b.expires_timestamp.map(format_ts),
+            blacklist_id: b.blacklist_id,
         }
     }
 }
@@ -283,6 +285,7 @@ pub(crate) struct BannedIpRangeCreate {
     end_ip: String,
     reason: Option<String>,
     expires_timestamp: Option<String>,
+    blacklist_id: Option<i32>,
 }
 
 #[get("/bans/ips")]
@@ -323,6 +326,7 @@ pub(crate) async fn add_banned_ip(
         u32::from(end_ip),
         body.reason.as_deref(),
         expires_timestamp,
+        body.blacklist_id,
     )
     .await
     {

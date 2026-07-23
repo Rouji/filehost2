@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM banned_ipv4_ranges WHERE blacklist_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "f1a6bddd0c60f1d390cebbd21fdb991b1424fc50739692d6b7b636787c697305"
+}

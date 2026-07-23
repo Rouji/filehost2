@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT id, url, type AS `type_: BanType`, last_update, update_interval_seconds FROM blacklist ORDER BY id",
+  "query": "SELECT id, url, type AS `type_: BanType`, last_update, update_interval_seconds FROM blacklist WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -85,7 +85,7 @@
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 1
     },
     "nullable": [
       false,
@@ -95,5 +95,5 @@
       false
     ]
   },
-  "hash": "d4f760e4f2cf744bf9885fa95dcfd9fd9ee75a10d0fde7e852afd91c2ab9429c"
+  "hash": "f7a51e75fcc6e1a3de25ed00d10118d5458efd34c7f0f0a21086c991509c9b6f"
 }

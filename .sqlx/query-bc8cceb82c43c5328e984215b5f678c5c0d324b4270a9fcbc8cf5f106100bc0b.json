@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE blacklist SET last_update = NOW() WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "bc8cceb82c43c5328e984215b5f678c5c0d324b4270a9fcbc8cf5f106100bc0b"
+}

@@ -471,7 +471,7 @@ pub(crate) async fn list_banned_ips(db: &DbPool) -> Result<Vec<BannedIpv4Range>,
     let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
         BannedIpv4Range,
-        "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\" FROM banned_ipv4_ranges ORDER BY id DESC"
+        "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\", blacklist_id FROM banned_ipv4_ranges ORDER BY id DESC"
     )
     .fetch_all(&mut *conn)
     .await
@@ -483,18 +483,34 @@ pub(crate) async fn insert_banned_ip(
     end_ip: u32,
     reason: Option<&str>,
     expires_timestamp: Option<PrimitiveDateTime>,
+    blacklist_id: Option<i32>,
 ) -> Result<i64, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!(
-        "INSERT INTO banned_ipv4_ranges (start_ip, end_ip, reason, expires_timestamp) VALUES (?, ?, ?, ?)",
+        "INSERT INTO banned_ipv4_ranges (start_ip, end_ip, reason, expires_timestamp, blacklist_id) VALUES (?, ?, ?, ?, ?)",
         start_ip,
         end_ip,
         reason,
-        expires_timestamp
+        expires_timestamp,
+        blacklist_id
     )
     .execute(&mut *conn)
     .await?;
     Ok(result.last_insert_id() as i64)
+}
+
+pub(crate) async fn delete_banned_ips_by_blacklist(
+    db: &DbPool,
+    blacklist_id: i32,
+) -> Result<usize, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let result = sqlx::query!(
+        "DELETE FROM banned_ipv4_ranges WHERE blacklist_id = ?",
+        blacklist_id
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.rows_affected() as usize)
 }
 
 pub(crate) async fn delete_banned_ip(db: &DbPool, id: i64) -> Result<bool, sqlx::Error> {
@@ -651,12 +667,26 @@ pub(crate) async fn list_blacklist(db: &DbPool) -> Result<Vec<Blacklist>, sqlx::
     .await
 }
 
+pub(crate) async fn get_blacklist_by_id(
+    db: &DbPool,
+    id: i32,
+) -> Result<Option<Blacklist>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    sqlx::query_as!(
+        Blacklist,
+        "SELECT id, url, type AS `type_: BanType`, last_update, update_interval_seconds FROM blacklist WHERE id = ?",
+        id
+    )
+    .fetch_optional(&mut *conn)
+    .await
+}
+
 pub(crate) async fn insert_blacklist(
     db: &DbPool,
     url: &str,
     type_: BanType,
     update_interval_seconds: u64,
-) -> Result<i64, sqlx::Error> {
+) -> Result<i32, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!(
         "INSERT INTO blacklist (url, type, update_interval_seconds) VALUES (?, ?, ?)",
@@ -666,10 +696,10 @@ pub(crate) async fn insert_blacklist(
     )
     .execute(&mut *conn)
     .await?;
-    Ok(result.last_insert_id() as i64)
+    Ok(result.last_insert_id() as i32)
 }
 
-pub(crate) async fn delete_blacklist(db: &DbPool, id: i64) -> Result<bool, sqlx::Error> {
+pub(crate) async fn delete_blacklist(db: &DbPool, id: i32) -> Result<bool, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!("DELETE FROM blacklist WHERE id = ?", id)
         .execute(&mut *conn)

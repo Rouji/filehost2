@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\" FROM banned_ipv4_ranges ORDER BY id DESC",
+  "query": "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\", blacklist_id FROM banned_ipv4_ranges ORDER BY id DESC",
   "describe": {
     "columns": [
       {
@@ -114,6 +114,22 @@
             "name": "type"
           }
         }
+      },
+      {
+        "ordinal": 7,
+        "name": "blacklist_id",
+        "type_info": {
+          "type": "Long",
+          "flags": "",
+          "collation": 63,
+          "max_size": 11
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.banned_ipv4_ranges",
+            "name": "blacklist_id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -126,8 +142,9 @@
       true,
       false,
       true,
-      false
+      false,
+      true
     ]
   },
-  "hash": "5faf7d70a0ecbc18b484bf2bb280fd07f43a74bcf81dac52c1d421e457f01d39"
+  "hash": "90378da40b4664963289080de15354245fd4b9fc01d8290c1ecee328748d2957"
 }

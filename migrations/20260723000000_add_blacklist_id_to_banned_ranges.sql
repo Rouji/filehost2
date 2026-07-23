@@ -1,0 +1,1 @@
+ALTER TABLE banned_ipv4_ranges ADD COLUMN blacklist_id INT DEFAULT NULL;
