@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::db_pool::{self, DbPool};
 use crate::model::{
     BanType, BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, BannedUserAgent,
-    Upload,
+    Blacklist, Upload,
 };
 use crate::settings::Settings;
 use crate::upload::uuid_to_path;
@@ -636,6 +636,42 @@ pub(crate) async fn delete_banned_user_agent(
 ) -> Result<bool, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!("DELETE FROM banned_user_agents WHERE pattern = ?", pattern)
+        .execute(&mut *conn)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+pub(crate) async fn list_blacklist(db: &DbPool) -> Result<Vec<Blacklist>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    sqlx::query_as!(
+        Blacklist,
+        "SELECT id, url, type AS `type_: BanType`, last_update, update_interval_seconds FROM blacklist ORDER BY id"
+    )
+    .fetch_all(&mut *conn)
+    .await
+}
+
+pub(crate) async fn insert_blacklist(
+    db: &DbPool,
+    url: &str,
+    type_: BanType,
+    update_interval_seconds: u64,
+) -> Result<i64, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let result = sqlx::query!(
+        "INSERT INTO blacklist (url, type, update_interval_seconds) VALUES (?, ?, ?)",
+        url,
+        type_ as u32,
+        update_interval_seconds
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.last_insert_id() as i64)
+}
+
+pub(crate) async fn delete_blacklist(db: &DbPool, id: i64) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let result = sqlx::query!("DELETE FROM blacklist WHERE id = ?", id)
         .execute(&mut *conn)
         .await?;
     Ok(result.rows_affected() > 0)

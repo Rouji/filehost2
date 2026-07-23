@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO blacklist (url, type, update_interval_seconds) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c3258bffedf9480b15cc089b4591e1819f01077d085d671ca4e9360440255a2d"
+}

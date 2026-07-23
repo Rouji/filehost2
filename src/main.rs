@@ -55,6 +55,7 @@ async fn main() -> std::io::Result<()> {
             }
             cli::Command::Dedup { dry_run } => cli::dedup(&db, &settings, dry_run).await,
             cli::Command::Rehash => cli::rehash(&db, &settings).await,
+            cli::Command::Blacklist { command } => cli::blacklist(&db, command).await,
         };
         if let Err(e) = result {
             eprintln!("Error: {e}");

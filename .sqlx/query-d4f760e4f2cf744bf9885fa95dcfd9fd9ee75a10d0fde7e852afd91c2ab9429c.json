@@ -1,0 +1,99 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT id, url, type AS `type_: BanType`, last_update, update_interval_seconds FROM blacklist ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | PRIMARY_KEY | AUTO_INCREMENT",
+          "collation": 63,
+          "max_size": 20
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.blacklist",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "url",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "collation": 224,
+          "max_size": 1020
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.blacklist",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "type_: BanType",
+        "type_info": {
+          "type": "Tiny",
+          "flags": "NOT_NULL | UNSIGNED",
+          "collation": 63,
+          "max_size": 3
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.blacklist",
+            "name": "type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "last_update",
+        "type_info": {
+          "type": "Datetime",
+          "flags": "BINARY",
+          "collation": 63,
+          "max_size": 19
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.blacklist",
+            "name": "last_update"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "update_interval_seconds",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | UNSIGNED",
+          "collation": 63,
+          "max_size": 20
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.blacklist",
+            "name": "update_interval_seconds"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "d4f760e4f2cf744bf9885fa95dcfd9fd9ee75a10d0fde7e852afd91c2ab9429c"
+}

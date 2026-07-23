@@ -25,11 +25,20 @@ pub(crate) struct Upload {
     pub user_agent: Option<String>,
 }
 
-#[derive(Debug, sqlx::Type)]
+#[derive(Debug, Clone, sqlx::Type)]
 #[repr(u32)]
 pub enum BanType {
     ReadOnly = 1,
     Full = 2,
+}
+
+impl std::fmt::Display for BanType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            BanType::ReadOnly => write!(f, "ReadOnly"),
+            BanType::Full => write!(f, "Full"),
+        }
+    }
 }
 
 #[derive(Debug, sqlx::FromRow)]
