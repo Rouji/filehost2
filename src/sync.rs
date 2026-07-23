@@ -6,7 +6,6 @@ use time::PrimitiveDateTime;
 use crate::db;
 use crate::db_pool;
 use crate::db_pool::DbPool;
-use crate::model::BanType;
 
 fn now() -> PrimitiveDateTime {
     let odt = time::OffsetDateTime::now_utc();
@@ -44,7 +43,7 @@ pub(crate) async fn fetch_ip_ranges(url: &str) -> Result<Vec<IpRangeEntry>> {
     Ok(entries)
 }
 
-fn parse_line(line: &str) -> Option<IpRangeEntry> {
+pub(crate) fn parse_line(line: &str) -> Option<IpRangeEntry> {
     let line = line.trim();
 
     if let Some(entry) = parse_cidr(line) {
@@ -66,7 +65,7 @@ fn parse_line(line: &str) -> Option<IpRangeEntry> {
     None
 }
 
-fn parse_cidr(line: &str) -> Option<IpRangeEntry> {
+pub(crate) fn parse_cidr(line: &str) -> Option<IpRangeEntry> {
     let parts: Vec<&str> = line.splitn(2, '/').collect();
     if parts.len() != 2 {
         return None;
@@ -90,7 +89,7 @@ fn parse_cidr(line: &str) -> Option<IpRangeEntry> {
     })
 }
 
-fn parse_range(line: &str) -> Option<IpRangeEntry> {
+pub(crate) fn parse_range(line: &str) -> Option<IpRangeEntry> {
     let parts: Vec<&str> = if let Some(pos) = line.find("-") {
         vec![line[..pos].trim(), line[pos + 1..].trim()]
     } else if let Some(pos) = line.find("..") {
@@ -190,4 +189,70 @@ pub(crate) async fn sync_all(db: &DbPool) -> Result<()> {
         failed
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::sync::{parse_cidr, parse_line, parse_range};
+
+    fn ip(s: &str) -> u32 {
+        s.parse::<std::net::Ipv4Addr>().unwrap().into()
+    }
+
+    macro_rules! test_parse {
+        ($($name:ident: $fn:ident, $input:expr => ($start:expr, $end:expr);)*) => {
+            $(
+                #[test]
+                fn $name() {
+                    let input = $input;
+                    let entry = $fn(input).unwrap();
+                    assert_eq!(entry.start_ip, $start, "{input}");
+                    assert_eq!(entry.end_ip, $end, "{input}");
+                }
+            )*
+        };
+    }
+
+    test_parse! {
+        single_ip: parse_line, "1.2.3.4" => (ip("1.2.3.4"), ip("1.2.3.4"));
+        single_ip_ws: parse_line, "  10.0.0.1  " => (ip("10.0.0.1"), ip("10.0.0.1"));
+        cidr_24: parse_cidr, "10.0.0.0/24" => (ip("10.0.0.0"), ip("10.0.0.255"));
+        cidr_16: parse_cidr, "172.16.0.0/16" => (ip("172.16.0.0"), ip("172.16.255.255"));
+        cidr_8: parse_cidr, "10.0.0.0/8" => (ip("10.0.0.0"), ip("10.255.255.255"));
+        cidr_32: parse_cidr, "192.168.1.1/32" => (ip("192.168.1.1"), ip("192.168.1.1"));
+        cidr_0: parse_cidr, "0.0.0.0/0" => (0, 0xffff_ffff);
+        cidr_20: parse_cidr, "192.168.16.0/20" => (ip("192.168.16.0"), ip("192.168.31.255"));
+        cidr_27: parse_cidr, "172.16.5.32/27" => (ip("172.16.5.32"), ip("172.16.5.63"));
+        range_hyphen: parse_range, "192.168.1.1 - 192.168.1.100" => (ip("192.168.1.1"), ip("192.168.1.100"));
+        range_no_spaces: parse_range, "192.168.1.1-192.168.1.100" => (ip("192.168.1.1"), ip("192.168.1.100"));
+        range_dots: parse_range, "10.0.0.1..10.0.0.50" => (ip("10.0.0.1"), ip("10.0.0.50"));
+        range_to: parse_range, "172.16.0.1 to 172.16.255.254" => (ip("172.16.0.1"), ip("172.16.255.254"));
+        range_single: parse_range, "10.0.0.5-10.0.0.5" => (ip("10.0.0.5"), ip("10.0.0.5"));
+        cidr_via_line: parse_line, "10.0.0.0/24" => (ip("10.0.0.0"), ip("10.0.0.255"));
+        single_via_line: parse_line, "10.0.0.1" => (ip("10.0.0.1"), ip("10.0.0.1"));
+    }
+
+    macro_rules! test_none {
+        ($($name:ident: $fn:ident, $input:expr;)*) => {
+            $(
+                #[test]
+                fn $name() {
+                    let input = $input;
+                    assert!($fn(input).is_none(), "expected none for: {input}");
+                }
+            )*
+        };
+    }
+
+    test_none! {
+        cidr_no_prefix: parse_cidr, "10.0.0.0";
+        cidr_invalid_prefix: parse_cidr, "10.0.0.0/33";
+        cidr_invalid_ip: parse_cidr, "999.0.0.0/24";
+        range_invalid_end: parse_range, "10.0.0.1 - 999.0.0.1";
+        range_no_sep: parse_range, "10.0.0.1 10.0.0.2";
+        comment: parse_line, "# comment";
+        empty: parse_line, "";
+        whitespace: parse_line, "   ";
+        garbage: parse_line, "not an ip";
+    }
 }
