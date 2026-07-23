@@ -47,8 +47,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: BlacklistCommand,
     },
-    /// fetch and apply IP ranges from all configured blacklist URLs
-    SyncBlacklist,
 }
 
 #[derive(Subcommand)]
@@ -65,6 +63,8 @@ pub(crate) enum BlacklistCommand {
     Remove {
         id: i32,
     },
+    /// fetch and apply IP ranges from all configured blacklist URLs
+    Sync,
 }
 
 #[derive(Subcommand)]
@@ -105,10 +105,6 @@ pub(crate) async fn rehash(db: &DbPool, settings: &Settings) -> Result<()> {
     dedup::rehash(db, settings).await
 }
 
-pub(crate) async fn sync_blacklist(db: &DbPool) -> Result<()> {
-    crate::sync::sync_all(db).await
-}
-
 pub(crate) async fn delete(db: &DbPool, settings: &Settings, target: DeleteTarget) -> Result<()> {
     let count = match target {
         DeleteTarget::Id { id } => db::delete_by_id(db, settings, id).await?,
@@ -131,6 +127,7 @@ pub(crate) async fn blacklist(db: &DbPool, command: BlacklistCommand) -> Result<
             interval,
         } => add_blacklist(db, url, type_, interval).await,
         BlacklistCommand::Remove { id } => remove_blacklist(db, id).await,
+        BlacklistCommand::Sync => crate::sync::sync_all(db).await,
     }
 }
 

@@ -1287,3 +1287,212 @@ mod tests {
         assert_eq!(count, 2, "both rows should exist (one soft-deleted)");
     }
 }
+
+#[cfg(test)]
+mod sync_tests {
+    use sqlx::MySqlPool;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::db_pool;
+    use crate::model::BanType;
+    use crate::sync;
+
+    fn db(pool: &MySqlPool) -> db_pool::DbPool {
+        db_pool::build_pool((*pool.connect_options()).clone(), 5).unwrap()
+    }
+
+    async fn insert_bl(pool: &MySqlPool, url: &str, t: BanType, interval: u64) -> i32 {
+        let r = sqlx::query(
+            "INSERT INTO blacklist (url, type, update_interval_seconds, last_update) VALUES (?, ?, ?, NULL)",
+        )
+        .bind(url)
+        .bind(t as u32)
+        .bind(interval)
+        .execute(pool)
+        .await
+        .unwrap();
+        r.last_insert_id() as i32
+    }
+
+    fn ip(s: &str) -> u32 {
+        s.parse::<std::net::Ipv4Addr>().unwrap().into()
+    }
+
+    macro_rules! bl_mock {
+        ($server:ident, $body:expr) => {
+            Mock::given(method("GET"))
+                .and(path("/blacklist"))
+                .respond_with(ResponseTemplate::new(200).set_body_string($body))
+                .mount(&$server)
+                .await
+        };
+    }
+
+    #[sqlx::test]
+    async fn sync_single_ip(pool: MySqlPool) {
+        let s = MockServer::start().await;
+        bl_mock!(s, "10.0.0.1\n192.168.1.100\n");
+        let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
+        sync::sync_blacklist(db(&pool), id).await.unwrap();
+        let ranges: Vec<(u32, u32)> =
+            sqlx::query_as("SELECT start_ip, end_ip FROM banned_ipv4_ranges ORDER BY start_ip")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            ranges,
+            vec![
+                (ip("10.0.0.1"), ip("10.0.0.1")),
+                (ip("192.168.1.100"), ip("192.168.1.100"))
+            ]
+        );
+    }
+
+    #[sqlx::test]
+    async fn sync_cidr(pool: MySqlPool) {
+        let s = MockServer::start().await;
+        bl_mock!(s, "10.0.0.0/24\n172.16.0.0/16\n");
+        let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
+        sync::sync_blacklist(db(&pool), id).await.unwrap();
+        let ranges: Vec<(u32, u32)> =
+            sqlx::query_as("SELECT start_ip, end_ip FROM banned_ipv4_ranges ORDER BY start_ip")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            ranges,
+            vec![
+                (ip("10.0.0.0"), ip("10.0.0.255")),
+                (ip("172.16.0.0"), ip("172.16.255.255"))
+            ]
+        );
+    }
+
+    #[sqlx::test]
+    async fn sync_range(pool: MySqlPool) {
+        let s = MockServer::start().await;
+        bl_mock!(s, "192.168.1.1\n10.0.0.5\n");
+        let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
+        sync::sync_blacklist(db(&pool), id).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM banned_ipv4_ranges")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[sqlx::test]
+    async fn sync_comments(pool: MySqlPool) {
+        let s = MockServer::start().await;
+        bl_mock!(s, "# comment\n10.0.0.1\n\n# another\n192.168.1.1\n   \n");
+        let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
+        sync::sync_blacklist(db(&pool), id).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM banned_ipv4_ranges")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[sqlx::test]
+    async fn sync_replaces_old_entries(pool: MySqlPool) {
+        let s = MockServer::start().await;
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c2 = counter.clone();
+        let r = move |_req: &wiremock::Request| {
+            let n = c2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let body = if n == 0 {
+                "10.0.0.1\n10.0.0.2\n10.0.0.3\n"
+            } else {
+                "192.168.1.1\n192.168.1.2\n"
+            };
+            ResponseTemplate::new(200).set_body_string(body)
+        };
+        Mock::given(method("GET"))
+            .and(path("/blacklist"))
+            .respond_with(r)
+            .mount(&s)
+            .await;
+
+        let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
+        sync::sync_blacklist(db(&pool), id).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM banned_ipv4_ranges")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            3
+        );
+
+        sync::sync_blacklist(db(&pool), id).await.unwrap();
+        let ranges: Vec<(u32, u32)> =
+            sqlx::query_as("SELECT start_ip, end_ip FROM banned_ipv4_ranges ORDER BY start_ip")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM banned_ipv4_ranges")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            ranges,
+            vec![
+                (ip("192.168.1.1"), ip("192.168.1.1")),
+                (ip("192.168.1.2"), ip("192.168.1.2"))
+            ]
+        );
+    }
+
+    #[sqlx::test]
+    async fn sync_sets_last_update(pool: MySqlPool) {
+        let s = MockServer::start().await;
+        bl_mock!(s, "10.0.0.1\n");
+        let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
+        sync::sync_blacklist(db(&pool), id).await.unwrap();
+        let last: Option<time::PrimitiveDateTime> =
+            sqlx::query_scalar("SELECT last_update FROM blacklist WHERE id = ?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(last.is_some());
+    }
+
+    #[sqlx::test]
+    async fn sync_sets_blacklist_id(pool: MySqlPool) {
+        let s = MockServer::start().await;
+        bl_mock!(s, "10.0.0.1\n10.0.0.2\n");
+        let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
+        sync::sync_blacklist(db(&pool), id).await.unwrap();
+        let ids: Vec<i32> = sqlx::query_scalar(
+            "SELECT DISTINCT blacklist_id FROM banned_ipv4_ranges ORDER BY blacklist_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(ids, vec![id]);
+    }
+
+    #[sqlx::test]
+    async fn sync_empty_body(pool: MySqlPool) {
+        let s = MockServer::start().await;
+        bl_mock!(s, "");
+        let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
+        sync::sync_blacklist(db(&pool), id).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM banned_ipv4_ranges")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[sqlx::test]
+    async fn sync_nonexistent_blacklist_fails(pool: MySqlPool) {
+        let result = sync::sync_blacklist(db(&pool), 99999).await;
+        assert!(result.is_err());
+    }
+}
