@@ -25,6 +25,13 @@ pub(crate) struct Upload {
     pub user_agent: Option<String>,
 }
 
+#[derive(Debug, sqlx::Type)]
+#[repr(u32)]
+pub enum BanType {
+    ReadOnly = 1,
+    Full = 2,
+}
+
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct BannedIpv4Range {
     pub id: i64,
@@ -33,6 +40,18 @@ pub(crate) struct BannedIpv4Range {
     pub reason: Option<String>,
     pub banned_timestamp: PrimitiveDateTime,
     pub expires_timestamp: Option<PrimitiveDateTime>,
+    #[sqlx(rename = "type")]
+    pub type_: BanType,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub(crate) struct Blacklist {
+    pub id: i64,
+    pub url: String,
+    #[sqlx(rename = "type")]
+    pub type_: BanType,
+    pub last_update: Option<PrimitiveDateTime>,
+    pub update_interval_seconds: u64,
 }
 
 #[derive(Debug, sqlx::FromRow)]

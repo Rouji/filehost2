@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use crate::db_pool::{self, DbPool};
 use crate::model::{
-    BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, BannedUserAgent, Upload,
+    BanType, BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, BannedUserAgent,
+    Upload,
 };
 use crate::settings::Settings;
 use crate::upload::uuid_to_path;
@@ -470,7 +471,7 @@ pub(crate) async fn list_banned_ips(db: &DbPool) -> Result<Vec<BannedIpv4Range>,
     let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
         BannedIpv4Range,
-        "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp FROM banned_ipv4_ranges ORDER BY id DESC"
+        "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\" FROM banned_ipv4_ranges ORDER BY id DESC"
     )
     .fetch_all(&mut *conn)
     .await
