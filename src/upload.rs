@@ -252,6 +252,7 @@ mod tests {
             max_upload_burst_bytes: None,
             dedup: true,
             db_max_connections: 20,
+            ban_cache_ttl_seconds: 300,
         }
     }
 

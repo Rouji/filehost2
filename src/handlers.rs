@@ -15,6 +15,7 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::ban_cache::BanCache;
 use crate::clamd;
 use crate::db;
 use crate::db_pool::DbPool;
@@ -109,8 +110,10 @@ fn save_file(tmp: tempfile::NamedTempFile, dest: &Path) -> std::io::Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_file(
     db: &DbPool,
+    ban_cache: &BanCache,
     settings: &Settings,
     file: HashedTempFile,
     uploader_ip: Option<u32>,
@@ -128,7 +131,7 @@ async fn process_file(
         .and_then(|e| e.to_str())
     {
         check_not_banned(
-            db::is_extension_banned(db, ext),
+            ban_cache.is_extension_banned(db, ext),
             "banned extension",
             "File type not allowed.",
         )
@@ -142,7 +145,7 @@ async fn process_file(
         .flatten()
     {
         check_not_banned(
-            db::is_mime_banned(db, ct.as_ref()),
+            ban_cache.is_mime_banned(db, ct.as_ref()),
             "banned mime",
             "Your upload was rejected.",
         )
@@ -152,7 +155,7 @@ async fn process_file(
     let hash = file.hash;
 
     check_not_banned(
-        db::is_hash_banned(db, hash.as_slice()),
+        ban_cache.is_hash_banned(db, hash.as_slice()),
         "banned hash",
         "Your upload was rejected.",
     )
@@ -340,6 +343,7 @@ pub(crate) async fn upload(
     payload: web::Payload,
     db: web::Data<DbPool>,
     settings: web::Data<Settings>,
+    ban_cache: web::Data<BanCache>,
 ) -> impl Responder {
     let uploader_ip = extract_ip(&req, settings.trust_xff);
     let user_agent = req
@@ -350,7 +354,7 @@ pub(crate) async fn upload(
     // ban checks before the multipart body is read
     if let Some(ip) = uploader_ip
         && let Err(resp) = check_not_banned(
-            db::is_ip_banned(db.get_ref(), ip, BanType::ReadOnly),
+            ban_cache.is_ip_banned(db.get_ref(), ip, BanType::ReadOnly),
             "banned IP",
             "Your IP is banned from uploading.",
         )
@@ -361,7 +365,7 @@ pub(crate) async fn upload(
 
     if let Some(ua) = user_agent
         && let Err(resp) = check_not_banned(
-            db::is_user_agent_banned(db.get_ref(), ua),
+            ban_cache.is_user_agent_banned(db.get_ref(), ua),
             "banned user agent",
             "Your client is banned from uploading.",
         )
@@ -412,6 +416,7 @@ pub(crate) async fn upload(
     for file in form.files {
         match process_file(
             db.get_ref(),
+            ban_cache.get_ref(),
             &settings,
             file,
             uploader_ip,
@@ -453,11 +458,13 @@ pub(crate) async fn get_file(
     path: web::Path<(String,)>,
     db: web::Data<DbPool>,
     settings: web::Data<Settings>,
+    ban_cache: web::Data<BanCache>,
 ) -> actix_web::Result<HttpResponse> {
     let slug = &path.0;
 
     if let Some(ipv4) = extract_ip(&req, settings.trust_xff)
-        && db::is_ip_banned(db.get_ref(), ipv4, BanType::Full)
+        && ban_cache
+            .is_ip_banned(db.get_ref(), ipv4, BanType::Full)
             .await
             .map_err(actix_web::error::ErrorInternalServerError)?
     {

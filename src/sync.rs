@@ -106,7 +106,7 @@ pub(crate) async fn sync_blacklist(db: DbPool, blacklist_id: i32) -> Result<()> 
             None,
             None,
             Some(blacklist_id),
-            ban_type.clone(),
+            ban_type,
         )
         .await?;
     }

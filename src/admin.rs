@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, PrimitiveDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
+use crate::ban_cache::BanCache;
 use crate::db;
 use crate::db_pool::DbPool;
 use crate::model::{
@@ -309,6 +310,7 @@ pub(crate) async fn list_banned_ips(_auth: AdminAuth, db: web::Data<DbPool>) -> 
 pub(crate) async fn add_banned_ip(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
+    ban_cache: web::Data<BanCache>,
     body: web::Json<BannedIpRangeCreate>,
 ) -> impl Responder {
     let Ok(start_ip) = body.start_ip.parse::<Ipv4Addr>() else {
@@ -343,6 +345,7 @@ pub(crate) async fn add_banned_ip(
     {
         Ok(id) => {
             log::info!("admin: banned ip range {start_ip}-{end_ip} (id {id})");
+            ban_cache.invalidate_ip_ranges().await;
             HttpResponse::Created().json(IdResult { id })
         }
         Err(e) => internal_err(e, "insert_banned_ip"),
@@ -353,12 +356,14 @@ pub(crate) async fn add_banned_ip(
 pub(crate) async fn remove_banned_ip(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
+    ban_cache: web::Data<BanCache>,
     path: web::Path<(i64,)>,
 ) -> impl Responder {
     let id = path.into_inner().0;
     match db::delete_banned_ip(db.get_ref(), id).await {
         Ok(true) => {
             log::info!("admin: removed banned ip range {id}");
+            ban_cache.invalidate_ip_ranges().await;
             HttpResponse::NoContent().finish()
         }
         Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),
@@ -392,11 +397,13 @@ pub(crate) async fn list_banned_extensions(
 pub(crate) async fn add_banned_extension(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
+    ban_cache: web::Data<BanCache>,
     body: web::Json<ExtensionCreate>,
 ) -> impl Responder {
     match db::insert_banned_extension(db.get_ref(), &body.extension).await {
         Ok(()) => {
             log::info!("admin: banned extension {}", body.extension);
+            ban_cache.invalidate_extensions().await;
             HttpResponse::Created().finish()
         }
         Err(e) => internal_err(e, "insert_banned_extension"),
@@ -407,12 +414,14 @@ pub(crate) async fn add_banned_extension(
 pub(crate) async fn remove_banned_extension(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
+    ban_cache: web::Data<BanCache>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let ext = path.into_inner().0;
     match db::delete_banned_extension(db.get_ref(), &ext).await {
         Ok(true) => {
             log::info!("admin: removed banned extension {ext}");
+            ban_cache.invalidate_extensions().await;
             HttpResponse::NoContent().finish()
         }
         Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),
@@ -443,11 +452,13 @@ pub(crate) async fn list_banned_mimes(_auth: AdminAuth, db: web::Data<DbPool>) -
 pub(crate) async fn add_banned_mime(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
+    ban_cache: web::Data<BanCache>,
     body: web::Json<MimeCreate>,
 ) -> impl Responder {
     match db::insert_banned_mime(db.get_ref(), &body.mime).await {
         Ok(()) => {
             log::info!("admin: banned mime {}", body.mime);
+            ban_cache.invalidate_mimes().await;
             HttpResponse::Created().finish()
         }
         Err(e) => internal_err(e, "insert_banned_mime"),
@@ -459,12 +470,14 @@ pub(crate) async fn add_banned_mime(
 pub(crate) async fn remove_banned_mime(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
+    ban_cache: web::Data<BanCache>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let mime = path.into_inner().0;
     match db::delete_banned_mime(db.get_ref(), &mime).await {
         Ok(true) => {
             log::info!("admin: removed banned mime {mime}");
+            ban_cache.invalidate_mimes().await;
             HttpResponse::NoContent().finish()
         }
         Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),
@@ -511,6 +524,7 @@ pub(crate) async fn list_banned_hashes(_auth: AdminAuth, db: web::Data<DbPool>) 
 pub(crate) async fn add_banned_hash(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
+    ban_cache: web::Data<BanCache>,
     body: web::Json<HashCreate>,
 ) -> impl Responder {
     let Some(hash) = hex_decode(&body.hash) else {
@@ -528,6 +542,7 @@ pub(crate) async fn add_banned_hash(
     match db::insert_banned_hash(db.get_ref(), &hash, body.reason.as_deref()).await {
         Ok(()) => {
             log::info!("admin: banned hash {}", body.hash);
+            ban_cache.invalidate_hashes().await;
             HttpResponse::Created().finish()
         }
         Err(e) => internal_err(e, "insert_banned_hash"),
@@ -538,6 +553,7 @@ pub(crate) async fn add_banned_hash(
 pub(crate) async fn remove_banned_hash(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
+    ban_cache: web::Data<BanCache>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let hex = path.into_inner().0;
@@ -550,6 +566,7 @@ pub(crate) async fn remove_banned_hash(
     match db::delete_banned_hash(db.get_ref(), &hash).await {
         Ok(true) => {
             log::info!("admin: removed banned hash {hex}");
+            ban_cache.invalidate_hashes().await;
             HttpResponse::NoContent().finish()
         }
         Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),
@@ -597,11 +614,13 @@ pub(crate) async fn list_banned_user_agents(
 pub(crate) async fn add_banned_user_agent(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
+    ban_cache: web::Data<BanCache>,
     body: web::Json<UserAgentCreate>,
 ) -> impl Responder {
     match db::insert_banned_user_agent(db.get_ref(), &body.pattern, body.reason.as_deref()).await {
         Ok(()) => {
             log::info!("admin: banned user agent pattern {:?}", body.pattern);
+            ban_cache.invalidate_user_agents().await;
             HttpResponse::Created().finish()
         }
         Err(e) => internal_err(e, "insert_banned_user_agent"),
@@ -613,12 +632,14 @@ pub(crate) async fn add_banned_user_agent(
 pub(crate) async fn remove_banned_user_agent(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
+    ban_cache: web::Data<BanCache>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let pattern = path.into_inner().0;
     match db::delete_banned_user_agent(db.get_ref(), &pattern).await {
         Ok(true) => {
             log::info!("admin: removed banned user agent pattern {pattern:?}");
+            ban_cache.invalidate_user_agents().await;
             HttpResponse::NoContent().finish()
         }
         Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),

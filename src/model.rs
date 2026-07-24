@@ -25,7 +25,7 @@ pub(crate) struct Upload {
     pub user_agent: Option<String>,
 }
 
-#[derive(Debug, Clone, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
 #[repr(u32)]
 pub enum BanType {
     ReadOnly = 1,

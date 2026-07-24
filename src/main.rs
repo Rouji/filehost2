@@ -1,4 +1,5 @@
 mod admin;
+mod ban_cache;
 mod clamd;
 mod cli;
 mod db;
@@ -74,6 +75,9 @@ async fn main() -> std::io::Result<()> {
 
     let rendered_templates = templates::render(&settings);
     let throttle = web::Data::new(rate_limit::UploadThrottle::new());
+    let ban_cache = web::Data::new(ban_cache::BanCache::new(std::time::Duration::from_secs(
+        settings.ban_cache_ttl_seconds,
+    )));
 
     // `%a` is the raw peer address, which is the reverse proxy's IP rather
     // than the client's whenever trust_xff is set; `%{r}a` resolves the
@@ -97,6 +101,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(s.clone()))
             .app_data(web::Data::new(rendered_templates.clone()))
             .app_data(throttle.clone())
+            .app_data(ban_cache.clone())
             .app_data(
                 MultipartFormConfig::default()
                     .total_limit(s.max_filesize * 1024 * 1024)

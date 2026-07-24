@@ -43,39 +43,6 @@ pub(crate) async fn is_ip_banned(
     .is_some())
 }
 
-pub(crate) async fn is_extension_banned(db: &DbPool, ext: &str) -> Result<bool, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    Ok(sqlx::query!(
-        "SELECT 1 AS found FROM banned_file_extensions WHERE extension = ?",
-        ext
-    )
-    .fetch_optional(&mut *conn)
-    .await?
-    .is_some())
-}
-
-pub(crate) async fn is_mime_banned(db: &DbPool, mime: &str) -> Result<bool, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    Ok(sqlx::query!(
-        "SELECT 1 AS found FROM banned_file_mimes WHERE mime = ?",
-        mime
-    )
-    .fetch_optional(&mut *conn)
-    .await?
-    .is_some())
-}
-
-pub(crate) async fn is_hash_banned(db: &DbPool, hash: &[u8]) -> Result<bool, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    Ok(sqlx::query!(
-        "SELECT 1 AS found FROM banned_file_hashes WHERE hash = ?",
-        hash
-    )
-    .fetch_optional(&mut *conn)
-    .await?
-    .is_some())
-}
-
 pub(crate) async fn find_active_upload_by_hash(
     db: &DbPool,
     hash: &[u8],
@@ -142,20 +109,6 @@ pub(crate) async fn find_dedup_pairs(db: &DbPool) -> Result<Vec<DedupPair>, sqlx
             canonical_id: r.canonical_id,
         })
         .collect())
-}
-
-pub(crate) async fn is_user_agent_banned(
-    db: &DbPool,
-    user_agent: &str,
-) -> Result<bool, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    Ok(sqlx::query!(
-        "SELECT 1 AS found FROM banned_user_agents WHERE ? LIKE CONCAT('%', pattern, '%') LIMIT 1",
-        user_agent
-    )
-    .fetch_optional(&mut *conn)
-    .await?
-    .is_some())
 }
 
 /// Soft-deletes every upload matching a `WHERE` clause appended to the base

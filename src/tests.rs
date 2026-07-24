@@ -11,6 +11,7 @@ mod tests {
     use sqlx::MySqlPool;
 
     use crate::admin;
+    use crate::ban_cache::BanCache;
     use crate::db_pool;
     use crate::handlers;
     use crate::settings::Settings;
@@ -43,6 +44,7 @@ mod tests {
             max_upload_burst_bytes: None,
             dedup: true,
             db_max_connections: 20,
+            ban_cache_ttl_seconds: 300,
         }
     }
 
@@ -75,6 +77,9 @@ mod tests {
         std::fs::create_dir_all(&settings.store_path).unwrap();
         let tmpl = templates::render(&settings);
         let db_pool = to_db_pool(&pool);
+        let ban_cache = BanCache::new(std::time::Duration::from_secs(
+            settings.ban_cache_ttl_seconds,
+        ));
         test::init_service(
             App::new()
                 .service(handlers::index)
@@ -84,6 +89,7 @@ mod tests {
                 .app_data(web::Data::new(db_pool))
                 .app_data(web::Data::new(settings.clone()))
                 .app_data(web::Data::new(tmpl))
+                .app_data(web::Data::new(ban_cache))
                 .app_data(
                     MultipartFormConfig::default().total_limit(settings.max_filesize * 1024 * 1024),
                 ),
