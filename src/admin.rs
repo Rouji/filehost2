@@ -12,7 +12,8 @@ use uuid::Uuid;
 use crate::db;
 use crate::db_pool::DbPool;
 use crate::model::{
-    BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, BannedUserAgent, Upload,
+    BanType, BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, BannedUserAgent,
+    Upload,
 };
 use crate::settings::Settings;
 
@@ -263,6 +264,7 @@ struct BannedIpRangeDto {
     banned_timestamp: String,
     expires_timestamp: Option<String>,
     blacklist_id: Option<i32>,
+    type_: u32,
 }
 
 impl From<BannedIpv4Range> for BannedIpRangeDto {
@@ -275,6 +277,7 @@ impl From<BannedIpv4Range> for BannedIpRangeDto {
             banned_timestamp: format_ts(b.banned_timestamp),
             expires_timestamp: b.expires_timestamp.map(format_ts),
             blacklist_id: b.blacklist_id,
+            type_: b.type_ as u32,
         }
     }
 }
@@ -286,6 +289,8 @@ pub(crate) struct BannedIpRangeCreate {
     reason: Option<String>,
     expires_timestamp: Option<String>,
     blacklist_id: Option<i32>,
+    #[serde(default)]
+    type_: u32,
 }
 
 #[get("/bans/ips")]
@@ -319,6 +324,11 @@ pub(crate) async fn add_banned_ip(
         },
         None => None,
     };
+    let ban_type = match body.type_ {
+        0 | 1 => BanType::ReadOnly,
+        2 => BanType::Full,
+        _ => return json_error(StatusCode::BAD_REQUEST, "Invalid type (expected 1 or 2)"),
+    };
 
     match db::insert_banned_ip(
         db.get_ref(),
@@ -327,6 +337,7 @@ pub(crate) async fn add_banned_ip(
         body.reason.as_deref(),
         expires_timestamp,
         body.blacklist_id,
+        ban_type,
     )
     .await
     {

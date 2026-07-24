@@ -24,13 +24,19 @@ pub(crate) async fn is_slug_taken(db: &DbPool, slug: &str) -> Result<bool, sqlx:
     .is_some())
 }
 
-pub(crate) async fn is_ip_banned(db: &DbPool, ip: u32) -> Result<bool, sqlx::Error> {
+pub(crate) async fn is_ip_banned(
+    db: &DbPool,
+    ip: u32,
+    ban_type: BanType,
+) -> Result<bool, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     Ok(sqlx::query!(
         "SELECT 1 AS found FROM banned_ipv4_ranges \
          WHERE ? BETWEEN start_ip AND end_ip \
+         AND type >= ? \
          AND (expires_timestamp IS NULL OR expires_timestamp > NOW())",
-        ip
+        ip,
+        ban_type as u32
     )
     .fetch_optional(&mut *conn)
     .await?
@@ -484,15 +490,17 @@ pub(crate) async fn insert_banned_ip(
     reason: Option<&str>,
     expires_timestamp: Option<PrimitiveDateTime>,
     blacklist_id: Option<i32>,
+    ban_type: BanType,
 ) -> Result<i64, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!(
-        "INSERT INTO banned_ipv4_ranges (start_ip, end_ip, reason, expires_timestamp, blacklist_id) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO banned_ipv4_ranges (start_ip, end_ip, reason, expires_timestamp, blacklist_id, type) VALUES (?, ?, ?, ?, ?, ?)",
         start_ip,
         end_ip,
         reason,
         expires_timestamp,
-        blacklist_id
+        blacklist_id,
+        ban_type as u32
     )
     .execute(&mut *conn)
     .await?;

@@ -398,13 +398,14 @@ mod tests {
         );
     }
 
-    async fn ban_ip(pool: &MySqlPool, ip: std::net::Ipv4Addr) {
+    async fn ban_ip(pool: &MySqlPool, ip: std::net::Ipv4Addr, ban_type: u32) {
         let ip_int = u32::from(ip);
         sqlx::query(
-            "INSERT INTO banned_ipv4_ranges (start_ip, end_ip, banned_timestamp) VALUES (?, ?, NOW())",
+            "INSERT INTO banned_ipv4_ranges (start_ip, end_ip, banned_timestamp, type) VALUES (?, ?, NOW(), ?)",
         )
         .bind(ip_int)
         .bind(ip_int)
+        .bind(ban_type)
         .execute(pool)
         .await
         .unwrap();
@@ -413,7 +414,7 @@ mod tests {
     #[sqlx::test]
     async fn xff_used_when_trust_xff_enabled(pool: MySqlPool) {
         let banned_ip: std::net::Ipv4Addr = "1.2.3.4".parse().unwrap();
-        ban_ip(&pool, banned_ip).await;
+        ban_ip(&pool, banned_ip, 1).await;
 
         let mut settings = test_settings();
         settings.trust_xff = true;
@@ -430,7 +431,7 @@ mod tests {
     #[sqlx::test]
     async fn xff_ignored_when_trust_xff_disabled(pool: MySqlPool) {
         let banned_ip: std::net::Ipv4Addr = "1.2.3.4".parse().unwrap();
-        ban_ip(&pool, banned_ip).await;
+        ban_ip(&pool, banned_ip, 1).await;
 
         let app = full_app(test_settings(), pool).await;
 
@@ -444,6 +445,65 @@ mod tests {
             "XFF should be ignored when trust_xff=false, got: {}",
             resp.status()
         );
+    }
+
+    #[sqlx::test]
+    async fn full_ban_blocks_get(pool: MySqlPool) {
+        let banned_ip: std::net::Ipv4Addr = "1.2.3.4".parse().unwrap();
+        ban_ip(&pool, banned_ip, 2).await; // Full ban
+
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool).await;
+
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "5.6.7.8")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+        let body = test::read_body(resp).await;
+        let url = std::str::from_utf8(&body).unwrap().trim().to_string();
+
+        let req = test::TestRequest::get()
+            .uri(&url)
+            .insert_header(("X-Forwarded-For", "1.2.3.4"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+    }
+
+    #[sqlx::test]
+    async fn read_only_ban_does_not_block_get(pool: MySqlPool) {
+        let banned_ip: std::net::Ipv4Addr = "1.2.3.4".parse().unwrap();
+        ban_ip(&pool, banned_ip, 1).await; // ReadOnly ban
+
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool).await;
+
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "1.2.3.4")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "5.6.7.8")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+        let body = test::read_body(resp).await;
+        let url = std::str::from_utf8(&body).unwrap().trim().to_string();
+
+        let req = test::TestRequest::get()
+            .uri(&url)
+            .insert_header(("X-Forwarded-For", "1.2.3.4"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
     }
 
     async fn ban_user_agent(pool: &MySqlPool, pattern: &str) {
@@ -986,6 +1046,8 @@ mod tests {
         end_ip: &'a str,
         reason: Option<&'a str>,
         expires_timestamp: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        type_: Option<u32>,
     }
 
     #[derive(Deserialize)]
@@ -998,6 +1060,7 @@ mod tests {
         id: i64,
         start_ip: String,
         end_ip: String,
+        type_: u32,
     }
 
     #[sqlx::test]
@@ -1012,6 +1075,7 @@ mod tests {
                 end_ip: "1.2.3.255",
                 reason: Some("spam"),
                 expires_timestamp: None,
+                type_: None,
             },
         )
         .await;
@@ -1025,6 +1089,7 @@ mod tests {
             .expect("banned range should be listed");
         assert_eq!(range.start_ip, "1.2.3.0");
         assert_eq!(range.end_ip, "1.2.3.255");
+        assert_eq!(range.type_, 1);
 
         let resp = admin_delete(&app, &format!("/admin/bans/ips/{}", created.id)).await;
         assert_eq!(resp.status(), 204);

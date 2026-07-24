@@ -85,17 +85,18 @@ pub(crate) fn parse_body(body: &str) -> Vec<IpRangeEntry> {
 }
 
 pub(crate) async fn sync_blacklist(db: DbPool, blacklist_id: i32) -> Result<()> {
-    let entry = db::get_blacklist_by_id(&db, blacklist_id).await?;
-    let Some(entry) = entry else {
+    let bl_entry = db::get_blacklist_by_id(&db, blacklist_id).await?;
+    let Some(bl_entry) = bl_entry else {
         anyhow::bail!("blacklist entry {blacklist_id} not found");
     };
 
-    let entries = fetch_ip_ranges(&entry.url).await?;
+    let entries = fetch_ip_ranges(&bl_entry.url).await?;
 
     // Delete existing entries for this blacklist source.
     let deleted = db::delete_banned_ips_by_blacklist(&db, blacklist_id).await?;
     log::info!("blacklist: deleted {deleted} old range(s) for id={blacklist_id}");
 
+    let ban_type = bl_entry.type_;
     let count = entries.len();
     for entry in entries {
         db::insert_banned_ip(
@@ -105,6 +106,7 @@ pub(crate) async fn sync_blacklist(db: DbPool, blacklist_id: i32) -> Result<()> 
             None,
             None,
             Some(blacklist_id),
+            ban_type.clone(),
         )
         .await?;
     }
@@ -124,7 +126,7 @@ pub(crate) async fn sync_blacklist(db: DbPool, blacklist_id: i32) -> Result<()> 
         "blacklist: synced {} range(s) for id={} url={}",
         count,
         blacklist_id,
-        entry.url
+        bl_entry.url
     );
 
     Ok(())

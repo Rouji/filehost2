@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::clamd;
 use crate::db;
 use crate::db_pool::DbPool;
+use crate::model::BanType;
 use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
 use crate::upload::{HashedTempFile, build_slug, calculate_expiry, extract_ip, uuid_to_path};
@@ -349,7 +350,7 @@ pub(crate) async fn upload(
     // ban checks before the multipart body is read
     if let Some(ip) = uploader_ip
         && let Err(resp) = check_not_banned(
-            db::is_ip_banned(db.get_ref(), ip),
+            db::is_ip_banned(db.get_ref(), ip, BanType::ReadOnly),
             "banned IP",
             "Your IP is banned from uploading.",
         )
@@ -454,6 +455,14 @@ pub(crate) async fn get_file(
     settings: web::Data<Settings>,
 ) -> actix_web::Result<HttpResponse> {
     let slug = &path.0;
+
+    if let Some(ipv4) = extract_ip(&req, settings.trust_xff)
+        && db::is_ip_banned(db.get_ref(), ipv4, BanType::Full)
+            .await
+            .map_err(actix_web::error::ErrorInternalServerError)?
+    {
+        return Ok(error_page(StatusCode::FORBIDDEN, "Your IP is banned."));
+    }
 
     let row = db::get_upload_by_slug(db.get_ref(), slug)
         .await
