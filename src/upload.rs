@@ -55,6 +55,28 @@ pub(crate) struct HashedTempFile {
     pub hash: [u8; 32],
 }
 
+/// Keeps the original extension on the temp file's name, since `detect_content_type`
+/// sniffs by path.
+fn make_tempfile(ext_suffix: Option<&str>) -> std::io::Result<tempfile::NamedTempFile> {
+    match ext_suffix {
+        Some(suffix) => tempfile::Builder::new().suffix(suffix).tempfile(),
+        None => tempfile::NamedTempFile::new(),
+    }
+}
+
+/// Runs on the blocking thread pool since `FileType::try_from_file` does sync I/O.
+async fn detect_content_type(path: PathBuf) -> Option<mime::Mime> {
+    tokio::task::spawn_blocking(move || {
+        FileType::try_from_file(&path)
+            .ok()
+            .and_then(|ft| ft.media_types().first().map(|s| s.parse().ok()))
+            .flatten()
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 impl<'t> FieldReader<'t> for HashedTempFile {
     type Future = Pin<Box<dyn std::future::Future<Output = Result<Self, MultipartError>> + 't>>;
 
@@ -94,11 +116,7 @@ impl<'t> FieldReader<'t> for HashedTempFile {
                 .and_then(|e| e.to_str())
                 .map(|e| format!(".{e}"));
 
-            let file = match &ext_suffix {
-                Some(suffix) => tempfile::Builder::new().suffix(suffix).tempfile(),
-                None => tempfile::NamedTempFile::new(),
-            }
-            .map_err(to_field_err)?;
+            let file = make_tempfile(ext_suffix.as_deref()).map_err(to_field_err)?;
 
             let mut file_async = tokio::fs::File::from_std(file.reopen().map_err(to_field_err)?);
 
@@ -120,16 +138,7 @@ impl<'t> FieldReader<'t> for HashedTempFile {
 
             file_async.flush().await.map_err(to_field_err)?;
 
-            let file_path = file.path().to_path_buf();
-            let detected = tokio::task::spawn_blocking(move || {
-                FileType::try_from_file(&file_path)
-                    .ok()
-                    .and_then(|ft| ft.media_types().first().map(|s| s.parse().ok()))
-                    .flatten()
-            })
-            .await
-            .ok()
-            .flatten();
+            let detected = detect_content_type(file.path().to_path_buf()).await;
 
             Ok(HashedTempFile {
                 file,

@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::net::Ipv4Addr;
 
 use actix_web::{
@@ -102,6 +103,50 @@ fn internal_err(e: impl std::fmt::Display, context: &str) -> HttpResponse {
     json_error(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.")
 }
 
+fn respond_list<T, U: Serialize>(
+    result: Result<Vec<T>, sqlx::Error>,
+    map: impl Fn(T) -> U,
+    err_context: &str,
+) -> HttpResponse {
+    match result {
+        Ok(rows) => HttpResponse::Ok().json(rows.into_iter().map(map).collect::<Vec<_>>()),
+        Err(e) => internal_err(e, err_context),
+    }
+}
+
+async fn respond_created<Fut: Future<Output = ()>>(
+    result: Result<(), sqlx::Error>,
+    invalidate: impl FnOnce() -> Fut,
+    ok_log: impl FnOnce() -> String,
+    err_context: &str,
+) -> HttpResponse {
+    match result {
+        Ok(()) => {
+            log::info!("{}", ok_log());
+            invalidate().await;
+            HttpResponse::Created().finish()
+        }
+        Err(e) => internal_err(e, err_context),
+    }
+}
+
+async fn respond_removed<Fut: Future<Output = ()>>(
+    result: Result<bool, sqlx::Error>,
+    invalidate: impl FnOnce() -> Fut,
+    ok_log: impl FnOnce() -> String,
+    err_context: &str,
+) -> HttpResponse {
+    match result {
+        Ok(true) => {
+            log::info!("{}", ok_log());
+            invalidate().await;
+            HttpResponse::NoContent().finish()
+        }
+        Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),
+        Err(e) => internal_err(e, err_context),
+    }
+}
+
 #[derive(Serialize)]
 struct DeleteResult {
     deleted: usize,
@@ -111,8 +156,6 @@ struct DeleteResult {
 struct IdResult {
     id: i64,
 }
-
-// ---- uploads ----
 
 #[derive(Serialize)]
 struct UploadDto {
@@ -178,21 +221,19 @@ pub(crate) async fn list_uploads(
     let limit = query.limit.unwrap_or(100).clamp(1, 1000);
     let offset = query.offset.unwrap_or(0).max(0);
 
-    match db::list_uploads(
-        db.get_ref(),
-        ip,
-        query.slug.as_deref(),
-        query.include_deleted.unwrap_or(false),
-        limit,
-        offset,
+    respond_list(
+        db::list_uploads(
+            db.get_ref(),
+            ip,
+            query.slug.as_deref(),
+            query.include_deleted.unwrap_or(false),
+            limit,
+            offset,
+        )
+        .await,
+        UploadDto::from,
+        "list_uploads",
     )
-    .await
-    {
-        Ok(rows) => {
-            HttpResponse::Ok().json(rows.into_iter().map(UploadDto::from).collect::<Vec<_>>())
-        }
-        Err(e) => internal_err(e, "list_uploads"),
-    }
 }
 
 #[delete("/uploads/{id}")]
@@ -230,8 +271,6 @@ pub(crate) async fn delete_upload_by_slug(
         Err(e) => internal_err(e, "delete_by_slug"),
     }
 }
-
-// ---- banned IP ranges ----
 
 #[derive(Serialize)]
 struct BannedIpRangeDto {
@@ -273,14 +312,11 @@ pub(crate) struct BannedIpRangeCreate {
 
 #[get("/bans/ips")]
 pub(crate) async fn list_banned_ips(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Responder {
-    match db::list_banned_ips(db.get_ref()).await {
-        Ok(rows) => HttpResponse::Ok().json(
-            rows.into_iter()
-                .map(BannedIpRangeDto::from)
-                .collect::<Vec<_>>(),
-        ),
-        Err(e) => internal_err(e, "list_banned_ips"),
-    }
+    respond_list(
+        db::list_banned_ips(db.get_ref()).await,
+        BannedIpRangeDto::from,
+        "list_banned_ips",
+    )
 }
 
 #[post("/bans/ips")]
@@ -337,18 +373,14 @@ pub(crate) async fn remove_banned_ip(
     path: web::Path<(i64,)>,
 ) -> impl Responder {
     let id = path.into_inner().0;
-    match db::delete_banned_ip(db.get_ref(), id).await {
-        Ok(true) => {
-            log::info!("admin: removed banned ip range {id}");
-            ban_cache.invalidate_ip_ranges().await;
-            HttpResponse::NoContent().finish()
-        }
-        Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),
-        Err(e) => internal_err(e, "delete_banned_ip"),
-    }
+    respond_removed(
+        db::delete_banned_ip(db.get_ref(), id).await,
+        || ban_cache.invalidate_ip_ranges(),
+        || format!("admin: removed banned ip range {id}"),
+        "delete_banned_ip",
+    )
+    .await
 }
-
-// ---- banned file extensions ----
 
 #[derive(Deserialize)]
 pub(crate) struct ExtensionCreate {
@@ -360,14 +392,11 @@ pub(crate) async fn list_banned_extensions(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
 ) -> impl Responder {
-    match db::list_banned_extensions(db.get_ref()).await {
-        Ok(rows) => HttpResponse::Ok().json(
-            rows.into_iter()
-                .map(|r: BannedFileExtension| r.extension)
-                .collect::<Vec<_>>(),
-        ),
-        Err(e) => internal_err(e, "list_banned_extensions"),
-    }
+    respond_list(
+        db::list_banned_extensions(db.get_ref()).await,
+        |r: BannedFileExtension| r.extension,
+        "list_banned_extensions",
+    )
 }
 
 #[post("/bans/extensions")]
@@ -377,14 +406,13 @@ pub(crate) async fn add_banned_extension(
     ban_cache: web::Data<BanCache>,
     body: web::Json<ExtensionCreate>,
 ) -> impl Responder {
-    match db::insert_banned_extension(db.get_ref(), &body.extension).await {
-        Ok(()) => {
-            log::info!("admin: banned extension {}", body.extension);
-            ban_cache.invalidate_extensions().await;
-            HttpResponse::Created().finish()
-        }
-        Err(e) => internal_err(e, "insert_banned_extension"),
-    }
+    respond_created(
+        db::insert_banned_extension(db.get_ref(), &body.extension).await,
+        || ban_cache.invalidate_extensions(),
+        || format!("admin: banned extension {}", body.extension),
+        "insert_banned_extension",
+    )
+    .await
 }
 
 #[delete("/bans/extensions/{extension}")]
@@ -395,18 +423,14 @@ pub(crate) async fn remove_banned_extension(
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let ext = path.into_inner().0;
-    match db::delete_banned_extension(db.get_ref(), &ext).await {
-        Ok(true) => {
-            log::info!("admin: removed banned extension {ext}");
-            ban_cache.invalidate_extensions().await;
-            HttpResponse::NoContent().finish()
-        }
-        Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),
-        Err(e) => internal_err(e, "delete_banned_extension"),
-    }
+    respond_removed(
+        db::delete_banned_extension(db.get_ref(), &ext).await,
+        || ban_cache.invalidate_extensions(),
+        || format!("admin: removed banned extension {ext}"),
+        "delete_banned_extension",
+    )
+    .await
 }
-
-// ---- banned mime types ----
 
 #[derive(Deserialize)]
 pub(crate) struct MimeCreate {
@@ -415,14 +439,11 @@ pub(crate) struct MimeCreate {
 
 #[get("/bans/mimes")]
 pub(crate) async fn list_banned_mimes(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Responder {
-    match db::list_banned_mimes(db.get_ref()).await {
-        Ok(rows) => HttpResponse::Ok().json(
-            rows.into_iter()
-                .map(|r: BannedFileMime| r.mime)
-                .collect::<Vec<_>>(),
-        ),
-        Err(e) => internal_err(e, "list_banned_mimes"),
-    }
+    respond_list(
+        db::list_banned_mimes(db.get_ref()).await,
+        |r: BannedFileMime| r.mime,
+        "list_banned_mimes",
+    )
 }
 
 #[post("/bans/mimes")]
@@ -432,14 +453,13 @@ pub(crate) async fn add_banned_mime(
     ban_cache: web::Data<BanCache>,
     body: web::Json<MimeCreate>,
 ) -> impl Responder {
-    match db::insert_banned_mime(db.get_ref(), &body.mime).await {
-        Ok(()) => {
-            log::info!("admin: banned mime {}", body.mime);
-            ban_cache.invalidate_mimes().await;
-            HttpResponse::Created().finish()
-        }
-        Err(e) => internal_err(e, "insert_banned_mime"),
-    }
+    respond_created(
+        db::insert_banned_mime(db.get_ref(), &body.mime).await,
+        || ban_cache.invalidate_mimes(),
+        || format!("admin: banned mime {}", body.mime),
+        "insert_banned_mime",
+    )
+    .await
 }
 
 // mime types contain a `/` (e.g. "image/png"), hence the greedy path match.
@@ -451,18 +471,14 @@ pub(crate) async fn remove_banned_mime(
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let mime = path.into_inner().0;
-    match db::delete_banned_mime(db.get_ref(), &mime).await {
-        Ok(true) => {
-            log::info!("admin: removed banned mime {mime}");
-            ban_cache.invalidate_mimes().await;
-            HttpResponse::NoContent().finish()
-        }
-        Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),
-        Err(e) => internal_err(e, "delete_banned_mime"),
-    }
+    respond_removed(
+        db::delete_banned_mime(db.get_ref(), &mime).await,
+        || ban_cache.invalidate_mimes(),
+        || format!("admin: removed banned mime {mime}"),
+        "delete_banned_mime",
+    )
+    .await
 }
-
-// ---- banned file hashes ----
 
 #[derive(Serialize)]
 struct BannedHashDto {
@@ -487,14 +503,11 @@ pub(crate) struct HashCreate {
 
 #[get("/bans/hashes")]
 pub(crate) async fn list_banned_hashes(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Responder {
-    match db::list_banned_hashes(db.get_ref()).await {
-        Ok(rows) => HttpResponse::Ok().json(
-            rows.into_iter()
-                .map(BannedHashDto::from)
-                .collect::<Vec<_>>(),
-        ),
-        Err(e) => internal_err(e, "list_banned_hashes"),
-    }
+    respond_list(
+        db::list_banned_hashes(db.get_ref()).await,
+        BannedHashDto::from,
+        "list_banned_hashes",
+    )
 }
 
 #[post("/bans/hashes")]
@@ -516,14 +529,13 @@ pub(crate) async fn add_banned_hash(
             "Invalid hash length (expected 32-byte BLAKE3)",
         );
     }
-    match db::insert_banned_hash(db.get_ref(), &hash, body.reason.as_deref()).await {
-        Ok(()) => {
-            log::info!("admin: banned hash {}", body.hash);
-            ban_cache.invalidate_hashes().await;
-            HttpResponse::Created().finish()
-        }
-        Err(e) => internal_err(e, "insert_banned_hash"),
-    }
+    respond_created(
+        db::insert_banned_hash(db.get_ref(), &hash, body.reason.as_deref()).await,
+        || ban_cache.invalidate_hashes(),
+        || format!("admin: banned hash {}", body.hash),
+        "insert_banned_hash",
+    )
+    .await
 }
 
 #[delete("/bans/hashes/{hash}")]
@@ -540,15 +552,13 @@ pub(crate) async fn remove_banned_hash(
             "Invalid hash (expected lowercase hex)",
         );
     };
-    match db::delete_banned_hash(db.get_ref(), &hash).await {
-        Ok(true) => {
-            log::info!("admin: removed banned hash {hex}");
-            ban_cache.invalidate_hashes().await;
-            HttpResponse::NoContent().finish()
-        }
-        Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),
-        Err(e) => internal_err(e, "delete_banned_hash"),
-    }
+    respond_removed(
+        db::delete_banned_hash(db.get_ref(), &hash).await,
+        || ban_cache.invalidate_hashes(),
+        || format!("admin: removed banned hash {hex}"),
+        "delete_banned_hash",
+    )
+    .await
 }
 
 #[derive(Serialize)]
@@ -577,14 +587,11 @@ pub(crate) async fn list_banned_user_agents(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
 ) -> impl Responder {
-    match db::list_banned_user_agents(db.get_ref()).await {
-        Ok(rows) => HttpResponse::Ok().json(
-            rows.into_iter()
-                .map(BannedUserAgentDto::from)
-                .collect::<Vec<_>>(),
-        ),
-        Err(e) => internal_err(e, "list_banned_user_agents"),
-    }
+    respond_list(
+        db::list_banned_user_agents(db.get_ref()).await,
+        BannedUserAgentDto::from,
+        "list_banned_user_agents",
+    )
 }
 
 #[post("/bans/user-agents")]
@@ -594,14 +601,13 @@ pub(crate) async fn add_banned_user_agent(
     ban_cache: web::Data<BanCache>,
     body: web::Json<UserAgentCreate>,
 ) -> impl Responder {
-    match db::insert_banned_user_agent(db.get_ref(), &body.pattern, body.reason.as_deref()).await {
-        Ok(()) => {
-            log::info!("admin: banned user agent pattern {:?}", body.pattern);
-            ban_cache.invalidate_user_agents().await;
-            HttpResponse::Created().finish()
-        }
-        Err(e) => internal_err(e, "insert_banned_user_agent"),
-    }
+    respond_created(
+        db::insert_banned_user_agent(db.get_ref(), &body.pattern, body.reason.as_deref()).await,
+        || ban_cache.invalidate_user_agents(),
+        || format!("admin: banned user agent pattern {:?}", body.pattern),
+        "insert_banned_user_agent",
+    )
+    .await
 }
 
 // User agent patterns can contain '/', hence the greedy path match.
@@ -613,13 +619,11 @@ pub(crate) async fn remove_banned_user_agent(
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let pattern = path.into_inner().0;
-    match db::delete_banned_user_agent(db.get_ref(), &pattern).await {
-        Ok(true) => {
-            log::info!("admin: removed banned user agent pattern {pattern:?}");
-            ban_cache.invalidate_user_agents().await;
-            HttpResponse::NoContent().finish()
-        }
-        Ok(false) => json_error(StatusCode::NOT_FOUND, "Not found"),
-        Err(e) => internal_err(e, "delete_banned_user_agent"),
-    }
+    respond_removed(
+        db::delete_banned_user_agent(db.get_ref(), &pattern).await,
+        || ban_cache.invalidate_user_agents(),
+        || format!("admin: removed banned user agent pattern {pattern:?}"),
+        "delete_banned_user_agent",
+    )
+    .await
 }

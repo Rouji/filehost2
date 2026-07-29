@@ -36,6 +36,15 @@ pub(crate) enum ScanResult {
     Infected(String),
 }
 
+/// clamd closing the connection early (virus found, or response already sent) surfaces
+/// as one of these two error kinds.
+fn is_connection_closed(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+    )
+}
+
 /// Stream a file to clamd via the INSTREAM protocol and return the scan result.
 ///
 /// clamd may close its read side early when it finds a virus, producing a
@@ -55,14 +64,7 @@ pub(crate) async fn scan_file(addr: &str, path: &Path) -> io::Result<ScanResult>
         for chunk in [&(n as u32).to_be_bytes() as &[u8], &buf[..n]] {
             match conn.write_all(chunk).await {
                 Ok(()) => {}
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
-                    ) =>
-                {
-                    break 'stream;
-                }
+                Err(e) if is_connection_closed(&e) => break 'stream,
                 Err(e) => return Err(e),
             }
         }
@@ -85,14 +87,7 @@ pub(crate) async fn scan_file(addr: &str, path: &Path) -> io::Result<ScanResult>
                 }
                 response.push(byte[0]);
             }
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
-                ) =>
-            {
-                break;
-            }
+            Err(e) if is_connection_closed(&e) => break,
             Err(e) => return Err(e),
         }
     }

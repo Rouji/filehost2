@@ -10,47 +10,6 @@ use crate::db;
 use crate::db_pool::DbPool;
 use crate::model::BanType;
 
-struct TtlCell<T> {
-    ttl: Duration,
-    state: RwLock<Option<(Instant, Arc<T>)>>,
-}
-
-impl<T> TtlCell<T> {
-    fn new(ttl: Duration) -> Self {
-        Self {
-            ttl,
-            state: RwLock::new(None),
-        }
-    }
-
-    async fn get_or_refresh<F, Fut>(&self, fetch: F) -> Result<Arc<T>, sqlx::Error>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<T, sqlx::Error>>,
-    {
-        if let Some((fetched_at, data)) = self.state.read().await.as_ref()
-            && fetched_at.elapsed() < self.ttl
-        {
-            return Ok(data.clone());
-        }
-
-        let mut guard = self.state.write().await;
-        if let Some((fetched_at, data)) = guard.as_ref()
-            && fetched_at.elapsed() < self.ttl
-        {
-            return Ok(data.clone());
-        }
-
-        let fresh = Arc::new(fetch().await?);
-        *guard = Some((Instant::now(), fresh.clone()));
-        Ok(fresh)
-    }
-
-    async fn invalidate(&self) {
-        *self.state.write().await = None;
-    }
-}
-
 struct KeyedTtlCache<K, V> {
     ttl: Duration,
     state: RwLock<std::collections::HashMap<K, (Instant, V)>>,
@@ -96,6 +55,29 @@ impl<K: Eq + Hash + Clone, V: Clone> KeyedTtlCache<K, V> {
     }
 }
 
+/// `KeyedTtlCache` with `K = ()`; the `Arc` means a cache hit clones a pointer rather
+/// than the whole `HashSet`/`Vec`.
+type TtlCell<T> = KeyedTtlCache<(), Arc<T>>;
+
+/// `is_user_agent_banned` needs substring matching, not exact lookup, so it doesn't go
+/// through here.
+async fn is_in_cached_set<T, Q, F, Fut>(
+    cell: &TtlCell<HashSet<T>>,
+    fetch: F,
+    needle: &Q,
+) -> Result<bool, sqlx::Error>
+where
+    T: Eq + Hash + std::borrow::Borrow<Q>,
+    Q: Eq + Hash + ?Sized,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<HashSet<T>, sqlx::Error>>,
+{
+    let set = cell
+        .get_or_refresh((), || async { Ok(Arc::new(fetch().await?)) })
+        .await?;
+    Ok(set.contains(needle))
+}
+
 pub(crate) struct BanCache {
     ip_bans: KeyedTtlCache<(u32, BanType), bool>,
     extensions: TtlCell<HashSet<String>>,
@@ -131,17 +113,18 @@ impl BanCache {
         db: &DbPool,
         ext: &str,
     ) -> Result<bool, sqlx::Error> {
-        let extensions = self
-            .extensions
-            .get_or_refresh(|| async {
+        is_in_cached_set(
+            &self.extensions,
+            || async {
                 Ok(db::list_banned_extensions(db)
                     .await?
                     .into_iter()
                     .map(|e| e.extension)
                     .collect())
-            })
-            .await?;
-        Ok(extensions.contains(ext))
+            },
+            ext,
+        )
+        .await
     }
 
     pub(crate) async fn is_mime_banned(
@@ -149,17 +132,18 @@ impl BanCache {
         db: &DbPool,
         mime: &str,
     ) -> Result<bool, sqlx::Error> {
-        let mimes = self
-            .mimes
-            .get_or_refresh(|| async {
+        is_in_cached_set(
+            &self.mimes,
+            || async {
                 Ok(db::list_banned_mimes(db)
                     .await?
                     .into_iter()
                     .map(|m| m.mime)
                     .collect())
-            })
-            .await?;
-        Ok(mimes.contains(mime))
+            },
+            mime,
+        )
+        .await
     }
 
     pub(crate) async fn is_hash_banned(
@@ -167,17 +151,18 @@ impl BanCache {
         db: &DbPool,
         hash: &[u8],
     ) -> Result<bool, sqlx::Error> {
-        let hashes = self
-            .hashes
-            .get_or_refresh(|| async {
+        is_in_cached_set(
+            &self.hashes,
+            || async {
                 Ok(db::list_banned_hashes(db)
                     .await?
                     .into_iter()
                     .map(|h| h.hash)
                     .collect())
-            })
-            .await?;
-        Ok(hashes.contains(hash))
+            },
+            hash,
+        )
+        .await
     }
 
     pub(crate) async fn is_user_agent_banned(
@@ -187,12 +172,14 @@ impl BanCache {
     ) -> Result<bool, sqlx::Error> {
         let patterns = self
             .user_agent_patterns
-            .get_or_refresh(|| async {
-                Ok(db::list_banned_user_agents(db)
-                    .await?
-                    .into_iter()
-                    .map(|u| u.pattern)
-                    .collect())
+            .get_or_refresh((), || async {
+                Ok(Arc::new(
+                    db::list_banned_user_agents(db)
+                        .await?
+                        .into_iter()
+                        .map(|u| u.pattern)
+                        .collect(),
+                ))
             })
             .await?;
         let ua_lower = user_agent.to_lowercase();

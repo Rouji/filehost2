@@ -11,35 +11,14 @@ static IP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?:/(\d{1,2}))?").unwrap()
 });
 
-fn now() -> PrimitiveDateTime {
-    let odt = time::OffsetDateTime::now_utc();
-    PrimitiveDateTime::new(odt.date(), odt.time())
+fn seconds_since(last: PrimitiveDateTime) -> i64 {
+    (time::OffsetDateTime::now_utc() - last.assume_utc()).whole_seconds()
 }
 
-fn elapsed_seconds(a: PrimitiveDateTime, b: PrimitiveDateTime) -> i64 {
-    let a = a.assume_utc();
-    let b = b.assume_utc();
-    (a - b).whole_seconds()
-}
-
+#[derive(Debug, PartialEq)]
 pub(crate) struct IpRangeEntry {
     pub start_ip: u32,
     pub end_ip: u32,
-}
-
-impl PartialEq for IpRangeEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.start_ip == other.start_ip && self.end_ip == other.end_ip
-    }
-}
-
-impl std::fmt::Debug for IpRangeEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("IpRangeEntry")
-            .field("start_ip", &self.start_ip)
-            .field("end_ip", &self.end_ip)
-            .finish()
-    }
 }
 
 /// fetches a blacklist URL and parses IP ranges from the response body.
@@ -49,16 +28,31 @@ pub(crate) async fn fetch_ip_ranges(url: &str) -> Result<Vec<IpRangeEntry>> {
     Ok(parse_body(&body))
 }
 
+/// The first and last address of the `/prefix` CIDR block containing `addr`: host bits
+/// cleared for the first address, set for the last, so a non-aligned `addr` (e.g.
+/// `10.0.0.5/24`) is normalized down to its block's actual range. `prefix` must be 0..=32.
+fn cidr_range(addr: u32, prefix: u8) -> (u32, u32) {
+    let host_bit_count = 32 - u32::from(prefix);
+    // A full 32-bit shift panics in Rust, so /0 (every bit is a host bit) is its own case.
+    let host_mask = if host_bit_count == 32 {
+        u32::MAX
+    } else {
+        !(u32::MAX << host_bit_count)
+    };
+    let network_mask = !host_mask;
+    (addr & network_mask, addr | host_mask)
+}
+
 pub(crate) fn parse_body(body: &str) -> Vec<IpRangeEntry> {
     let mut entries = Vec::new();
     for cap in IP_RE.captures_iter(body) {
-        let start: std::net::Ipv4Addr = match cap[1].parse() {
+        let addr: std::net::Ipv4Addr = match cap[1].parse() {
             Ok(ip) => ip,
             Err(_) => continue,
         };
-        let start_u32 = u32::from(start);
+        let addr_u32 = u32::from(addr);
 
-        let end = if let Some(prefix_str) = cap.get(2) {
+        let (start, end) = if let Some(prefix_str) = cap.get(2) {
             let prefix: u8 = match prefix_str.as_str().parse() {
                 Ok(p) => p,
                 Err(_) => continue,
@@ -66,18 +60,13 @@ pub(crate) fn parse_body(body: &str) -> Vec<IpRangeEntry> {
             if prefix > 32 {
                 continue;
             }
-            let mask = if prefix == 0 {
-                0u32
-            } else {
-                !0u32 << (32 - prefix)
-            };
-            start_u32 | !mask
+            cidr_range(addr_u32, prefix)
         } else {
-            start_u32
+            (addr_u32, addr_u32)
         };
 
         entries.push(IpRangeEntry {
-            start_ip: start_u32,
+            start_ip: start,
             end_ip: end,
         });
     }
@@ -135,13 +124,12 @@ pub(crate) async fn sync_blacklist(db: DbPool, blacklist_id: i32) -> Result<()> 
 /// Syncs all blacklist entries whose interval has elapsed.
 pub(crate) async fn sync_all(db: &DbPool) -> Result<()> {
     let entries = db::list_blacklist(db).await?;
-    let now = now();
 
     let to_sync: Vec<_> = entries
         .into_iter()
         .filter(|e| {
             e.last_update
-                .is_none_or(|last| elapsed_seconds(now, last) >= e.update_interval_seconds as i64)
+                .is_none_or(|last| seconds_since(last) >= e.update_interval_seconds as i64)
         })
         .map(|e| (e.id, e.url))
         .collect();
@@ -212,6 +200,7 @@ mod tests {
         cidr_20: "192.168.16.0/20" => (ip("192.168.16.0"), ip("192.168.31.255"));
         cidr_27: "172.16.5.32/27" => (ip("172.16.5.32"), ip("172.16.5.63"));
         cidr_comment: "217.60.250.0/24 ; SBL694808" => (ip("217.60.250.0"), ip("217.60.250.255"));
+        cidr_non_aligned_host_address: "10.0.0.5/24" => (ip("10.0.0.0"), ip("10.0.0.255"));
     }
 
     #[test]

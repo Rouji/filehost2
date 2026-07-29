@@ -85,3 +85,16 @@ pub(crate) struct BannedUserAgent {
     pub pattern: String,
     pub reason: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // db::is_ip_banned runs `WHERE type >= ?` (binding `ban_type as u32`), so a Full ban
+    // also satisfies a ReadOnly check only as long as Full's discriminant is the larger
+    // one. If this fails, that query needs to change along with the enum.
+    #[test]
+    fn full_outranks_read_only_for_the_sql_severity_comparison() {
+        assert!(BanType::Full as u32 > BanType::ReadOnly as u32);
+    }
+}

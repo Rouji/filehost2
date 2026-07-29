@@ -118,7 +118,7 @@ pub(crate) async fn find_dedup_pairs(db: &DbPool) -> Result<Vec<DedupPair>, sqlx
 async fn delete_matching(
     db: &DbPool,
     settings: &Settings,
-    where_clause: &str,
+    where_clause: &'static str,
     bind: impl FnOnce(
         sqlx::query::Query<'_, sqlx::MySql, sqlx::mysql::MySqlArguments>,
     ) -> sqlx::query::Query<'_, sqlx::MySql, sqlx::mysql::MySqlArguments>,
@@ -186,55 +186,29 @@ pub(crate) struct NewUpload<'a> {
     pub user_agent: Option<&'a str>,
 }
 
-pub(crate) async fn insert_upload(db: &DbPool, upload: &NewUpload<'_>) -> anyhow::Result<bool> {
-    let mut conn = db_pool::conn(db).await?;
-
-    let exists = sqlx::query!(
-        "SELECT 1 AS found FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
-        upload.slug
-    )
-    .fetch_optional(&mut *conn)
-    .await?
-    .is_some();
-
-    if exists {
-        return Ok(false);
-    }
-
-    sqlx::query!(
-        "INSERT INTO uploads (id, slug, original_name, upload_timestamp, expiry_timestamp, file_size, uploader_ip, content_type, user_agent) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        upload.id,
-        upload.slug,
-        upload.original_name,
-        upload.upload_timestamp,
-        upload.expiry_timestamp,
-        upload.file_size,
-        upload.uploader_ip,
-        upload.content_type,
-        upload.user_agent,
-    )
-    .execute(&mut *conn)
-    .await?;
-
-    Ok(true)
-}
-
-/// Like `insert_upload`, but for log entries whose file no longer exists on disk: the
-/// row is inserted already soft-deleted so the app never tries to serve it. Unlike
-/// `insert_upload`, existence is checked regardless of `deleted_timestamp` — these are
-/// one-time archival records, not something a slug should be allowed to reclaim.
-pub(crate) async fn insert_historical_upload(
+/// A live upload shouldn't reclaim a slug still held by a not-yet-expired historical
+/// record, so the existence check only ignores `deleted_timestamp` for historical rows.
+async fn insert_upload_checked(
     db: &DbPool,
     upload: &NewUpload<'_>,
-    deleted_timestamp: time::PrimitiveDateTime,
+    deleted_timestamp: Option<time::PrimitiveDateTime>,
 ) -> anyhow::Result<bool> {
     let mut conn = db_pool::conn(db).await?;
 
-    let exists = sqlx::query!("SELECT 1 AS found FROM uploads WHERE slug = ?", upload.slug)
+    let exists = if deleted_timestamp.is_some() {
+        sqlx::query!("SELECT 1 AS found FROM uploads WHERE slug = ?", upload.slug)
+            .fetch_optional(&mut *conn)
+            .await?
+            .is_some()
+    } else {
+        sqlx::query!(
+            "SELECT 1 AS found FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+            upload.slug
+        )
         .fetch_optional(&mut *conn)
         .await?
-        .is_some();
+        .is_some()
+    };
 
     if exists {
         return Ok(false);
@@ -258,6 +232,22 @@ pub(crate) async fn insert_historical_upload(
     .await?;
 
     Ok(true)
+}
+
+pub(crate) async fn insert_upload(db: &DbPool, upload: &NewUpload<'_>) -> anyhow::Result<bool> {
+    insert_upload_checked(db, upload, None).await
+}
+
+/// Like `insert_upload`, but for log entries whose file no longer exists on disk: the
+/// row is inserted already soft-deleted so the app never tries to serve it. Unlike
+/// `insert_upload`, existence is checked regardless of `deleted_timestamp` — these are
+/// one-time archival records, not something a slug should be allowed to reclaim.
+pub(crate) async fn insert_historical_upload(
+    db: &DbPool,
+    upload: &NewUpload<'_>,
+    deleted_timestamp: time::PrimitiveDateTime,
+) -> anyhow::Result<bool> {
+    insert_upload_checked(db, upload, Some(deleted_timestamp)).await
 }
 
 pub(crate) async fn historical_upload_slugs(
@@ -376,6 +366,12 @@ pub(crate) async fn global_stats(db: &DbPool) -> Result<GlobalStats, sqlx::Error
     .await
 }
 
+enum ListUploadsParam<'a> {
+    U32(u32),
+    Str(&'a str),
+    I64(i64),
+}
+
 pub(crate) async fn list_uploads(
     db: &DbPool,
     ip: Option<u32>,
@@ -388,26 +384,34 @@ pub(crate) async fn list_uploads(
         "SELECT id, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, \
          slug, file_size, hash, uploader_ip, content_type, user_agent FROM uploads WHERE 1=1",
     );
+    let mut params = Vec::new();
+
     if !include_deleted {
         sql.push_str(" AND deleted_timestamp IS NULL");
     }
-    if ip.is_some() {
-        sql.push_str(" AND uploader_ip = ?");
-    }
-    if slug.is_some() {
-        sql.push_str(" AND slug = ?");
-    }
-    sql.push_str(" ORDER BY upload_timestamp DESC LIMIT ? OFFSET ?");
-
-    let mut q = sqlx::query_as::<_, Upload>(sqlx::AssertSqlSafe(sql));
     if let Some(ip) = ip {
-        q = q.bind(ip);
+        sql.push_str(" AND uploader_ip = ?");
+        params.push(ListUploadsParam::U32(ip));
     }
     if let Some(slug) = slug {
-        q = q.bind(slug);
+        sql.push_str(" AND slug = ?");
+        params.push(ListUploadsParam::Str(slug));
     }
+    sql.push_str(" ORDER BY upload_timestamp DESC LIMIT ? OFFSET ?");
+    params.push(ListUploadsParam::I64(limit));
+    params.push(ListUploadsParam::I64(offset));
+
+    let mut q = sqlx::query_as::<_, Upload>(sqlx::AssertSqlSafe(sql));
+    for param in params {
+        q = match param {
+            ListUploadsParam::U32(v) => q.bind(v),
+            ListUploadsParam::Str(v) => q.bind(v),
+            ListUploadsParam::I64(v) => q.bind(v),
+        };
+    }
+
     let mut conn = db_pool::conn(db).await?;
-    q.bind(limit).bind(offset).fetch_all(&mut *conn).await
+    q.fetch_all(&mut *conn).await
 }
 
 pub(crate) async fn get_upload_by_slug(
@@ -474,149 +478,126 @@ pub(crate) async fn delete_banned_ips_by_blacklist(
     Ok(result.rows_affected() as usize)
 }
 
-pub(crate) async fn delete_banned_ip(db: &DbPool, id: i64) -> Result<bool, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    let result = sqlx::query!("DELETE FROM banned_ipv4_ranges WHERE id = ?", id)
-        .execute(&mut *conn)
-        .await?;
-    Ok(result.rows_affected() > 0)
+/// The `sqlx` query macros need string literals, so each query is passed in whole
+/// rather than assembled from the table/column names.
+macro_rules! ban_set_crud {
+    (
+        $list_fn:ident, $insert_fn:ident, $delete_fn:ident, $struct:ty, $key_ty:ty,
+        list = $list_sql:literal, insert = $insert_sql:literal, delete = $delete_sql:literal $(,)?
+    ) => {
+        pub(crate) async fn $list_fn(db: &DbPool) -> Result<Vec<$struct>, sqlx::Error> {
+            let mut conn = db_pool::conn(db).await?;
+            sqlx::query_as!($struct, $list_sql)
+                .fetch_all(&mut *conn)
+                .await
+        }
+
+        pub(crate) async fn $insert_fn(db: &DbPool, key: $key_ty) -> Result<(), sqlx::Error> {
+            let mut conn = db_pool::conn(db).await?;
+            sqlx::query!($insert_sql, key).execute(&mut *conn).await?;
+            Ok(())
+        }
+
+        pub(crate) async fn $delete_fn(db: &DbPool, key: $key_ty) -> Result<bool, sqlx::Error> {
+            let mut conn = db_pool::conn(db).await?;
+            let result = sqlx::query!($delete_sql, key).execute(&mut *conn).await?;
+            Ok(result.rows_affected() > 0)
+        }
+    };
 }
 
-pub(crate) async fn list_banned_extensions(
-    db: &DbPool,
-) -> Result<Vec<BannedFileExtension>, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    sqlx::query_as!(
-        BannedFileExtension,
-        "SELECT extension FROM banned_file_extensions ORDER BY extension"
-    )
-    .fetch_all(&mut *conn)
-    .await
+/// Same as `ban_set_crud`, plus an `Option<&str> reason` column.
+macro_rules! ban_set_crud_with_reason {
+    (
+        $list_fn:ident, $insert_fn:ident, $delete_fn:ident, $struct:ty, $key_ty:ty,
+        list = $list_sql:literal, insert = $insert_sql:literal, delete = $delete_sql:literal $(,)?
+    ) => {
+        pub(crate) async fn $list_fn(db: &DbPool) -> Result<Vec<$struct>, sqlx::Error> {
+            let mut conn = db_pool::conn(db).await?;
+            sqlx::query_as!($struct, $list_sql)
+                .fetch_all(&mut *conn)
+                .await
+        }
+
+        pub(crate) async fn $insert_fn(
+            db: &DbPool,
+            key: $key_ty,
+            reason: Option<&str>,
+        ) -> Result<(), sqlx::Error> {
+            let mut conn = db_pool::conn(db).await?;
+            sqlx::query!($insert_sql, key, reason)
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }
+
+        pub(crate) async fn $delete_fn(db: &DbPool, key: $key_ty) -> Result<bool, sqlx::Error> {
+            let mut conn = db_pool::conn(db).await?;
+            let result = sqlx::query!($delete_sql, key).execute(&mut *conn).await?;
+            Ok(result.rows_affected() > 0)
+        }
+    };
 }
 
-pub(crate) async fn insert_banned_extension(db: &DbPool, ext: &str) -> Result<(), sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    sqlx::query!(
-        "INSERT IGNORE INTO banned_file_extensions (extension) VALUES (?)",
-        ext
-    )
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
+macro_rules! delete_by_id_bool {
+    ($fn_name:ident, $id_ty:ty, $sql:literal) => {
+        pub(crate) async fn $fn_name(db: &DbPool, id: $id_ty) -> Result<bool, sqlx::Error> {
+            let mut conn = db_pool::conn(db).await?;
+            let result = sqlx::query!($sql, id).execute(&mut *conn).await?;
+            Ok(result.rows_affected() > 0)
+        }
+    };
 }
 
-pub(crate) async fn delete_banned_extension(db: &DbPool, ext: &str) -> Result<bool, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    let result = sqlx::query!(
-        "DELETE FROM banned_file_extensions WHERE extension = ?",
-        ext
-    )
-    .execute(&mut *conn)
-    .await?;
-    Ok(result.rows_affected() > 0)
-}
+delete_by_id_bool!(
+    delete_banned_ip,
+    i64,
+    "DELETE FROM banned_ipv4_ranges WHERE id = ?"
+);
 
-pub(crate) async fn list_banned_mimes(db: &DbPool) -> Result<Vec<BannedFileMime>, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    sqlx::query_as!(
-        BannedFileMime,
-        "SELECT mime FROM banned_file_mimes ORDER BY mime"
-    )
-    .fetch_all(&mut *conn)
-    .await
-}
+ban_set_crud!(
+    list_banned_extensions,
+    insert_banned_extension,
+    delete_banned_extension,
+    BannedFileExtension,
+    &str,
+    list = "SELECT extension FROM banned_file_extensions ORDER BY extension",
+    insert = "INSERT IGNORE INTO banned_file_extensions (extension) VALUES (?)",
+    delete = "DELETE FROM banned_file_extensions WHERE extension = ?",
+);
 
-pub(crate) async fn insert_banned_mime(db: &DbPool, mime: &str) -> Result<(), sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    sqlx::query!(
-        "INSERT IGNORE INTO banned_file_mimes (mime) VALUES (?)",
-        mime
-    )
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
-}
+ban_set_crud!(
+    list_banned_mimes,
+    insert_banned_mime,
+    delete_banned_mime,
+    BannedFileMime,
+    &str,
+    list = "SELECT mime FROM banned_file_mimes ORDER BY mime",
+    insert = "INSERT IGNORE INTO banned_file_mimes (mime) VALUES (?)",
+    delete = "DELETE FROM banned_file_mimes WHERE mime = ?",
+);
 
-pub(crate) async fn delete_banned_mime(db: &DbPool, mime: &str) -> Result<bool, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    let result = sqlx::query!("DELETE FROM banned_file_mimes WHERE mime = ?", mime)
-        .execute(&mut *conn)
-        .await?;
-    Ok(result.rows_affected() > 0)
-}
+ban_set_crud_with_reason!(
+    list_banned_hashes,
+    insert_banned_hash,
+    delete_banned_hash,
+    BannedFileHash,
+    &[u8],
+    list = "SELECT hash, reason FROM banned_file_hashes ORDER BY hash",
+    insert = "INSERT IGNORE INTO banned_file_hashes (hash, reason) VALUES (?, ?)",
+    delete = "DELETE FROM banned_file_hashes WHERE hash = ?",
+);
 
-pub(crate) async fn list_banned_hashes(db: &DbPool) -> Result<Vec<BannedFileHash>, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    sqlx::query_as!(
-        BannedFileHash,
-        "SELECT hash, reason FROM banned_file_hashes ORDER BY hash"
-    )
-    .fetch_all(&mut *conn)
-    .await
-}
-
-pub(crate) async fn insert_banned_hash(
-    db: &DbPool,
-    hash: &[u8],
-    reason: Option<&str>,
-) -> Result<(), sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    sqlx::query!(
-        "INSERT IGNORE INTO banned_file_hashes (hash, reason) VALUES (?, ?)",
-        hash,
-        reason
-    )
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
-}
-
-pub(crate) async fn delete_banned_hash(db: &DbPool, hash: &[u8]) -> Result<bool, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    let result = sqlx::query!("DELETE FROM banned_file_hashes WHERE hash = ?", hash)
-        .execute(&mut *conn)
-        .await?;
-    Ok(result.rows_affected() > 0)
-}
-
-pub(crate) async fn list_banned_user_agents(
-    db: &DbPool,
-) -> Result<Vec<BannedUserAgent>, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    sqlx::query_as!(
-        BannedUserAgent,
-        "SELECT pattern, reason FROM banned_user_agents ORDER BY pattern"
-    )
-    .fetch_all(&mut *conn)
-    .await
-}
-
-pub(crate) async fn insert_banned_user_agent(
-    db: &DbPool,
-    pattern: &str,
-    reason: Option<&str>,
-) -> Result<(), sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    sqlx::query!(
-        "INSERT IGNORE INTO banned_user_agents (pattern, reason) VALUES (?, ?)",
-        pattern,
-        reason
-    )
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
-}
-
-pub(crate) async fn delete_banned_user_agent(
-    db: &DbPool,
-    pattern: &str,
-) -> Result<bool, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    let result = sqlx::query!("DELETE FROM banned_user_agents WHERE pattern = ?", pattern)
-        .execute(&mut *conn)
-        .await?;
-    Ok(result.rows_affected() > 0)
-}
+ban_set_crud_with_reason!(
+    list_banned_user_agents,
+    insert_banned_user_agent,
+    delete_banned_user_agent,
+    BannedUserAgent,
+    &str,
+    list = "SELECT pattern, reason FROM banned_user_agents ORDER BY pattern",
+    insert = "INSERT IGNORE INTO banned_user_agents (pattern, reason) VALUES (?, ?)",
+    delete = "DELETE FROM banned_user_agents WHERE pattern = ?",
+);
 
 pub(crate) async fn list_blacklist(db: &DbPool) -> Result<Vec<Blacklist>, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
@@ -660,13 +641,7 @@ pub(crate) async fn insert_blacklist(
     Ok(result.last_insert_id() as i32)
 }
 
-pub(crate) async fn delete_blacklist(db: &DbPool, id: i32) -> Result<bool, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    let result = sqlx::query!("DELETE FROM blacklist WHERE id = ?", id)
-        .execute(&mut *conn)
-        .await?;
-    Ok(result.rows_affected() > 0)
-}
+delete_by_id_bool!(delete_blacklist, i32, "DELETE FROM blacklist WHERE id = ?");
 
 async fn delete_one(
     db: &DbPool,

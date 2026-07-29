@@ -39,15 +39,14 @@ fn error_page(status: StatusCode, message: &str) -> HttpResponse {
         .body(body)
 }
 
-/// Runs a `db::is_*_banned` check and turns it into a response: forbidden if
-/// banned, a logged 500 if the check itself failed, otherwise `Ok(())`.
-async fn check_not_banned(
-    check: impl std::future::Future<Output = Result<bool, sqlx::Error>>,
+fn respond_to_check(
+    condition: Result<bool, sqlx::Error>,
     check_name: &str,
-    forbidden_message: &str,
+    fail_status: StatusCode,
+    fail_message: &str,
 ) -> Result<(), HttpResponse> {
-    match check.await {
-        Ok(true) => Err(error_page(StatusCode::FORBIDDEN, forbidden_message)),
+    match condition {
+        Ok(true) => Err(error_page(fail_status, fail_message)),
         Ok(false) => Ok(()),
         Err(e) => {
             log::error!("{check_name} check failed: {e}");
@@ -59,6 +58,21 @@ async fn check_not_banned(
     }
 }
 
+/// Runs a `db::is_*_banned` check and turns it into a response: forbidden if
+/// banned, a logged 500 if the check itself failed, otherwise `Ok(())`.
+async fn check_not_banned(
+    check: impl std::future::Future<Output = Result<bool, sqlx::Error>>,
+    check_name: &str,
+    forbidden_message: &str,
+) -> Result<(), HttpResponse> {
+    respond_to_check(
+        check.await,
+        check_name,
+        StatusCode::FORBIDDEN,
+        forbidden_message,
+    )
+}
+
 async fn check_under_limit(
     limit: Option<i64>,
     check: impl std::future::Future<Output = Result<i64, sqlx::Error>>,
@@ -68,17 +82,12 @@ async fn check_under_limit(
     let Some(limit) = limit else {
         return Ok(());
     };
-    match check.await {
-        Ok(n) if n >= limit => Err(error_page(StatusCode::TOO_MANY_REQUESTS, too_many_message)),
-        Ok(_) => Ok(()),
-        Err(e) => {
-            log::error!("{check_name} check failed: {e}");
-            Err(error_page(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Something went wrong.",
-            ))
-        }
-    }
+    respond_to_check(
+        check.await.map(|n| n >= limit),
+        check_name,
+        StatusCode::TOO_MANY_REQUESTS,
+        too_many_message,
+    )
 }
 
 /// get content_type from the file
@@ -108,6 +117,96 @@ fn save_file(tmp: tempfile::NamedTempFile, dest: &Path) -> std::io::Result<()> {
             Ok(())
         }
     }
+}
+
+/// Slug space grows exponentially with `id_len`, so bumping it after a few collisions
+/// always converges in practice.
+async fn allocate_unique_slug(
+    db: &DbPool,
+    original_name: &str,
+    ct_subtype: Option<&str>,
+    settings: &Settings,
+    keep_name: bool,
+    mut id_len: usize,
+) -> Result<String, HttpResponse> {
+    const MAX_SLUG_ATTEMPTS: u32 = 3;
+    loop {
+        for _ in 0..MAX_SLUG_ATTEMPTS {
+            let candidate = build_slug(
+                original_name,
+                ct_subtype,
+                id_len,
+                settings.auto_file_ext,
+                settings.max_ext_len,
+                keep_name,
+            );
+            match db::is_slug_taken(db, &candidate).await {
+                Ok(true) => continue,
+                Ok(false) => return Ok(candidate),
+                Err(e) => {
+                    log::error!("failed to check slug availability: {e}");
+                    return Err(error_page(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Something went wrong.",
+                    ));
+                }
+            }
+        }
+        id_len += 1;
+    }
+}
+
+fn reconcile_content_type_for_db(
+    detected_content_type: Option<&mime::Mime>,
+    content_type_str: String,
+) -> String {
+    let Some(detected) = detected_content_type else {
+        return content_type_str;
+    };
+
+    // "text" and "octet-stream" are just fallbacks the sniffer reports when it couldn't
+    // identify anything more specific, so they're not meaningful enough to override
+    // whatever the client/guessed type already said.
+    let sniffer_found_something_specific =
+        detected.type_() != "text" && *detected != mime_guess::mime::APPLICATION_OCTET_STREAM;
+    if sniffer_found_something_specific {
+        return detected.to_string();
+    }
+
+    // The other direction: the client/guessed type was a meaningless "octet-stream", but
+    // the sniffer at least confirmed the content is text. Normalize to `text/plain`
+    // rather than keeping the uninformative fallback.
+    let client_type_was_octet_stream = content_type_str == "application/octet-stream";
+    if detected.type_() == "text" && client_type_was_octet_stream {
+        return "text/plain".to_string();
+    }
+
+    content_type_str
+}
+
+/// Takes ownership of everything since it outlives `process_file`'s return.
+fn spawn_clamd_scan(
+    db: DbPool,
+    settings: Settings,
+    uuid: Uuid,
+    slug: String,
+    save_path: std::path::PathBuf,
+) {
+    let Some(addr) = settings.clamd_addr.clone() else {
+        return;
+    };
+    tokio::spawn(async move {
+        match clamd::scan_file(&addr, &save_path).await {
+            Ok(clamd::ScanResult::Clean) => log::info!("clamd: {uuid} ({slug}) clean"),
+            Ok(clamd::ScanResult::Infected(name)) => {
+                log::warn!("clamd: {uuid} ({slug}) infected with {name:?}, deleting");
+                if let Err(e) = db::delete_by_id(&db, &settings, uuid).await {
+                    log::error!("clamd: failed to delete infected file {uuid}: {e}");
+                }
+            }
+            Err(e) => log::error!("clamd: scan failed for {uuid} ({slug}): {e}"),
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -177,42 +276,15 @@ async fn process_file(
 
     let uuid = Uuid::new_v4();
 
-    let slug = {
-        const MAX_SLUG_ATTEMPTS: u32 = 3;
-        let slug;
-        let mut id_len = id_len;
-        'outer: loop {
-            for _ in 0..MAX_SLUG_ATTEMPTS {
-                let candidate = build_slug(
-                    &original_name,
-                    ct_subtype.as_deref(),
-                    id_len,
-                    settings.auto_file_ext,
-                    settings.max_ext_len,
-                    keep_name,
-                );
-                match db::is_slug_taken(db, &candidate).await {
-                    Ok(true) => continue,
-                    Ok(false) => {
-                        slug = Some(candidate);
-                        break 'outer;
-                    }
-                    Err(e) => {
-                        log::error!("failed to check slug availability: {e}");
-                        return Err(internal_err());
-                    }
-                }
-            }
-            id_len += 1;
-        }
-        match slug {
-            Some(slug) => slug,
-            None => {
-                log::error!("could not find an unused slug");
-                return Err(internal_err());
-            }
-        }
-    };
+    let slug = allocate_unique_slug(
+        db,
+        &original_name,
+        ct_subtype.as_deref(),
+        settings,
+        keep_name,
+        id_len,
+    )
+    .await?;
     let expiry = calculate_expiry(file_size, settings);
     let save_path = uuid_to_path(Path::new(&settings.store_path), &uuid);
 
@@ -226,20 +298,8 @@ async fn process_file(
         return Err(internal_err());
     }
 
-    let content_type_for_db = match (&file.detected_content_type, content_type_str.as_str()) {
-        // plaintext and octet-stream are pretty much just fallbacks of the filetype lib; ignore
-        // them
-        (Some(detected), _)
-            if detected.type_() != "text"
-                && *detected != mime_guess::mime::APPLICATION_OCTET_STREAM =>
-        {
-            detected.to_string()
-        }
-        (Some(detected), "application/octet-stream") if detected.type_() == "text" => {
-            "text/plain".to_string()
-        }
-        _ => content_type_str,
-    };
+    let content_type_for_db =
+        reconcile_content_type_for_db(file.detected_content_type.as_ref(), content_type_str);
 
     if let Err(e) = db::insert_upload_row(
         db,
@@ -259,24 +319,7 @@ async fn process_file(
         return Err(internal_err());
     }
 
-    if let Some(addr) = settings.clamd_addr.clone() {
-        let db = db.clone();
-        let settings = settings.clone();
-        let slug_log = slug.clone();
-        tokio::spawn(async move {
-            let slug = slug_log;
-            match clamd::scan_file(&addr, &save_path).await {
-                Ok(clamd::ScanResult::Clean) => log::info!("clamd: {uuid} ({slug}) clean"),
-                Ok(clamd::ScanResult::Infected(name)) => {
-                    log::warn!("clamd: {uuid} ({slug}) infected with {name:?}, deleting");
-                    if let Err(e) = db::delete_by_id(&db, &settings, uuid).await {
-                        log::error!("clamd: failed to delete infected file {uuid}: {e}");
-                    }
-                }
-                Err(e) => log::error!("clamd: scan failed for {uuid} ({slug}): {e}"),
-            }
-        });
-    }
+    spawn_clamd_scan(db.clone(), settings.clone(), uuid, slug.clone(), save_path);
 
     let encoded_slug = utf8_percent_encode(&slug, PATH_SEGMENT).to_string();
     let base_url = settings.base_url.as_ref().unwrap();
@@ -337,6 +380,74 @@ fn escape_html(s: &str) -> String {
         .replace('\'', "&#039;")
 }
 
+/// Run before the multipart body is even read.
+async fn enforce_upload_gates(
+    db: &DbPool,
+    ban_cache: &BanCache,
+    settings: &Settings,
+    uploader_ip: Option<u32>,
+    user_agent: Option<&str>,
+) -> Result<(), HttpResponse> {
+    if let Some(ip) = uploader_ip {
+        check_not_banned(
+            ban_cache.is_ip_banned(db, ip, BanType::ReadOnly),
+            "banned IP",
+            "Your IP is banned from uploading.",
+        )
+        .await?;
+    }
+
+    if let Some(ua) = user_agent {
+        check_not_banned(
+            ban_cache.is_user_agent_banned(db, ua),
+            "banned user agent",
+            "Your client is banned from uploading.",
+        )
+        .await?;
+    }
+
+    if let Some(ip) = uploader_ip {
+        check_under_limit(
+            settings.max_uploads_per_day.map(|n| n as i64),
+            db::uploads_count_last_day(db, ip),
+            "upload count rate limit",
+            "Upload limit reached.",
+        )
+        .await?;
+        check_under_limit(
+            settings.max_bytes_per_day.map(|n| n as i64),
+            db::uploads_bytes_last_day(db, ip),
+            "byte quota rate limit",
+            "Daily byte quota reached.",
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+fn format_links(links: &[String], formatted: bool) -> HttpResponse {
+    if formatted {
+        let body: String = links
+            .iter()
+            .map(|url| {
+                format!(
+                    "<pre>Access your file here: <a href=\"{url}\">{}</a></pre>\n",
+                    escape_html(url)
+                )
+            })
+            .collect();
+        HttpResponse::Ok()
+            .content_type(ContentType::html())
+            .body(body)
+    } else {
+        let body: String = links.iter().map(|url| format!("{url}\n")).collect();
+        HttpResponse::Ok()
+            .content_type(ContentType::plaintext())
+            .body(body)
+    }
+}
+
 #[post("/")]
 pub(crate) async fn upload(
     req: HttpRequest,
@@ -351,50 +462,17 @@ pub(crate) async fn upload(
         .get("User-Agent")
         .and_then(|v| v.to_str().ok());
 
-    // ban checks before the multipart body is read
-    if let Some(ip) = uploader_ip
-        && let Err(resp) = check_not_banned(
-            ban_cache.is_ip_banned(db.get_ref(), ip, BanType::ReadOnly),
-            "banned IP",
-            "Your IP is banned from uploading.",
-        )
-        .await
+    // ban + rate-limit checks before the multipart body is read
+    if let Err(resp) = enforce_upload_gates(
+        db.get_ref(),
+        ban_cache.get_ref(),
+        &settings,
+        uploader_ip,
+        user_agent,
+    )
+    .await
     {
         return resp;
-    }
-
-    if let Some(ua) = user_agent
-        && let Err(resp) = check_not_banned(
-            ban_cache.is_user_agent_banned(db.get_ref(), ua),
-            "banned user agent",
-            "Your client is banned from uploading.",
-        )
-        .await
-    {
-        return resp;
-    }
-
-    if let Some(ip) = uploader_ip {
-        if let Err(resp) = check_under_limit(
-            settings.max_uploads_per_day.map(|n| n as i64),
-            db::uploads_count_last_day(db.get_ref(), ip),
-            "upload count rate limit",
-            "Upload limit reached.",
-        )
-        .await
-        {
-            return resp;
-        }
-        if let Err(resp) = check_under_limit(
-            settings.max_bytes_per_day.map(|n| n as i64),
-            db::uploads_bytes_last_day(db.get_ref(), ip),
-            "byte quota rate limit",
-            "Daily byte quota reached.",
-        )
-        .await
-        {
-            return resp;
-        }
     }
 
     let mut dev_payload = payload.into_inner();
@@ -431,25 +509,7 @@ pub(crate) async fn upload(
         }
     }
 
-    if formatted {
-        let body: String = links
-            .iter()
-            .map(|url| {
-                format!(
-                    "<pre>Access your file here: <a href=\"{url}\">{}</a></pre>\n",
-                    escape_html(url)
-                )
-            })
-            .collect();
-        HttpResponse::Ok()
-            .content_type(ContentType::html())
-            .body(body)
-    } else {
-        let body: String = links.iter().map(|url| format!("{url}\n")).collect();
-        HttpResponse::Ok()
-            .content_type(ContentType::plaintext())
-            .body(body)
-    }
+    format_links(&links, formatted)
 }
 
 #[get("/{slug}")]
