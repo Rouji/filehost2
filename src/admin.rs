@@ -6,7 +6,6 @@ use actix_web::{
 };
 use futures_util::future::{Ready, ready};
 use serde::{Deserialize, Serialize};
-use time::{OffsetDateTime, PrimitiveDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::ban_cache::BanCache;
@@ -17,6 +16,7 @@ use crate::model::{
     Upload,
 };
 use crate::settings::Settings;
+use crate::util::{format_ts, hex_decode, hex_encode, parse_rfc3339};
 
 /// Registers every `/admin/*` route. Shared by the real app (main.rs) and the test
 /// app (tests.rs) so the two can't drift out of sync — a route added to one but not
@@ -86,29 +86,6 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
-        .collect()
-}
-
-fn parse_rfc3339(s: &str) -> Option<PrimitiveDateTime> {
-    let odt = OffsetDateTime::parse(s, &Rfc3339).ok()?;
-    Some(PrimitiveDateTime::new(odt.date(), odt.time()))
-}
-
-fn format_ts(ts: PrimitiveDateTime) -> String {
-    ts.assume_utc().format(&Rfc3339).unwrap_or_default()
 }
 
 #[derive(Serialize)]

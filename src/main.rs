@@ -13,6 +13,7 @@ mod settings;
 mod sync;
 mod templates;
 mod upload;
+mod util;
 
 #[cfg(test)]
 mod tests;
@@ -58,6 +59,7 @@ async fn main() -> std::io::Result<()> {
             cli::Command::Dedup { dry_run } => cli::dedup(&db, &settings, dry_run).await,
             cli::Command::Rehash => cli::rehash(&db, &settings).await,
             cli::Command::Blacklist { command } => cli::blacklist(&db, command).await,
+            cli::Command::Ban { target } => cli::ban(&db, target).await,
         };
         if let Err(e) = result {
             eprintln!("Error: {e}");

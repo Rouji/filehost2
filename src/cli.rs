@@ -11,6 +11,7 @@ use crate::dedup;
 use crate::import;
 use crate::model::BanType;
 use crate::settings::Settings;
+use crate::util::{format_ts, hex_decode, hex_encode, parse_rfc3339};
 
 #[derive(Parser)]
 #[command(about = "Minimalistic file hosting service")]
@@ -46,6 +47,96 @@ pub(crate) enum Command {
     Blacklist {
         #[command(subcommand)]
         command: BlacklistCommand,
+    },
+    /// manage individual bans (IPs, extensions, mimes, hashes, user agents)
+    Ban {
+        #[command(subcommand)]
+        target: BanTarget,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum BanTarget {
+    Ip {
+        #[command(subcommand)]
+        command: BanIpCommand,
+    },
+    Extension {
+        #[command(subcommand)]
+        command: BanExtensionCommand,
+    },
+    Mime {
+        #[command(subcommand)]
+        command: BanMimeCommand,
+    },
+    Hash {
+        #[command(subcommand)]
+        command: BanHashCommand,
+    },
+    UserAgent {
+        #[command(subcommand)]
+        command: BanUserAgentCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum BanIpCommand {
+    List,
+    Add {
+        start: Ipv4Addr,
+        end: Ipv4Addr,
+        #[arg(long)]
+        reason: Option<String>,
+        /// RFC3339 expiry timestamp, e.g. 2026-01-01T00:00:00Z
+        #[arg(long)]
+        expires: Option<String>,
+        /// ban type: 1=readonly, 2=full
+        #[arg(short, long = "type", default_value_t = 1)]
+        type_: u32,
+    },
+    Remove {
+        id: i64,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum BanExtensionCommand {
+    List,
+    Add { extension: String },
+    Remove { extension: String },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum BanMimeCommand {
+    List,
+    Add { mime: String },
+    Remove { mime: String },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum BanHashCommand {
+    List,
+    Add {
+        /// lowercase hex-encoded BLAKE3 hash
+        hash: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    Remove {
+        hash: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum BanUserAgentCommand {
+    List,
+    Add {
+        pattern: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    Remove {
+        pattern: String,
     },
 }
 
@@ -173,5 +264,222 @@ async fn remove_blacklist(db: &DbPool, id: i32) -> Result<()> {
             Ok(())
         }
         false => anyhow::bail!("No entry with id {id}."),
+    }
+}
+
+pub(crate) async fn ban(db: &DbPool, target: BanTarget) -> Result<()> {
+    match target {
+        BanTarget::Ip { command } => ban_ip(db, command).await,
+        BanTarget::Extension { command } => ban_extension(db, command).await,
+        BanTarget::Mime { command } => ban_mime(db, command).await,
+        BanTarget::Hash { command } => ban_hash(db, command).await,
+        BanTarget::UserAgent { command } => ban_user_agent(db, command).await,
+    }
+}
+
+async fn ban_ip(db: &DbPool, command: BanIpCommand) -> Result<()> {
+    match command {
+        BanIpCommand::List => {
+            let entries = db::list_banned_ips(db).await?;
+            if entries.is_empty() {
+                println!("No banned IP ranges.");
+                return Ok(());
+            }
+            for entry in &entries {
+                let reason = entry.reason.as_deref().unwrap_or("-");
+                let expires = entry
+                    .expires_timestamp
+                    .map(format_ts)
+                    .unwrap_or_else(|| "never".to_string());
+                println!(
+                    "{:>6}  {:<15}-{:<15}  type={:<8}  reason={:<20}  expires={}",
+                    entry.id,
+                    Ipv4Addr::from(entry.start_ip),
+                    Ipv4Addr::from(entry.end_ip),
+                    entry.type_.to_string(),
+                    reason,
+                    expires
+                );
+            }
+            Ok(())
+        }
+        BanIpCommand::Add {
+            start,
+            end,
+            reason,
+            expires,
+            type_,
+        } => {
+            if ![1, 2].contains(&type_) {
+                anyhow::bail!("type must be 1 (readonly) or 2 (full)");
+            }
+            let ban_type = match type_ {
+                1 => BanType::ReadOnly,
+                _ => BanType::Full,
+            };
+            let expires_timestamp = match expires.as_deref() {
+                Some(s) => Some(
+                    parse_rfc3339(s)
+                        .ok_or_else(|| anyhow::anyhow!("Invalid --expires timestamp"))?,
+                ),
+                None => None,
+            };
+            let id = db::insert_banned_ip(
+                db,
+                u32::from(start),
+                u32::from(end),
+                reason.as_deref(),
+                expires_timestamp,
+                None,
+                ban_type,
+            )
+            .await?;
+            log::info!("ban: banned ip range {start}-{end} (id {id})");
+            println!("Banned {start}-{end} with id {id}.");
+            Ok(())
+        }
+        BanIpCommand::Remove { id } => match db::delete_banned_ip(db, id).await? {
+            true => {
+                log::info!("ban: removed banned ip range id={id}");
+                println!("Removed ban {id}.");
+                Ok(())
+            }
+            false => anyhow::bail!("No banned IP range with id {id}."),
+        },
+    }
+}
+
+async fn ban_extension(db: &DbPool, command: BanExtensionCommand) -> Result<()> {
+    match command {
+        BanExtensionCommand::List => {
+            let entries = db::list_banned_extensions(db).await?;
+            if entries.is_empty() {
+                println!("No banned extensions.");
+                return Ok(());
+            }
+            for entry in &entries {
+                println!("{}", entry.extension);
+            }
+            Ok(())
+        }
+        BanExtensionCommand::Add { extension } => {
+            db::insert_banned_extension(db, &extension).await?;
+            log::info!("ban: banned extension {extension}");
+            println!("Banned extension {extension}.");
+            Ok(())
+        }
+        BanExtensionCommand::Remove { extension } => {
+            match db::delete_banned_extension(db, &extension).await? {
+                true => {
+                    log::info!("ban: removed banned extension {extension}");
+                    println!("Removed ban on extension {extension}.");
+                    Ok(())
+                }
+                false => anyhow::bail!("No ban on extension {extension}."),
+            }
+        }
+    }
+}
+
+async fn ban_mime(db: &DbPool, command: BanMimeCommand) -> Result<()> {
+    match command {
+        BanMimeCommand::List => {
+            let entries = db::list_banned_mimes(db).await?;
+            if entries.is_empty() {
+                println!("No banned mime types.");
+                return Ok(());
+            }
+            for entry in &entries {
+                println!("{}", entry.mime);
+            }
+            Ok(())
+        }
+        BanMimeCommand::Add { mime } => {
+            db::insert_banned_mime(db, &mime).await?;
+            log::info!("ban: banned mime {mime}");
+            println!("Banned mime {mime}.");
+            Ok(())
+        }
+        BanMimeCommand::Remove { mime } => match db::delete_banned_mime(db, &mime).await? {
+            true => {
+                log::info!("ban: removed banned mime {mime}");
+                println!("Removed ban on mime {mime}.");
+                Ok(())
+            }
+            false => anyhow::bail!("No ban on mime {mime}."),
+        },
+    }
+}
+
+async fn ban_hash(db: &DbPool, command: BanHashCommand) -> Result<()> {
+    match command {
+        BanHashCommand::List => {
+            let entries = db::list_banned_hashes(db).await?;
+            if entries.is_empty() {
+                println!("No banned hashes.");
+                return Ok(());
+            }
+            for entry in &entries {
+                let reason = entry.reason.as_deref().unwrap_or("-");
+                println!("{}  reason={}", hex_encode(&entry.hash), reason);
+            }
+            Ok(())
+        }
+        BanHashCommand::Add { hash, reason } => {
+            let bytes = hex_decode(&hash)
+                .ok_or_else(|| anyhow::anyhow!("Invalid hash (expected lowercase hex)"))?;
+            if bytes.len() != 32 {
+                anyhow::bail!("Invalid hash length (expected 32-byte BLAKE3)");
+            }
+            db::insert_banned_hash(db, &bytes, reason.as_deref()).await?;
+            log::info!("ban: banned hash {hash}");
+            println!("Banned hash {hash}.");
+            Ok(())
+        }
+        BanHashCommand::Remove { hash } => {
+            let bytes = hex_decode(&hash)
+                .ok_or_else(|| anyhow::anyhow!("Invalid hash (expected lowercase hex)"))?;
+            match db::delete_banned_hash(db, &bytes).await? {
+                true => {
+                    log::info!("ban: removed banned hash {hash}");
+                    println!("Removed ban on hash {hash}.");
+                    Ok(())
+                }
+                false => anyhow::bail!("No ban on hash {hash}."),
+            }
+        }
+    }
+}
+
+async fn ban_user_agent(db: &DbPool, command: BanUserAgentCommand) -> Result<()> {
+    match command {
+        BanUserAgentCommand::List => {
+            let entries = db::list_banned_user_agents(db).await?;
+            if entries.is_empty() {
+                println!("No banned user agent patterns.");
+                return Ok(());
+            }
+            for entry in &entries {
+                let reason = entry.reason.as_deref().unwrap_or("-");
+                println!("{}  reason={}", entry.pattern, reason);
+            }
+            Ok(())
+        }
+        BanUserAgentCommand::Add { pattern, reason } => {
+            db::insert_banned_user_agent(db, &pattern, reason.as_deref()).await?;
+            log::info!("ban: banned user agent pattern {pattern:?}");
+            println!("Banned user agent pattern {pattern:?}.");
+            Ok(())
+        }
+        BanUserAgentCommand::Remove { pattern } => {
+            match db::delete_banned_user_agent(db, &pattern).await? {
+                true => {
+                    log::info!("ban: removed banned user agent pattern {pattern:?}");
+                    println!("Removed ban on user agent pattern {pattern:?}.");
+                    Ok(())
+                }
+                false => anyhow::bail!("No ban on user agent pattern {pattern:?}."),
+            }
+        }
     }
 }
