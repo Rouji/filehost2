@@ -366,6 +366,74 @@ pub(crate) async fn global_stats(db: &DbPool) -> Result<GlobalStats, sqlx::Error
     .await
 }
 
+pub(crate) struct HourlyUploadCount {
+    pub hour: String,
+    pub count: i64,
+}
+
+pub(crate) async fn uploads_hourly_counts(
+    db: &DbPool,
+    ip: u32,
+    hours: i64,
+) -> Result<Vec<HourlyUploadCount>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let rows = sqlx::query!(
+        r#"SELECT DATE_FORMAT(upload_timestamp, '%Y-%m-%dT%H:00:00') AS "bucket!: String", CAST(COUNT(*) AS SIGNED) AS "count!: i64"
+           FROM uploads
+           WHERE uploader_ip = ? AND deleted_timestamp IS NULL AND upload_timestamp > NOW() - INTERVAL ? HOUR
+           GROUP BY 1"#,
+        ip,
+        hours
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let counts: std::collections::HashMap<String, i64> =
+        rows.into_iter().map(|r| (r.bucket, r.count)).collect();
+
+    let now = time::OffsetDateTime::now_utc();
+    let now_hour =
+        PrimitiveDateTime::new(now.date(), time::Time::from_hms(now.hour(), 0, 0).unwrap());
+    let key_format = time::macros::format_description!("[year]-[month]-[day]T[hour]:00:00");
+
+    Ok((0..hours)
+        .map(|i| {
+            let slot = now_hour - time::Duration::hours(hours - 1 - i);
+            let key = slot.format(&key_format).unwrap_or_default();
+            HourlyUploadCount {
+                hour: crate::util::format_ts(slot),
+                count: counts.get(&key).copied().unwrap_or(0),
+            }
+        })
+        .collect())
+}
+
+pub(crate) struct MimeUploadCount {
+    pub mime: String,
+    pub count: i64,
+}
+
+pub(crate) async fn uploads_top_mimes(
+    db: &DbPool,
+    ip: u32,
+    limit: i64,
+) -> Result<Vec<MimeUploadCount>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    sqlx::query_as!(
+        MimeUploadCount,
+        r#"SELECT content_type AS "mime!: String", CAST(COUNT(*) AS SIGNED) AS "count!: i64"
+           FROM uploads
+           WHERE uploader_ip = ? AND deleted_timestamp IS NULL AND content_type IS NOT NULL
+           GROUP BY content_type
+           ORDER BY 2 DESC
+           LIMIT ?"#,
+        ip,
+        limit
+    )
+    .fetch_all(&mut *conn)
+    .await
+}
+
 enum ListUploadsParam<'a> {
     U32(u32),
     Str(&'a str),
@@ -430,11 +498,17 @@ pub(crate) async fn get_upload_by_slug(
     .await
 }
 
-pub(crate) async fn list_banned_ips(db: &DbPool) -> Result<Vec<BannedIpv4Range>, sqlx::Error> {
+pub(crate) async fn list_banned_ips(
+    db: &DbPool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<BannedIpv4Range>, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
         BannedIpv4Range,
-        "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\", blacklist_id FROM banned_ipv4_ranges ORDER BY id DESC"
+        "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\", blacklist_id FROM banned_ipv4_ranges ORDER BY id DESC LIMIT ? OFFSET ?",
+        limit,
+        offset
     )
     .fetch_all(&mut *conn)
     .await

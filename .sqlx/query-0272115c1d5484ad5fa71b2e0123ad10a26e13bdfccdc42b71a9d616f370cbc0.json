@@ -1,0 +1,43 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT content_type AS \"mime!: String\", CAST(COUNT(*) AS SIGNED) AS \"count!: i64\"\n           FROM uploads\n           WHERE uploader_ip = ? AND deleted_timestamp IS NULL AND content_type IS NOT NULL\n           GROUP BY content_type\n           ORDER BY 2 DESC\n           LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mime!: String",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "collation": 224,
+          "max_size": 1020
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "count!: i64",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 21
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "0272115c1d5484ad5fa71b2e0123ad10a26e13bdfccdc42b71a9d616f370cbc0"
+}

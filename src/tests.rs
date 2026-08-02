@@ -1046,6 +1046,56 @@ mod tests {
         assert_eq!(resp.status(), 404);
     }
 
+    #[derive(Deserialize)]
+    struct HourlyCountResponse {
+        count: i64,
+    }
+
+    #[derive(Deserialize)]
+    struct MimeCountResponse {
+        mime: String,
+        count: i64,
+    }
+
+    #[derive(Deserialize)]
+    struct IpStatsResponse {
+        hourly: Vec<HourlyCountResponse>,
+        top_mimes: Vec<MimeCountResponse>,
+    }
+
+    #[sqlx::test]
+    async fn admin_ip_stats_returns_hourly_and_top_mimes(pool: MySqlPool) {
+        let mut settings = admin_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool).await;
+
+        let ip = "9.9.9.9";
+        let xff = &[("X-Forwarded-For", ip)];
+
+        for (name, content_type, body) in [
+            ("a.png", "image/png", "content a"),
+            ("b.png", "image/png", "content b"),
+            ("c.txt", "text/plain", "content c"),
+        ] {
+            let req = upload_req(&multipart_body_with_type(name, content_type, body), xff);
+            assert!(test::call_service(&app, req).await.status().is_success());
+        }
+
+        let stats: IpStatsResponse =
+            test::read_body_json(admin_get(&app, &format!("/admin/ip-stats/{ip}")).await).await;
+
+        // Continuous 7-day-hourly timeline, all 3 uploads landing in the current hour.
+        assert_eq!(stats.hourly.len(), 168);
+        assert_eq!(stats.hourly.iter().map(|h| h.count).sum::<i64>(), 3);
+        assert_eq!(stats.hourly.last().unwrap().count, 3);
+
+        assert_eq!(stats.top_mimes.len(), 2);
+        assert_eq!(stats.top_mimes[0].mime, "image/png");
+        assert_eq!(stats.top_mimes[0].count, 2);
+        assert_eq!(stats.top_mimes[1].mime, "text/plain");
+        assert_eq!(stats.top_mimes[1].count, 1);
+    }
+
     #[derive(Serialize)]
     struct IpRangeBody<'a> {
         start_ip: &'a str,

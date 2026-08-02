@@ -27,6 +27,7 @@ pub(crate) fn configure(cfg: &mut web::ServiceConfig) {
         .service(list_uploads)
         .service(delete_upload)
         .service(delete_upload_by_slug)
+        .service(ip_stats)
         .service(list_banned_ips)
         .service(add_banned_ip)
         .service(remove_banned_ip)
@@ -273,6 +274,64 @@ pub(crate) async fn delete_upload_by_slug(
 }
 
 #[derive(Serialize)]
+struct HourlyCountDto {
+    hour: String,
+    count: i64,
+}
+
+#[derive(Serialize)]
+struct MimeCountDto {
+    mime: String,
+    count: i64,
+}
+
+#[derive(Serialize)]
+struct IpStatsDto {
+    hourly: Vec<HourlyCountDto>,
+    top_mimes: Vec<MimeCountDto>,
+}
+
+const IP_STATS_HOURS: i64 = 24 * 7;
+
+#[get("/ip-stats/{ip}")]
+pub(crate) async fn ip_stats(
+    _auth: AdminAuth,
+    db: web::Data<DbPool>,
+    path: web::Path<(String,)>,
+) -> impl Responder {
+    let Ok(ip) = path.into_inner().0.parse::<Ipv4Addr>() else {
+        return json_error(StatusCode::BAD_REQUEST, "Invalid ip");
+    };
+    let ip = u32::from(ip);
+
+    let hourly = match db::uploads_hourly_counts(db.get_ref(), ip, IP_STATS_HOURS).await {
+        Ok(rows) => rows,
+        Err(e) => return internal_err(e, "uploads_hourly_counts"),
+    };
+    let top_mimes = match db::uploads_top_mimes(db.get_ref(), ip, 5).await {
+        Ok(rows) => rows,
+        Err(e) => return internal_err(e, "uploads_top_mimes"),
+    };
+
+    HttpResponse::Ok().json(IpStatsDto {
+        hourly: hourly
+            .into_iter()
+            .map(|h| HourlyCountDto {
+                hour: h.hour,
+                count: h.count,
+            })
+            .collect(),
+        top_mimes: top_mimes
+            .into_iter()
+            .map(|m| MimeCountDto {
+                mime: m.mime,
+                count: m.count,
+            })
+            .collect(),
+    })
+}
+
+#[derive(Serialize)]
 struct BannedIpRangeDto {
     id: i64,
     start_ip: String,
@@ -310,10 +369,23 @@ pub(crate) struct BannedIpRangeCreate {
     type_: u32,
 }
 
+#[derive(Deserialize)]
+pub(crate) struct ListBannedIpsQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
 #[get("/bans/ips")]
-pub(crate) async fn list_banned_ips(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Responder {
+pub(crate) async fn list_banned_ips(
+    _auth: AdminAuth,
+    db: web::Data<DbPool>,
+    query: web::Query<ListBannedIpsQuery>,
+) -> impl Responder {
+    let limit = query.limit.unwrap_or(100).clamp(1, 1000);
+    let offset = query.offset.unwrap_or(0).max(0);
+
     respond_list(
-        db::list_banned_ips(db.get_ref()).await,
+        db::list_banned_ips(db.get_ref(), limit, offset).await,
         BannedIpRangeDto::from,
         "list_banned_ips",
     )

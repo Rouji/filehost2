@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\", blacklist_id FROM banned_ipv4_ranges ORDER BY id DESC",
+  "query": "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\", blacklist_id FROM banned_ipv4_ranges ORDER BY id DESC LIMIT ? OFFSET ?",
   "describe": {
     "columns": [
       {
@@ -133,7 +133,7 @@
       }
     ],
     "parameters": {
-      "Right": 0
+      "Right": 2
     },
     "nullable": [
       false,
@@ -146,5 +146,5 @@
       true
     ]
   },
-  "hash": "90378da40b4664963289080de15354245fd4b9fc01d8290c1ecee328748d2957"
+  "hash": "2698cbc0b0bcbc0669971d0077caaf9e6059fada98e5059c6a391005ee29c0e3"
 }

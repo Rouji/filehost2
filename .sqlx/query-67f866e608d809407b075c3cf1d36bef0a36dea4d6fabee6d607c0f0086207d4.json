@@ -1,0 +1,38 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT DATE_FORMAT(upload_timestamp, '%Y-%m-%dT%H:00:00') AS \"bucket!: String\", CAST(COUNT(*) AS SIGNED) AS \"count!: i64\"\n           FROM uploads\n           WHERE uploader_ip = ? AND deleted_timestamp IS NULL AND upload_timestamp > NOW() - INTERVAL ? HOUR\n           GROUP BY 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bucket!: String",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "collation": 224,
+          "max_size": 96
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "count!: i64",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 21
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "67f866e608d809407b075c3cf1d36bef0a36dea4d6fabee6d607c0f0086207d4"
+}

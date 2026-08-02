@@ -303,7 +303,7 @@ pub(crate) async fn ban(db: &DbPool, target: BanTarget) -> Result<()> {
 async fn ban_ip(db: &DbPool, command: BanIpCommand) -> Result<()> {
     match command {
         BanIpCommand::List => {
-            let entries = db::list_banned_ips(db).await?;
+            let entries = db::list_banned_ips(db, i64::MAX, 0).await?;
             print_list_or_empty(&entries, "No banned IP ranges.", |entry| {
                 let reason = entry.reason.as_deref().unwrap_or("-");
                 let expires = entry
