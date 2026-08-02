@@ -18,8 +18,9 @@ mod util;
 #[cfg(test)]
 mod tests;
 
+use actix_cors::Cors;
 use actix_multipart::{MultipartError, form::MultipartFormConfig};
-use actix_web::{App, Error, HttpRequest, HttpServer, middleware::Logger, web};
+use actix_web::{App, Error, HttpRequest, HttpServer, http::header, middleware::Logger, web};
 use clap::Parser;
 use settings::Settings;
 
@@ -97,7 +98,20 @@ async fn main() -> std::io::Result<()> {
             .service(handlers::index)
             .service(handlers::get_file)
             .service(handlers::upload)
-            .service(web::scope("/admin").configure(admin::configure))
+            .service(
+                web::scope("/admin")
+                    .wrap(
+                        Cors::default()
+                            .allow_any_origin()
+                            .allowed_methods([
+                                actix_web::http::Method::GET,
+                                actix_web::http::Method::POST,
+                                actix_web::http::Method::DELETE,
+                            ])
+                            .allowed_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
+                    )
+                    .configure(admin::configure),
+            )
             .wrap(Logger::new(log_format))
             .app_data(web::Data::new(db.clone()))
             .app_data(web::Data::new(s.clone()))
