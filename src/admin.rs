@@ -27,6 +27,7 @@ pub(crate) fn configure(cfg: &mut web::ServiceConfig) {
         .service(list_uploads)
         .service(delete_upload)
         .service(delete_upload_by_slug)
+        .service(delete_upload_by_ip)
         .service(ip_stats)
         .service(list_banned_ips)
         .service(add_banned_ip)
@@ -270,6 +271,25 @@ pub(crate) async fn delete_upload_by_slug(
             HttpResponse::Ok().json(DeleteResult { deleted })
         }
         Err(e) => internal_err(e, "delete_by_slug"),
+    }
+}
+
+#[delete("/uploads/ip/{ip}")]
+pub(crate) async fn delete_upload_by_ip(
+    _auth: AdminAuth,
+    db: web::Data<DbPool>,
+    settings: web::Data<Settings>,
+    path: web::Path<(String,)>,
+) -> impl Responder {
+    let Ok(ip) = path.into_inner().0.parse::<Ipv4Addr>() else {
+        return json_error(StatusCode::BAD_REQUEST, "Invalid ip");
+    };
+    match db::delete_by_ip(db.get_ref(), &settings, u32::from(ip)).await {
+        Ok(deleted) => {
+            log::info!("admin: deleted uploads by ip {ip} ({deleted} row(s))");
+            HttpResponse::Ok().json(DeleteResult { deleted })
+        }
+        Err(e) => internal_err(e, "delete_by_ip"),
     }
 }
 

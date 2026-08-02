@@ -1047,6 +1047,37 @@ mod tests {
     }
 
     #[derive(Deserialize)]
+    struct DeleteResultResponse {
+        deleted: usize,
+    }
+
+    #[sqlx::test]
+    async fn admin_deletes_uploads_by_ip(pool: MySqlPool) {
+        let mut settings = admin_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool).await;
+
+        let ip = "6.6.6.6";
+        let xff = &[("X-Forwarded-For", ip)];
+
+        for body in ["one", "two"] {
+            let req = upload_req(&multipart_body("f.txt", body), xff);
+            assert!(test::call_service(&app, req).await.status().is_success());
+        }
+        // Uploaded without an XFF header, so it lands on a different IP (127.0.0.1) and
+        // should be unaffected by the ip-scoped delete below.
+        let other_slug = upload_and_get_slug(&app, "other.txt").await;
+
+        let resp = admin_delete(&app, &format!("/admin/uploads/ip/{ip}")).await;
+        assert!(resp.status().is_success());
+        let body: DeleteResultResponse = test::read_body_json(resp).await;
+        assert_eq!(body.deleted, 2);
+
+        let uploads: Vec<UploadResponse> = admin_list(&app, "/admin/uploads").await;
+        assert!(uploads.iter().any(|u| u.slug == other_slug));
+    }
+
+    #[derive(Deserialize)]
     struct HourlyCountResponse {
         count: i64,
     }
