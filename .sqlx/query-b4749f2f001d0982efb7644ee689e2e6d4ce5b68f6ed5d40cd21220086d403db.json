@@ -56,7 +56,7 @@
         "name": "deleted_timestamp",
         "type_info": {
           "type": "Datetime",
-          "flags": "BINARY",
+          "flags": "MULTIPLE_KEY | BINARY",
           "collation": 63,
           "max_size": 19
         },
