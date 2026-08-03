@@ -366,6 +366,31 @@ pub(crate) async fn global_stats(db: &DbPool) -> Result<GlobalStats, sqlx::Error
     .await
 }
 
+pub(crate) struct TopUploader {
+    pub ip: u32,
+    pub count: i64,
+    pub bytes: i64,
+}
+
+pub(crate) async fn top_uploader_ips(
+    db: &DbPool,
+    limit: i64,
+) -> Result<Vec<TopUploader>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    sqlx::query_as!(
+        TopUploader,
+        r#"SELECT uploader_ip AS "ip!: u32", CAST(COUNT(*) AS SIGNED) AS "count!: i64", CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS "bytes!: i64"
+           FROM uploads
+           WHERE deleted_timestamp IS NULL AND uploader_ip IS NOT NULL
+           GROUP BY uploader_ip
+           ORDER BY 2 DESC
+           LIMIT ?"#,
+        limit
+    )
+    .fetch_all(&mut *conn)
+    .await
+}
+
 pub(crate) struct HourlyUploadCount {
     pub hour: String,
     pub count: i64,

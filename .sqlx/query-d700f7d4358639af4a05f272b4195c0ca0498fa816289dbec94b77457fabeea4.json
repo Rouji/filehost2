@@ -1,0 +1,55 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT uploader_ip AS \"ip!: u32\", CAST(COUNT(*) AS SIGNED) AS \"count!: i64\", CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS \"bytes!: i64\"\n           FROM uploads\n           WHERE deleted_timestamp IS NULL AND uploader_ip IS NOT NULL\n           GROUP BY uploader_ip\n           ORDER BY 2 DESC\n           LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ip!: u32",
+        "type_info": {
+          "type": "Long",
+          "flags": "MULTIPLE_KEY | UNSIGNED",
+          "collation": 63,
+          "max_size": 10
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "uploader_ip"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "count!: i64",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 21
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "bytes!: i64",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 21
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "d700f7d4358639af4a05f272b4195c0ca0498fa816289dbec94b77457fabeea4"
+}

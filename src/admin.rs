@@ -192,12 +192,51 @@ impl From<Upload> for UploadDto {
     }
 }
 
+const TOP_UPLOADERS_LIMIT: i64 = 10;
+
+#[derive(Serialize)]
+struct TopUploaderDto {
+    ip: String,
+    count: i64,
+    bytes: i64,
+}
+
+#[derive(Serialize)]
+struct StatsDto {
+    active_uploads: i64,
+    active_bytes: i64,
+    deleted_uploads: i64,
+    uploads_last_24h: i64,
+    bytes_last_24h: i64,
+    top_uploaders: Vec<TopUploaderDto>,
+}
+
 #[get("/stats")]
 pub(crate) async fn stats(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Responder {
-    match db::global_stats(db.get_ref()).await {
-        Ok(stats) => HttpResponse::Ok().json(stats),
-        Err(e) => internal_err(e, "global_stats"),
-    }
+    let stats = match db::global_stats(db.get_ref()).await {
+        Ok(s) => s,
+        Err(e) => return internal_err(e, "global_stats"),
+    };
+    let top_uploaders = match db::top_uploader_ips(db.get_ref(), TOP_UPLOADERS_LIMIT).await {
+        Ok(rows) => rows,
+        Err(e) => return internal_err(e, "top_uploader_ips"),
+    };
+
+    HttpResponse::Ok().json(StatsDto {
+        active_uploads: stats.active_uploads,
+        active_bytes: stats.active_bytes,
+        deleted_uploads: stats.deleted_uploads,
+        uploads_last_24h: stats.uploads_last_24h,
+        bytes_last_24h: stats.bytes_last_24h,
+        top_uploaders: top_uploaders
+            .into_iter()
+            .map(|u| TopUploaderDto {
+                ip: Ipv4Addr::from(u.ip).to_string(),
+                count: u.count,
+                bytes: u.bytes,
+            })
+            .collect(),
+    })
 }
 
 #[derive(Deserialize)]

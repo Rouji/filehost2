@@ -992,6 +992,46 @@ mod tests {
     }
 
     #[derive(Deserialize)]
+    struct TopUploaderResponse {
+        ip: String,
+        count: i64,
+        bytes: i64,
+    }
+
+    #[derive(Deserialize)]
+    struct StatsWithTopUploadersResponse {
+        top_uploaders: Vec<TopUploaderResponse>,
+    }
+
+    #[sqlx::test]
+    async fn admin_stats_includes_top_uploaders(pool: MySqlPool) {
+        let mut settings = admin_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool).await;
+
+        for (ip, bodies) in [
+            ("5.5.5.5", vec!["one", "two", "three"]),
+            ("6.6.6.6", vec!["four"]),
+        ] {
+            let xff = &[("X-Forwarded-For", ip)];
+            for body in bodies {
+                let req = upload_req(&multipart_body("f.txt", body), xff);
+                assert!(test::call_service(&app, req).await.status().is_success());
+            }
+        }
+
+        let stats: StatsWithTopUploadersResponse =
+            test::read_body_json(admin_get(&app, "/admin/stats").await).await;
+
+        assert_eq!(stats.top_uploaders.len(), 2);
+        assert_eq!(stats.top_uploaders[0].ip, "5.5.5.5");
+        assert_eq!(stats.top_uploaders[0].count, 3);
+        assert!(stats.top_uploaders[0].bytes > 0);
+        assert_eq!(stats.top_uploaders[1].ip, "6.6.6.6");
+        assert_eq!(stats.top_uploaders[1].count, 1);
+    }
+
+    #[derive(Deserialize)]
     struct UploadResponse {
         id: String,
         slug: String,
