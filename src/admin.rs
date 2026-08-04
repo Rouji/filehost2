@@ -537,10 +537,11 @@ pub(crate) async fn add_banned_extension(
     ban_cache: web::Data<BanCache>,
     body: web::Json<ExtensionCreate>,
 ) -> impl Responder {
+    let ext = body.extension.to_lowercase();
     respond_created(
-        db::insert_banned_extension(db.get_ref(), &body.extension).await,
+        db::insert_banned_extension(db.get_ref(), &ext).await,
         || ban_cache.invalidate_extensions(),
-        || format!("admin: banned extension {}", body.extension),
+        || format!("admin: banned extension {ext}"),
         "insert_banned_extension",
     )
     .await
@@ -553,7 +554,7 @@ pub(crate) async fn remove_banned_extension(
     ban_cache: web::Data<BanCache>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
-    let ext = path.into_inner().0;
+    let ext = path.into_inner().0.to_lowercase();
     respond_removed(
         db::delete_banned_extension(db.get_ref(), &ext).await,
         || ban_cache.invalidate_extensions(),
@@ -584,10 +585,11 @@ pub(crate) async fn add_banned_mime(
     ban_cache: web::Data<BanCache>,
     body: web::Json<MimeCreate>,
 ) -> impl Responder {
+    let mime = body.mime.to_lowercase();
     respond_created(
-        db::insert_banned_mime(db.get_ref(), &body.mime).await,
+        db::insert_banned_mime(db.get_ref(), &mime).await,
         || ban_cache.invalidate_mimes(),
-        || format!("admin: banned mime {}", body.mime),
+        || format!("admin: banned mime {mime}"),
         "insert_banned_mime",
     )
     .await
@@ -601,7 +603,7 @@ pub(crate) async fn remove_banned_mime(
     ban_cache: web::Data<BanCache>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
-    let mime = path.into_inner().0;
+    let mime = path.into_inner().0.to_lowercase();
     respond_removed(
         db::delete_banned_mime(db.get_ref(), &mime).await,
         || ban_cache.invalidate_mimes(),

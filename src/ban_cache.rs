@@ -113,6 +113,7 @@ impl BanCache {
         db: &DbPool,
         ext: &str,
     ) -> Result<bool, sqlx::Error> {
+        let ext_lower = ext.to_lowercase();
         is_in_cached_set(
             &self.extensions,
             || async {
@@ -122,7 +123,7 @@ impl BanCache {
                     .map(|e| e.extension)
                     .collect())
             },
-            ext,
+            &ext_lower,
         )
         .await
     }
@@ -132,6 +133,7 @@ impl BanCache {
         db: &DbPool,
         mime: &str,
     ) -> Result<bool, sqlx::Error> {
+        let mime_lower = mime.to_lowercase();
         is_in_cached_set(
             &self.mimes,
             || async {
@@ -141,7 +143,7 @@ impl BanCache {
                     .map(|m| m.mime)
                     .collect())
             },
-            mime,
+            &mime_lower,
         )
         .await
     }
@@ -177,15 +179,13 @@ impl BanCache {
                     db::list_banned_user_agents(db)
                         .await?
                         .into_iter()
-                        .map(|u| u.pattern)
+                        .map(|u| u.pattern.to_lowercase())
                         .collect(),
                 ))
             })
             .await?;
         let ua_lower = user_agent.to_lowercase();
-        Ok(patterns
-            .iter()
-            .any(|p| ua_lower.contains(&p.to_lowercase())))
+        Ok(patterns.iter().any(|p| ua_lower.contains(p)))
     }
 
     pub(crate) async fn invalidate_ip_ranges(&self) {

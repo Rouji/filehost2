@@ -661,8 +661,8 @@ ban_set_crud!(
     BannedFileExtension,
     &str,
     list = "SELECT extension FROM banned_file_extensions ORDER BY extension",
-    insert = "INSERT IGNORE INTO banned_file_extensions (extension) VALUES (?)",
-    delete = "DELETE FROM banned_file_extensions WHERE extension = ?",
+    insert = "INSERT IGNORE INTO banned_file_extensions (extension) VALUES (LOWER(?))",
+    delete = "DELETE FROM banned_file_extensions WHERE extension = LOWER(?)",
 );
 
 ban_set_crud!(
@@ -672,8 +672,8 @@ ban_set_crud!(
     BannedFileMime,
     &str,
     list = "SELECT mime FROM banned_file_mimes ORDER BY mime",
-    insert = "INSERT IGNORE INTO banned_file_mimes (mime) VALUES (?)",
-    delete = "DELETE FROM banned_file_mimes WHERE mime = ?",
+    insert = "INSERT IGNORE INTO banned_file_mimes (mime) VALUES (LOWER(?))",
+    delete = "DELETE FROM banned_file_mimes WHERE mime = LOWER(?)",
 );
 
 ban_set_crud_with_reason!(

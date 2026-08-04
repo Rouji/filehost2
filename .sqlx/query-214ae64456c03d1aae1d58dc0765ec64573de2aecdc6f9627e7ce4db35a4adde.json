@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT IGNORE INTO banned_file_extensions (extension) VALUES (LOWER(?))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "214ae64456c03d1aae1d58dc0765ec64573de2aecdc6f9627e7ce4db35a4adde"
+}

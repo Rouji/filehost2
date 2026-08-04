@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM banned_file_mimes WHERE mime = LOWER(?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "0abc00871353a50a6b694702f533083c0de3cd2e076c8fd0166861f43579156f"
+}
