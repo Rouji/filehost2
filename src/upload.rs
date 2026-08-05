@@ -14,6 +14,7 @@ use crate::rate_limit::UploadThrottle;
 use crate::settings::Settings;
 
 use file_type::FileType;
+use file_type::format::SourceType;
 
 pub(crate) fn random_string(len: usize) -> String {
     Alphanumeric.sample_string(&mut rand::rng(), len)
@@ -60,17 +61,69 @@ pub(crate) struct HashedTempFile {
 fn make_tempfile(ext_suffix: Option<&str>) -> std::io::Result<tempfile::NamedTempFile> {
     match ext_suffix {
         Some(suffix) => tempfile::Builder::new().suffix(suffix).tempfile(),
-        None => tempfile::NamedTempFile::new(),
+        _ => tempfile::NamedTempFile::new(),
     }
 }
 
-/// Runs on the blocking thread pool since `FileType::try_from_file` does sync I/O.
+/// longest signature in `file_type`'s db needs 594 bytes
+const SNIFF_LIMIT: u64 = 1024;
+
+/// webp/webm/mp4 have a variable-length field within their first 8 bytes,
+/// which breaks `file_type`'s signature lookup when there's no extension hint.
+fn sniff_well_known(bytes: &[u8]) -> Option<mime::Mime> {
+    let mime = if bytes.starts_with(b"RIFF") && bytes.get(8..12).is_some_and(|w| w == b"WEBP") {
+        "image/webp"
+    } else if bytes.starts_with(b"\x1a\x45\xdf\xa3") && bytes.windows(4).any(|w| w == b"webm") {
+        "video/webm"
+    } else if bytes.get(4..8).is_some_and(|w| w == b"ftyp") {
+        "video/mp4"
+    } else {
+        return None;
+    };
+    mime.parse().ok()
+}
+
+/// `media_types` is unreliable (empty, or multiple with the wrong one first),
+/// so prefer `mime_guess` on the matched extensions over it.
+fn resolve_mime(ft: &FileType) -> Option<mime::Mime> {
+    ft.extensions()
+        .iter()
+        .find_map(|ext| mime_guess::from_ext(ext).first())
+        .or_else(|| {
+            ft.media_types()
+                .first()
+                .and_then(|s| s.parse::<mime::Mime>().ok())
+                .filter(|m| *m != mime_guess::mime::APPLICATION_OCTET_STREAM)
+        })
+}
+
+/// Content wins over extension: try a pure signature match first, and only
+/// consult the extension (no I/O, just a table lookup) if that found nothing.
 async fn detect_content_type(path: PathBuf) -> Option<mime::Mime> {
     tokio::task::spawn_blocking(move || {
-        FileType::try_from_file(&path)
-            .ok()
-            .and_then(|ft| ft.media_types().first().map(|s| s.parse().ok()))
-            .flatten()
+        use std::io::Read as _;
+
+        let mut bytes = Vec::new();
+        std::fs::File::open(&path)
+            .ok()?
+            .take(SNIFF_LIMIT)
+            .read_to_end(&mut bytes)
+            .ok()?;
+
+        let by_content = FileType::from_bytes(&bytes);
+        if *by_content.source_type() != SourceType::Default {
+            return resolve_mime(by_content);
+        }
+
+        sniff_well_known(&bytes).or_else(|| {
+            let by_extension = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .and_then(|ext| FileType::from_extension(ext).first())
+                .copied()
+                .unwrap_or(by_content);
+            resolve_mime(by_extension)
+        })
     })
     .await
     .ok()
@@ -225,7 +278,7 @@ pub(crate) fn build_slug(
 
     match ext {
         Some(ext) => format!("{}.{}", base, ext),
-        None => base,
+        _ => base,
     }
 }
 
@@ -233,6 +286,66 @@ pub(crate) fn build_slug(
 mod tests {
     use super::*;
     use crate::settings::Settings;
+
+    /// Writes `bytes` to a temp file, optionally with a filename extension
+    /// (mimicking `make_tempfile`'s use of the original upload's extension),
+    /// and runs it through `detect_content_type`.
+    async fn detect(bytes: &[u8], ext: Option<&str>) -> Option<mime::Mime> {
+        let mut f = match ext {
+            Some(ext) => tempfile::Builder::new()
+                .suffix(&format!(".{ext}"))
+                .tempfile()
+                .unwrap(),
+            _ => tempfile::NamedTempFile::new().unwrap(),
+        };
+        std::io::Write::write_all(&mut f, bytes).unwrap();
+        detect_content_type(f.path().to_path_buf()).await
+    }
+
+    #[tokio::test]
+    async fn detect_content_type_falls_back_to_extension_guess_when_media_type_missing() {
+        // file_type identifies 7z from just its signature but its pronom entry
+        // has no media_types, so this exercises the mime_guess fallback.
+        let sevenzip_signature: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
+
+        let detected = detect(sevenzip_signature, Some("7z")).await;
+
+        assert_eq!(
+            detected,
+            Some("application/x-7z-compressed".parse().unwrap())
+        );
+    }
+
+    /// Generates a pair of tests (with/without a filename extension) asserting
+    /// that a fixture under `testdata/` is detected as `$expected`.
+    macro_rules! detection_test {
+        ($name:ident, $fixture:literal, $ext:literal, $expected:expr) => {
+            mod $name {
+                use super::*;
+
+                #[tokio::test]
+                async fn with_extension() {
+                    let detected =
+                        detect(include_bytes!(concat!("testdata/", $fixture)), Some($ext)).await;
+                    assert_eq!(detected, Some($expected));
+                }
+
+                #[tokio::test]
+                async fn without_extension() {
+                    let detected =
+                        detect(include_bytes!(concat!("testdata/", $fixture)), None).await;
+                    assert_eq!(detected, Some($expected));
+                }
+            }
+        };
+    }
+
+    detection_test!(jpeg, "sample.jpg", "jpg", mime::IMAGE_JPEG);
+    detection_test!(png, "sample.png", "png", mime::IMAGE_PNG);
+    detection_test!(webp, "sample.webp", "webp", "image/webp".parse().unwrap());
+    detection_test!(webm, "sample.webm", "webm", "video/webm".parse().unwrap());
+    detection_test!(mp4, "sample.mp4", "mp4", "video/mp4".parse().unwrap());
+    detection_test!(txt, "sample.txt", "txt", mime::TEXT_PLAIN);
 
     fn test_settings() -> Settings {
         Settings {

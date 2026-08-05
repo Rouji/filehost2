@@ -23,7 +23,7 @@ env-settings-utils = "0.1.15"
 env_logger = "0.11.11"
 log = "0.4"
 blake3 = "1"
-file_type = "0.8"
+file_type = "0.9"
 futures-util = "0.3"
 mime = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "sync", "time"] }
