@@ -1,21 +1,12 @@
-FROM --platform=$BUILDPLATFORM rust:latest AS builder
+FROM --platform=$BUILDPLATFORM docker.io/tonistiigi/xx AS xx
 
-ARG TARGETARCH
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:alpine AS builder
+COPY --from=xx / /
 
-# cargo-zigbuild cross-links against musl for any target from this one
-# (amd64) builder, so the arm64 leg needs no QEMU emulation.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends python3-pip \
-    && pip3 install --break-system-packages ziglang \
-    && cargo install cargo-zigbuild
+RUN apk add --no-cache clang lld musl-dev
 
-RUN case "$TARGETARCH" in \
-    amd64) echo x86_64-unknown-linux-musl > /rust_target ;; \
-    arm64) echo aarch64-unknown-linux-musl > /rust_target ;; \
-    *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
-    esac
-RUN rustup target add "$(cat /rust_target)"
+ARG TARGETPLATFORM
+RUN xx-apk add --no-cache musl-dev gcc
 
 RUN mkdir /empty_dir
 
@@ -26,16 +17,17 @@ ENV SQLX_OFFLINE=true
 # pre build and cache (in an image layer) dependencies only
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs \
-    && cargo zigbuild --release --target "$(cat /rust_target)" \
+    && xx-cargo build --release --target-dir ./build \
     && rm -rf src
 
 COPY . .
 
 # make sure mtime is newer than the stub main.rs
-RUN find . -path ./target -prune -o -type f -exec touch {} +
+RUN find . -path ./build -prune -o -type f -exec touch {} +
 
-RUN cargo zigbuild --release --target "$(cat /rust_target)" && \
-    cp "target/$(cat /rust_target)/release/filehost2" /filehost2
+RUN xx-cargo build --release --target-dir ./build \
+    && xx-verify "./build/$(xx-cargo --print-target-triple)/release/filehost2" \
+    && cp "./build/$(xx-cargo --print-target-triple)/release/filehost2" /filehost2
 
 FROM scratch
 
