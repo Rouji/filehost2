@@ -43,6 +43,15 @@ pub(crate) enum Command {
     },
     /// compute and store the BLAKE3 hash for uploads whose `hash` column is NULL
     Rehash,
+    /// (re-)run NSFW detection against active image uploads (requires NSFW_MODEL_PATH)
+    Rensfw {
+        /// also rescan uploads that already have a score, not just unscored ones
+        #[arg(long)]
+        all: bool,
+        /// classify and print results without writing `nsfw_score` updates
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// manage blacklist URL entries
     Blacklist {
         #[command(subcommand)]
@@ -228,6 +237,15 @@ pub(crate) async fn dedup(db: &DbPool, settings: &Settings, dry_run: bool) -> Re
 
 pub(crate) async fn rehash(db: &DbPool, settings: &Settings) -> Result<()> {
     dedup::rehash(db, settings).await
+}
+
+pub(crate) async fn rensfw(
+    db: &DbPool,
+    settings: &Settings,
+    all: bool,
+    dry_run: bool,
+) -> Result<()> {
+    crate::nsfw::rensfw(db, settings, all, dry_run).await
 }
 
 pub(crate) async fn delete(db: &DbPool, settings: &Settings, target: DeleteTarget) -> Result<()> {

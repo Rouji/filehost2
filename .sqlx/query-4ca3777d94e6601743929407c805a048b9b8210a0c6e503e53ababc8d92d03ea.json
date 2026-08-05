@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE uploads SET nsfw_score = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "4ca3777d94e6601743929407c805a048b9b8210a0c6e503e53ababc8d92d03ea"
+}

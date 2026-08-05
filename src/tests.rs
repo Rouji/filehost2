@@ -38,6 +38,7 @@ mod tests {
             admin_email: "test@example.com".to_string(),
             admin_token: None,
             clamd_addr: None,
+            nsfw_model_path: None,
             max_uploads_per_day: None,
             max_bytes_per_day: None,
             max_upload_bytes_per_sec: None,
@@ -90,6 +91,9 @@ mod tests {
                 .app_data(web::Data::new(settings.clone()))
                 .app_data(web::Data::new(tmpl))
                 .app_data(web::Data::new(ban_cache))
+                .app_data(web::Data::new(
+                    None::<std::sync::Arc<crate::nsfw::NsfwModel>>,
+                ))
                 .app_data(
                     MultipartFormConfig::default().total_limit(settings.max_filesize * 1024 * 1024),
                 ),

@@ -172,6 +172,7 @@ struct UploadDto {
     uploader_ip: Option<String>,
     content_type: Option<String>,
     user_agent: Option<String>,
+    nsfw_score: Option<f32>,
 }
 
 impl From<Upload> for UploadDto {
@@ -188,6 +189,7 @@ impl From<Upload> for UploadDto {
             uploader_ip: u.uploader_ip.map(|ip| Ipv4Addr::from(ip).to_string()),
             content_type: u.content_type,
             user_agent: u.user_agent,
+            nsfw_score: u.nsfw_score,
         }
     }
 }
@@ -244,6 +246,7 @@ pub(crate) struct ListUploadsQuery {
     ip: Option<String>,
     slug: Option<String>,
     include_deleted: Option<bool>,
+    min_nsfw_score: Option<f32>,
     limit: Option<i64>,
     offset: Option<i64>,
 }
@@ -268,6 +271,7 @@ pub(crate) async fn list_uploads(
             ip,
             query.slug.as_deref(),
             query.include_deleted.unwrap_or(false),
+            query.min_nsfw_score,
             limit,
             offset,
         )

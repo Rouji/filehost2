@@ -47,6 +47,8 @@ pub(crate) struct Settings {
 
     pub clamd_addr: Option<String>,
 
+    pub nsfw_model_path: Option<String>, //path to NSFW detection model; preferrably OwenElliott/image-safety-classifier-xs
+
     pub max_uploads_per_day: Option<usize>,
     pub max_bytes_per_day: Option<u64>,
     pub max_upload_bytes_per_sec: Option<f64>,
@@ -57,4 +59,12 @@ pub(crate) struct Settings {
 
     #[env_settings(default = 300)]
     pub ban_cache_ttl_seconds: u64, // how long banned IP/extension/mime/hash/UA lists are cached in memory
+}
+
+impl Settings {
+    /// get model path, but only if present on disk
+    pub(crate) fn nsfw_model_path(&self) -> Option<&std::path::Path> {
+        let path = std::path::Path::new(self.nsfw_model_path.as_deref()?);
+        path.is_file().then_some(path)
+    }
 }

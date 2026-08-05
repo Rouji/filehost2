@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT id AS `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash AS `hash: Vec<u8>`, uploader_ip, content_type, user_agent FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+  "query": "SELECT id AS `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash AS `hash: Vec<u8>`, uploader_ip, content_type, user_agent, nsfw_score FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
   "describe": {
     "columns": [
       {
@@ -178,6 +178,22 @@
             "name": "user_agent"
           }
         }
+      },
+      {
+        "ordinal": 11,
+        "name": "nsfw_score",
+        "type_info": {
+          "type": "Float",
+          "flags": "",
+          "collation": 63,
+          "max_size": 12
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "nsfw_score"
+          }
+        }
       }
     ],
     "parameters": {
@@ -194,8 +210,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "b4749f2f001d0982efb7644ee689e2e6d4ce5b68f6ed5d40cd21220086d403db"
+  "hash": "3521e82349aa8e024ce30299b7aae4d56d7cd3b829964273924cf28adf572a7f"
 }

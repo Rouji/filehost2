@@ -67,6 +67,23 @@ pub(crate) async fn uploads_missing_hash(db: &DbPool) -> Result<Vec<Uuid>, sqlx:
     Ok(rows.into_iter().map(|r| r.id).collect())
 }
 
+pub(crate) async fn uploads_for_nsfw_scan(
+    db: &DbPool,
+    all: bool,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let mut sql = String::from(
+        "SELECT id FROM uploads WHERE deleted_timestamp IS NULL AND content_type LIKE 'image/%'",
+    );
+    if !all {
+        sql.push_str(" AND nsfw_score IS NULL");
+    }
+    let rows = sqlx::query_as::<_, (Uuid,)>(sqlx::AssertSqlSafe(sql))
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
 pub(crate) async fn update_upload_hash(
     db: &DbPool,
     id: Uuid,
@@ -74,6 +91,18 @@ pub(crate) async fn update_upload_hash(
 ) -> Result<(), sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     sqlx::query!("UPDATE uploads SET hash = ? WHERE id = ?", hash, id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn update_nsfw_score(
+    db: &DbPool,
+    id: Uuid,
+    score: f32,
+) -> Result<(), sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    sqlx::query!("UPDATE uploads SET nsfw_score = ? WHERE id = ?", score, id)
         .execute(&mut *conn)
         .await?;
     Ok(())
@@ -463,6 +492,7 @@ enum ListUploadsParam<'a> {
     U32(u32),
     Str(&'a str),
     I64(i64),
+    F32(f32),
 }
 
 pub(crate) async fn list_uploads(
@@ -470,17 +500,23 @@ pub(crate) async fn list_uploads(
     ip: Option<u32>,
     slug: Option<&str>,
     include_deleted: bool,
+    min_nsfw_score: Option<f32>,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<Upload>, sqlx::Error> {
     let mut sql = String::from(
         "SELECT id, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, \
-         slug, file_size, hash, uploader_ip, content_type, user_agent FROM uploads WHERE 1=1",
+         slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score \
+         FROM uploads WHERE 1=1",
     );
     let mut params = Vec::new();
 
     if !include_deleted {
         sql.push_str(" AND deleted_timestamp IS NULL");
+    }
+    if let Some(min_score) = min_nsfw_score {
+        sql.push_str(" AND nsfw_score >= ?");
+        params.push(ListUploadsParam::F32(min_score));
     }
     if let Some(ip) = ip {
         sql.push_str(" AND uploader_ip = ?");
@@ -500,6 +536,7 @@ pub(crate) async fn list_uploads(
             ListUploadsParam::U32(v) => q.bind(v),
             ListUploadsParam::Str(v) => q.bind(v),
             ListUploadsParam::I64(v) => q.bind(v),
+            ListUploadsParam::F32(v) => q.bind(v),
         };
     }
 
@@ -515,7 +552,7 @@ pub(crate) async fn get_upload_by_slug(
     sqlx::query_as!(
         Upload,
         "SELECT id AS `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, \
-         slug, file_size, hash AS `hash: Vec<u8>`, uploader_ip, content_type, user_agent \
+         slug, file_size, hash AS `hash: Vec<u8>`, uploader_ip, content_type, user_agent, nsfw_score \
          FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
         slug
     )

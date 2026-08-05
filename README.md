@@ -37,3 +37,7 @@ sqlx offline cache:
 ```bash
 cargo sqlx prepare
 ```
+
+
+# NSFW detection
+use model `OwenElliott/image-safety-classifier-xs`

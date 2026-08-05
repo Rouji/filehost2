@@ -368,6 +368,7 @@ mod tests {
             admin_email: "admin@example.com".to_string(),
             admin_token: None,
             clamd_addr: None,
+            nsfw_model_path: None,
             max_uploads_per_day: None,
             max_bytes_per_day: None,
             max_upload_bytes_per_sec: None,

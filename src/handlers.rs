@@ -1,5 +1,6 @@
 use core::iter::IntoIterator;
 use std::path::Path;
+use std::sync::Arc;
 
 use actix_files::NamedFile;
 use actix_multipart::form::{MultipartForm, text::Text};
@@ -20,6 +21,7 @@ use crate::clamd;
 use crate::db;
 use crate::db_pool::DbPool;
 use crate::model::BanType;
+use crate::nsfw::NsfwModel;
 use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
 use crate::upload::{HashedTempFile, build_slug, calculate_expiry, extract_ip, uuid_to_path};
@@ -222,11 +224,36 @@ fn spawn_clamd_scan(
     });
 }
 
+fn spawn_nsfw_scan(
+    nsfw_model: Option<Arc<NsfwModel>>,
+    db: DbPool,
+    uuid: Uuid,
+    slug: String,
+    save_path: std::path::PathBuf,
+) {
+    let Some(model) = nsfw_model else {
+        return;
+    };
+    tokio::spawn(async move {
+        match tokio::task::spawn_blocking(move || model.classify(&save_path)).await {
+            Ok(Ok(c)) => {
+                log::info!("nsfw: {uuid} ({slug}) score={:.3}", c.score);
+                if let Err(e) = db::update_nsfw_score(&db, uuid, c.score).await {
+                    log::error!("nsfw: failed to update score for {uuid}: {e}");
+                }
+            }
+            Ok(Err(e)) => log::error!("nsfw: classification failed for {uuid} ({slug}): {e:#}"),
+            Err(e) => log::error!("nsfw: scan task panicked for {uuid} ({slug}): {e}"),
+        }
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn process_file(
     db: &DbPool,
     ban_cache: &BanCache,
     settings: &Settings,
+    nsfw_model: Option<Arc<NsfwModel>>,
     file: HashedTempFile,
     uploader_ip: Option<u32>,
     user_agent: Option<&str>,
@@ -335,7 +362,17 @@ async fn process_file(
         return Err(internal_err());
     }
 
-    spawn_clamd_scan(db.clone(), settings.clone(), uuid, slug.clone(), save_path);
+    spawn_clamd_scan(
+        db.clone(),
+        settings.clone(),
+        uuid,
+        slug.clone(),
+        save_path.clone(),
+    );
+
+    if content_type_for_db.starts_with("image/") {
+        spawn_nsfw_scan(nsfw_model, db.clone(), uuid, slug.clone(), save_path);
+    }
 
     let encoded_slug = utf8_percent_encode(&slug, PATH_SEGMENT).to_string();
     let base_url = settings.base_url.as_ref().unwrap();
@@ -475,6 +512,7 @@ pub(crate) async fn upload(
     db: web::Data<DbPool>,
     settings: web::Data<Settings>,
     ban_cache: web::Data<BanCache>,
+    nsfw_model: web::Data<Option<Arc<NsfwModel>>>,
 ) -> impl Responder {
     let uploader_ip = extract_ip(&req, settings.trust_xff);
     let user_agent = req
@@ -522,6 +560,7 @@ pub(crate) async fn upload(
             db.get_ref(),
             ban_cache.get_ref(),
             &settings,
+            nsfw_model.get_ref().clone(),
             file,
             uploader_ip,
             user_agent,

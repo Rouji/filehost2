@@ -8,6 +8,7 @@ mod dedup;
 mod handlers;
 mod import;
 mod model;
+mod nsfw;
 mod rate_limit;
 mod settings;
 mod sync;
@@ -59,6 +60,9 @@ async fn main() -> std::io::Result<()> {
             }
             cli::Command::Dedup { dry_run } => cli::dedup(&db, &settings, dry_run).await,
             cli::Command::Rehash => cli::rehash(&db, &settings).await,
+            cli::Command::Rensfw { all, dry_run } => {
+                cli::rensfw(&db, &settings, all, dry_run).await
+            }
             cli::Command::Blacklist { command } => cli::blacklist(&db, command).await,
             cli::Command::Ban { target } => cli::ban(&db, target).await,
         };
@@ -81,6 +85,20 @@ async fn main() -> std::io::Result<()> {
     let ban_cache = web::Data::new(ban_cache::BanCache::new(std::time::Duration::from_secs(
         settings.ban_cache_ttl_seconds,
     )));
+
+    let nsfw_model = web::Data::new(match settings.nsfw_model_path() {
+        Some(path) => match nsfw::NsfwModel::load(path) {
+            Ok(model) => {
+                log::info!("nsfw: loaded model from {}", path.display());
+                Some(std::sync::Arc::new(model))
+            }
+            Err(e) => {
+                log::error!("nsfw: failed to load model from {}: {e:#}", path.display());
+                None
+            }
+        },
+        None => None,
+    });
 
     // `%a` is the raw peer address, which is the reverse proxy's IP rather
     // than the client's whenever trust_xff is set; `%{r}a` resolves the
@@ -118,6 +136,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(rendered_templates.clone()))
             .app_data(throttle.clone())
             .app_data(ban_cache.clone())
+            .app_data(nsfw_model.clone())
             .app_data(
                 MultipartFormConfig::default()
                     .total_limit(s.max_filesize * 1024 * 1024)

@@ -23,6 +23,8 @@ pub(crate) struct Upload {
     pub uploader_ip: Option<u32>,
     pub content_type: Option<String>,
     pub user_agent: Option<String>,
+    /// 1 - P(SFW) from the last NSFW scan; NULL means never scanned.
+    pub nsfw_score: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
