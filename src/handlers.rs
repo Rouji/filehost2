@@ -39,14 +39,23 @@ fn error_page(status: StatusCode, message: &str) -> HttpResponse {
         .body(body)
 }
 
+fn format_ip(ip: Option<u32>) -> String {
+    ip.map(|ip| std::net::Ipv4Addr::from(ip).to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 fn respond_to_check(
     condition: Result<bool, sqlx::Error>,
+    ip: Option<u32>,
     check_name: &str,
     fail_status: StatusCode,
     fail_message: &str,
 ) -> Result<(), HttpResponse> {
     match condition {
-        Ok(true) => Err(error_page(fail_status, fail_message)),
+        Ok(true) => {
+            log::info!("upload rejected: {check_name} (ip={})", format_ip(ip));
+            Err(error_page(fail_status, fail_message))
+        }
         Ok(false) => Ok(()),
         Err(e) => {
             log::error!("{check_name} check failed: {e}");
@@ -62,11 +71,13 @@ fn respond_to_check(
 /// banned, a logged 500 if the check itself failed, otherwise `Ok(())`.
 async fn check_not_banned(
     check: impl std::future::Future<Output = Result<bool, sqlx::Error>>,
+    ip: Option<u32>,
     check_name: &str,
     forbidden_message: &str,
 ) -> Result<(), HttpResponse> {
     respond_to_check(
         check.await,
+        ip,
         check_name,
         StatusCode::FORBIDDEN,
         forbidden_message,
@@ -76,6 +87,7 @@ async fn check_not_banned(
 async fn check_under_limit(
     limit: Option<i64>,
     check: impl std::future::Future<Output = Result<i64, sqlx::Error>>,
+    ip: Option<u32>,
     check_name: &str,
     too_many_message: &str,
 ) -> Result<(), HttpResponse> {
@@ -84,6 +96,7 @@ async fn check_under_limit(
     };
     respond_to_check(
         check.await.map(|n| n >= limit),
+        ip,
         check_name,
         StatusCode::TOO_MANY_REQUESTS,
         too_many_message,
@@ -231,6 +244,7 @@ async fn process_file(
     {
         check_not_banned(
             ban_cache.is_extension_banned(db, ext),
+            uploader_ip,
             "banned extension",
             "File type not allowed.",
         )
@@ -245,6 +259,7 @@ async fn process_file(
     {
         check_not_banned(
             ban_cache.is_mime_banned(db, ct.as_ref()),
+            uploader_ip,
             "banned mime",
             "Your upload was rejected.",
         )
@@ -255,6 +270,7 @@ async fn process_file(
 
     check_not_banned(
         ban_cache.is_hash_banned(db, hash.as_slice()),
+        uploader_ip,
         "banned hash",
         "Your upload was rejected.",
     )
@@ -391,6 +407,7 @@ async fn enforce_upload_gates(
     if let Some(ip) = uploader_ip {
         check_not_banned(
             ban_cache.is_ip_banned(db, ip, BanType::ReadOnly),
+            uploader_ip,
             "banned IP",
             "Your IP is banned from uploading.",
         )
@@ -400,6 +417,7 @@ async fn enforce_upload_gates(
     if let Some(ua) = user_agent {
         check_not_banned(
             ban_cache.is_user_agent_banned(db, ua),
+            uploader_ip,
             "banned user agent",
             "Your client is banned from uploading.",
         )
@@ -410,6 +428,7 @@ async fn enforce_upload_gates(
         check_under_limit(
             settings.max_uploads_per_day.map(|n| n as i64),
             db::uploads_count_last_day(db, ip),
+            uploader_ip,
             "upload count rate limit",
             "Upload limit reached.",
         )
@@ -417,6 +436,7 @@ async fn enforce_upload_gates(
         check_under_limit(
             settings.max_bytes_per_day.map(|n| n as i64),
             db::uploads_bytes_last_day(db, ip),
+            uploader_ip,
             "byte quota rate limit",
             "Daily byte quota reached.",
         )
@@ -479,7 +499,13 @@ pub(crate) async fn upload(
     let MultipartForm(form) =
         match MultipartForm::<UploadForm>::from_request(&req, &mut dev_payload).await {
             Ok(form) => form,
-            Err(e) => return HttpResponse::from_error(e),
+            Err(e) => {
+                log::info!(
+                    "upload rejected: malformed request ({e}) (ip={})",
+                    format_ip(uploader_ip)
+                );
+                return HttpResponse::from_error(e);
+            }
         };
 
     let id_len = if let Some(ref t) = form.id_length {
