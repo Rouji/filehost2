@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-pub(crate) struct UploadThrottle(Mutex<HashMap<u32, (Instant, f64)>>);
+pub(crate) struct UploadThrottle(Mutex<HashMap<IpAddr, (Instant, f64)>>);
 
 impl UploadThrottle {
     pub(crate) fn new() -> Self {
@@ -14,7 +15,7 @@ impl UploadThrottle {
     /// bucket allows it. `rate_bps` is the max bytes per second; `burst` is
     /// the maximum number of bytes that can be sent immediately before
     /// throttling kicks in (defaults to `rate_bps` if not provided).
-    pub(crate) async fn throttle(&self, ip: u32, bytes: usize, rate_bps: f64, burst: f64) {
+    pub(crate) async fn throttle(&self, ip: IpAddr, bytes: usize, rate_bps: f64, burst: f64) {
         let sleep_dur = {
             let mut map = self.0.lock().await;
 

@@ -135,10 +135,10 @@
         "ordinal": 8,
         "name": "uploader_ip",
         "type_info": {
-          "type": "Long",
-          "flags": "MULTIPLE_KEY | UNSIGNED",
+          "type": "VarString",
+          "flags": "MULTIPLE_KEY | BINARY",
           "collation": 63,
-          "max_size": 10
+          "max_size": 16
         },
         "origin": {
           "Table": {

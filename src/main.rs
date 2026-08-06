@@ -7,6 +7,7 @@ mod db_pool;
 mod dedup;
 mod handlers;
 mod import;
+mod ip;
 mod model;
 mod nsfw;
 mod rate_limit;

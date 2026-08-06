@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -14,7 +14,7 @@ use crate::upload::{life_expectancy_days, uuid_to_path};
 
 struct LogEntry {
     upload_timestamp: PrimitiveDateTime,
-    uploader_ip: Option<u32>,
+    uploader_ip: Option<IpAddr>,
     original_name: String,
     // single_php_filehost logs `filesize($tmpfile)` after already having moved $tmpfile
     // away, so this is reliably empty/false in practice — best-effort only.
@@ -64,7 +64,7 @@ fn parse_log(log_path: &Path) -> Result<HashMap<String, LogEntry>> {
                 continue;
             }
         };
-        let uploader_ip = parts[1].parse::<Ipv4Addr>().ok().map(u32::from);
+        let uploader_ip = parts[1].parse::<IpAddr>().ok();
         let file_size = parts[2].parse::<u64>().ok();
         let original_name = parts[3].trim_matches('\'').to_string();
         let slug = parts[4].to_string();

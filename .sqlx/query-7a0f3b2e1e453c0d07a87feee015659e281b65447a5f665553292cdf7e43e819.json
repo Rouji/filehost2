@@ -1,16 +1,16 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT 1 AS found FROM banned_ipv4_ranges WHERE ? BETWEEN start_ip AND end_ip AND type >= ? AND (expires_timestamp IS NULL OR expires_timestamp > NOW())",
+  "query": "SELECT COUNT(*) FROM uploads WHERE uploader_ip BETWEEN ? AND ? AND upload_timestamp > NOW() - INTERVAL 1 DAY",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "found",
+        "name": "COUNT(*)",
         "type_info": {
-          "type": "Long",
+          "type": "LongLong",
           "flags": "NOT_NULL | BINARY",
           "collation": 63,
-          "max_size": 1
+          "max_size": 21
         },
         "origin": "Expression"
       }
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "314a9b8eb4e67ce174548a0784be19f7ceea3a8d49053f4fcf84ed0b84e22239"
+  "hash": "7a0f3b2e1e453c0d07a87feee015659e281b65447a5f665553292cdf7e43e819"
 }

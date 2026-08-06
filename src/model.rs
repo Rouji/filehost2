@@ -6,7 +6,7 @@ use uuid::Uuid;
 pub(crate) struct Access {
     pub upload_id: Uuid,
     pub timestamp: PrimitiveDateTime,
-    pub ipv4: Option<u32>,
+    pub ip: Option<Vec<u8>>,
     pub user_agent: Option<String>,
 }
 
@@ -20,7 +20,7 @@ pub(crate) struct Upload {
     pub slug: String,
     pub file_size: i64,
     pub hash: Option<Vec<u8>>,
-    pub uploader_ip: Option<u32>,
+    pub uploader_ip: Option<Vec<u8>>,
     pub content_type: Option<String>,
     pub user_agent: Option<String>,
     /// 1 - P(SFW) from the last NSFW scan; NULL means never scanned.
@@ -44,10 +44,10 @@ impl std::fmt::Display for BanType {
 }
 
 #[derive(Debug, sqlx::FromRow)]
-pub(crate) struct BannedIpv4Range {
+pub(crate) struct BannedIpRange {
     pub id: i64,
-    pub start_ip: u32,
-    pub end_ip: u32,
+    pub start_ip: Vec<u8>,
+    pub end_ip: Vec<u8>,
     pub reason: Option<String>,
     pub banned_timestamp: PrimitiveDateTime,
     pub expires_timestamp: Option<PrimitiveDateTime>,

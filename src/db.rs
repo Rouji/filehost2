@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::path::Path;
 
 use anyhow::Result;
@@ -6,8 +7,9 @@ use time::PrimitiveDateTime;
 use uuid::Uuid;
 
 use crate::db_pool::{self, DbPool};
+use crate::ip;
 use crate::model::{
-    BanType, BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, BannedUserAgent,
+    BanType, BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpRange, BannedUserAgent,
     Blacklist, Upload,
 };
 use crate::settings::Settings;
@@ -26,12 +28,13 @@ pub(crate) async fn is_slug_taken(db: &DbPool, slug: &str) -> Result<bool, sqlx:
 
 pub(crate) async fn is_ip_banned(
     db: &DbPool,
-    ip: u32,
+    ip: IpAddr,
     ban_type: BanType,
 ) -> Result<bool, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
+    let ip = ip::to_db_bytes(ip).to_vec();
     Ok(sqlx::query!(
-        "SELECT 1 AS found FROM banned_ipv4_ranges \
+        "SELECT 1 AS found FROM banned_ip_ranges \
          WHERE ? BETWEEN start_ip AND end_ip \
          AND type >= ? \
          AND (expires_timestamp IS NULL OR expires_timestamp > NOW())",
@@ -187,16 +190,23 @@ pub(crate) async fn delete_by_slug(db: &DbPool, settings: &Settings, slug: &str)
     delete_matching(db, settings, "slug = ?", |q| q.bind(slug.to_owned())).await
 }
 
-pub(crate) async fn delete_by_ip(db: &DbPool, settings: &Settings, ip: u32) -> Result<usize> {
+pub(crate) async fn delete_by_ip(db: &DbPool, settings: &Settings, ip: IpAddr) -> Result<usize> {
+    let ip = ip::to_db_bytes(ip).to_vec();
     delete_matching(db, settings, "uploader_ip = ?", |q| q.bind(ip)).await
 }
 
 pub(crate) async fn delete_by_ip_range(
     db: &DbPool,
     settings: &Settings,
-    start: u32,
-    end: u32,
+    start: IpAddr,
+    end: IpAddr,
 ) -> Result<usize> {
+    anyhow::ensure!(
+        ip::same_family(start, end),
+        "start and end must be the same IP version"
+    );
+    let start = ip::to_db_bytes(start).to_vec();
+    let end = ip::to_db_bytes(end).to_vec();
     delete_matching(db, settings, "uploader_ip BETWEEN ? AND ?", |q| {
         q.bind(start).bind(end)
     })
@@ -210,7 +220,7 @@ pub(crate) struct NewUpload<'a> {
     pub upload_timestamp: time::PrimitiveDateTime,
     pub expiry_timestamp: time::PrimitiveDateTime,
     pub file_size: i64,
-    pub uploader_ip: Option<u32>,
+    pub uploader_ip: Option<IpAddr>,
     pub content_type: Option<&'a str>,
     pub user_agent: Option<&'a str>,
 }
@@ -243,6 +253,7 @@ async fn insert_upload_checked(
         return Ok(false);
     }
 
+    let uploader_ip = upload.uploader_ip.map(|ip| ip::to_db_bytes(ip).to_vec());
     sqlx::query!(
         "INSERT INTO uploads (id, slug, original_name, upload_timestamp, expiry_timestamp, deleted_timestamp, file_size, uploader_ip, content_type, user_agent) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -253,7 +264,7 @@ async fn insert_upload_checked(
         upload.expiry_timestamp,
         deleted_timestamp,
         upload.file_size,
-        upload.uploader_ip,
+        uploader_ip,
         upload.content_type,
         upload.user_agent,
     )
@@ -303,11 +314,12 @@ pub(crate) async fn insert_upload_row(
     slug: &str,
     file_size: i64,
     hash: &[u8],
-    uploader_ip: Option<u32>,
+    uploader_ip: Option<IpAddr>,
     content_type: &str,
     user_agent: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
+    let uploader_ip = uploader_ip.map(|ip| ip::to_db_bytes(ip).to_vec());
     sqlx::query!(
         "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type, user_agent,
@@ -326,26 +338,34 @@ pub(crate) async fn hard_delete_upload(db: &DbPool, id: Uuid) -> Result<(), sqlx
     Ok(())
 }
 
-pub(crate) async fn uploads_count_last_day(db: &DbPool, ip: u32) -> Result<i64, sqlx::Error> {
+pub(crate) async fn uploads_count_last_day(db: &DbPool, ip: IpAddr) -> Result<i64, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
+    let (start, end) = ip::quota_range(ip);
+    let start = ip::to_db_bytes(start).to_vec();
+    let end = ip::to_db_bytes(end).to_vec();
     let count = sqlx::query_scalar!(
         "SELECT COUNT(*) FROM uploads \
-         WHERE uploader_ip = ? \
+         WHERE uploader_ip BETWEEN ? AND ? \
          AND upload_timestamp > NOW() - INTERVAL 1 DAY",
-        ip
+        start,
+        end
     )
     .fetch_one(&mut *conn)
     .await?;
     Ok(count)
 }
 
-pub(crate) async fn uploads_bytes_last_day(db: &DbPool, ip: u32) -> Result<i64, sqlx::Error> {
+pub(crate) async fn uploads_bytes_last_day(db: &DbPool, ip: IpAddr) -> Result<i64, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
+    let (start, end) = ip::quota_range(ip);
+    let start = ip::to_db_bytes(start).to_vec();
+    let end = ip::to_db_bytes(end).to_vec();
     let bytes = sqlx::query_scalar!(
         r#"SELECT CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS `bytes: i64` FROM uploads
-         WHERE uploader_ip = ?
+         WHERE uploader_ip BETWEEN ? AND ?
          AND upload_timestamp > NOW() - INTERVAL 1 DAY"#,
-        ip
+        start,
+        end
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -355,14 +375,15 @@ pub(crate) async fn uploads_bytes_last_day(db: &DbPool, ip: u32) -> Result<i64, 
 pub(crate) async fn log_access(
     db: &DbPool,
     upload_id: Uuid,
-    ipv4: Option<u32>,
+    ip: Option<IpAddr>,
     user_agent: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
+    let ip = ip.map(|ip| ip::to_db_bytes(ip).to_vec());
     sqlx::query!(
-        "INSERT INTO accesses (upload_id, ipv4, user_agent) VALUES (?, ?, ?)",
+        "INSERT INTO accesses (upload_id, ip, user_agent) VALUES (?, ?, ?)",
         upload_id,
-        ipv4,
+        ip,
         user_agent
     )
     .execute(&mut *conn)
@@ -396,7 +417,7 @@ pub(crate) async fn global_stats(db: &DbPool) -> Result<GlobalStats, sqlx::Error
 }
 
 pub(crate) struct TopUploader {
-    pub ip: u32,
+    pub ip: Vec<u8>,
     pub count: i64,
     pub bytes: i64,
 }
@@ -408,7 +429,7 @@ pub(crate) async fn top_uploader_ips(
     let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
         TopUploader,
-        r#"SELECT uploader_ip AS "ip!: u32", CAST(COUNT(*) AS SIGNED) AS "count!: i64", CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS "bytes!: i64"
+        r#"SELECT uploader_ip AS "ip!: Vec<u8>", CAST(COUNT(*) AS SIGNED) AS "count!: i64", CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS "bytes!: i64"
            FROM uploads
            WHERE deleted_timestamp IS NULL AND uploader_ip IS NOT NULL
            GROUP BY uploader_ip
@@ -427,10 +448,11 @@ pub(crate) struct HourlyUploadCount {
 
 pub(crate) async fn uploads_hourly_counts(
     db: &DbPool,
-    ip: u32,
+    ip: IpAddr,
     hours: i64,
 ) -> Result<Vec<HourlyUploadCount>, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
+    let ip = ip::to_db_bytes(ip).to_vec();
     let rows = sqlx::query!(
         r#"SELECT DATE_FORMAT(upload_timestamp, '%Y-%m-%dT%H:00:00') AS "bucket!: String", CAST(COUNT(*) AS SIGNED) AS "count!: i64"
            FROM uploads
@@ -469,10 +491,11 @@ pub(crate) struct MimeUploadCount {
 
 pub(crate) async fn uploads_top_mimes(
     db: &DbPool,
-    ip: u32,
+    ip: IpAddr,
     limit: i64,
 ) -> Result<Vec<MimeUploadCount>, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
+    let ip = ip::to_db_bytes(ip).to_vec();
     sqlx::query_as!(
         MimeUploadCount,
         r#"SELECT content_type AS "mime!: String", CAST(COUNT(*) AS SIGNED) AS "count!: i64"
@@ -489,7 +512,7 @@ pub(crate) async fn uploads_top_mimes(
 }
 
 enum ListUploadsParam<'a> {
-    U32(u32),
+    Bytes(Vec<u8>),
     Str(&'a str),
     I64(i64),
     F32(f32),
@@ -497,7 +520,7 @@ enum ListUploadsParam<'a> {
 
 pub(crate) async fn list_uploads(
     db: &DbPool,
-    ip: Option<u32>,
+    ip: Option<IpAddr>,
     slug: Option<&str>,
     include_deleted: bool,
     min_nsfw_score: Option<f32>,
@@ -520,7 +543,7 @@ pub(crate) async fn list_uploads(
     }
     if let Some(ip) = ip {
         sql.push_str(" AND uploader_ip = ?");
-        params.push(ListUploadsParam::U32(ip));
+        params.push(ListUploadsParam::Bytes(ip::to_db_bytes(ip).to_vec()));
     }
     if let Some(slug) = slug {
         sql.push_str(" AND slug = ?");
@@ -533,7 +556,7 @@ pub(crate) async fn list_uploads(
     let mut q = sqlx::query_as::<_, Upload>(sqlx::AssertSqlSafe(sql));
     for param in params {
         q = match param {
-            ListUploadsParam::U32(v) => q.bind(v),
+            ListUploadsParam::Bytes(v) => q.bind(v),
             ListUploadsParam::Str(v) => q.bind(v),
             ListUploadsParam::I64(v) => q.bind(v),
             ListUploadsParam::F32(v) => q.bind(v),
@@ -564,11 +587,11 @@ pub(crate) async fn list_banned_ips(
     db: &DbPool,
     limit: i64,
     offset: i64,
-) -> Result<Vec<BannedIpv4Range>, sqlx::Error> {
+) -> Result<Vec<BannedIpRange>, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
-        BannedIpv4Range,
-        "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\", blacklist_id FROM banned_ipv4_ranges ORDER BY id DESC LIMIT ? OFFSET ?",
+        BannedIpRange,
+        "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\", blacklist_id FROM banned_ip_ranges ORDER BY id DESC LIMIT ? OFFSET ?",
         limit,
         offset
     )
@@ -578,16 +601,18 @@ pub(crate) async fn list_banned_ips(
 
 pub(crate) async fn insert_banned_ip(
     db: &DbPool,
-    start_ip: u32,
-    end_ip: u32,
+    start_ip: IpAddr,
+    end_ip: IpAddr,
     reason: Option<&str>,
     expires_timestamp: Option<PrimitiveDateTime>,
     blacklist_id: Option<i32>,
     ban_type: BanType,
 ) -> Result<i64, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
+    let start_ip = ip::to_db_bytes(start_ip).to_vec();
+    let end_ip = ip::to_db_bytes(end_ip).to_vec();
     let result = sqlx::query!(
-        "INSERT INTO banned_ipv4_ranges (start_ip, end_ip, reason, expires_timestamp, blacklist_id, type) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO banned_ip_ranges (start_ip, end_ip, reason, expires_timestamp, blacklist_id, type) VALUES (?, ?, ?, ?, ?, ?)",
         start_ip,
         end_ip,
         reason,
@@ -606,7 +631,7 @@ pub(crate) async fn delete_banned_ips_by_blacklist(
 ) -> Result<usize, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let result = sqlx::query!(
-        "DELETE FROM banned_ipv4_ranges WHERE blacklist_id = ?",
+        "DELETE FROM banned_ip_ranges WHERE blacklist_id = ?",
         blacklist_id
     )
     .execute(&mut *conn)
@@ -688,7 +713,7 @@ macro_rules! delete_by_id_bool {
 delete_by_id_bool!(
     delete_banned_ip,
     i64,
-    "DELETE FROM banned_ipv4_ranges WHERE id = ?"
+    "DELETE FROM banned_ip_ranges WHERE id = ?"
 );
 
 ban_set_crud!(

@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\", blacklist_id FROM banned_ipv4_ranges ORDER BY id DESC LIMIT ? OFFSET ?",
+  "query": "SELECT id, start_ip, end_ip, reason, banned_timestamp, expires_timestamp, type as \"type_: BanType\", blacklist_id FROM banned_ip_ranges ORDER BY id DESC LIMIT ? OFFSET ?",
   "describe": {
     "columns": [
       {
@@ -14,7 +14,7 @@
         },
         "origin": {
           "Table": {
-            "table": "filehost.banned_ipv4_ranges",
+            "table": "filehost.banned_ip_ranges",
             "name": "id"
           }
         }
@@ -23,14 +23,14 @@
         "ordinal": 1,
         "name": "start_ip",
         "type_info": {
-          "type": "Long",
-          "flags": "NOT_NULL | MULTIPLE_KEY | UNSIGNED | NO_DEFAULT_VALUE",
+          "type": "VarString",
+          "flags": "NOT_NULL | MULTIPLE_KEY | BINARY | NO_DEFAULT_VALUE",
           "collation": 63,
-          "max_size": 10
+          "max_size": 16
         },
         "origin": {
           "Table": {
-            "table": "filehost.banned_ipv4_ranges",
+            "table": "filehost.banned_ip_ranges",
             "name": "start_ip"
           }
         }
@@ -39,14 +39,14 @@
         "ordinal": 2,
         "name": "end_ip",
         "type_info": {
-          "type": "Long",
-          "flags": "NOT_NULL | UNSIGNED | NO_DEFAULT_VALUE",
+          "type": "VarString",
+          "flags": "NOT_NULL | BINARY | NO_DEFAULT_VALUE",
           "collation": 63,
-          "max_size": 10
+          "max_size": 16
         },
         "origin": {
           "Table": {
-            "table": "filehost.banned_ipv4_ranges",
+            "table": "filehost.banned_ip_ranges",
             "name": "end_ip"
           }
         }
@@ -62,7 +62,7 @@
         },
         "origin": {
           "Table": {
-            "table": "filehost.banned_ipv4_ranges",
+            "table": "filehost.banned_ip_ranges",
             "name": "reason"
           }
         }
@@ -78,7 +78,7 @@
         },
         "origin": {
           "Table": {
-            "table": "filehost.banned_ipv4_ranges",
+            "table": "filehost.banned_ip_ranges",
             "name": "banned_timestamp"
           }
         }
@@ -94,7 +94,7 @@
         },
         "origin": {
           "Table": {
-            "table": "filehost.banned_ipv4_ranges",
+            "table": "filehost.banned_ip_ranges",
             "name": "expires_timestamp"
           }
         }
@@ -110,7 +110,7 @@
         },
         "origin": {
           "Table": {
-            "table": "filehost.banned_ipv4_ranges",
+            "table": "filehost.banned_ip_ranges",
             "name": "type"
           }
         }
@@ -126,7 +126,7 @@
         },
         "origin": {
           "Table": {
-            "table": "filehost.banned_ipv4_ranges",
+            "table": "filehost.banned_ip_ranges",
             "name": "blacklist_id"
           }
         }
@@ -146,5 +146,5 @@
       true
     ]
   },
-  "hash": "2698cbc0b0bcbc0669971d0077caaf9e6059fada98e5059c6a391005ee29c0e3"
+  "hash": "7ce0556c875396814d6a4d56096f6cc20c39e261357d9969bbe30340bc682621"
 }

@@ -25,22 +25,18 @@ pub(crate) fn uuid_to_path(root: &Path, uuid: &Uuid) -> PathBuf {
     root.join(folder).join(uuid.to_string())
 }
 
-/// Resolves the client's IPv4 address for a request, honoring `trust_xff`
-/// so every consumer (ban checks, quotas, throttling, access logs) agrees
-/// on the same notion of "client IP" behind a reverse proxy.
-pub(crate) fn extract_ip(req: &HttpRequest, trust_xff: bool) -> Option<u32> {
+/// Resolves the client's IP address (v4 or v6) for a request, honoring
+/// `trust_xff` so every consumer (ban checks, quotas, throttling, access
+/// logs) agrees on the same notion of "client IP" behind a reverse proxy.
+pub(crate) fn extract_ip(req: &HttpRequest, trust_xff: bool) -> Option<std::net::IpAddr> {
     if trust_xff {
         req.headers()
             .get("X-Forwarded-For")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.split(',').next())
-            .and_then(|s| s.trim().parse::<std::net::Ipv4Addr>().ok())
-            .map(u32::from)
+            .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
     } else {
-        req.peer_addr().and_then(|addr| match addr.ip() {
-            std::net::IpAddr::V4(ip) => Some(u32::from(ip)),
-            std::net::IpAddr::V6(_) => None,
-        })
+        req.peer_addr().map(|addr| addr.ip())
     }
 }
 
@@ -156,7 +152,7 @@ impl<'t> FieldReader<'t> for HashedTempFile {
                     )
                 })
                 .unwrap_or((None, None, false));
-            let ip: Option<u32> = extract_ip(_req, trust_xff);
+            let ip: Option<std::net::IpAddr> = extract_ip(_req, trust_xff);
 
             let to_field_err = |e: std::io::Error| MultipartError::Field {
                 name: field_name.clone(),
@@ -179,7 +175,13 @@ impl<'t> FieldReader<'t> for HashedTempFile {
             while let Some(chunk) = field.try_next().await? {
                 limits.try_consume_limits(chunk.len(), false)?;
                 if let (Some(t), Some(r), Some(ip)) = (&throttle, rate, ip) {
-                    t.throttle(ip, chunk.len(), r, burst.unwrap_or(r)).await;
+                    t.throttle(
+                        crate::ip::normalize_for_quota(ip),
+                        chunk.len(),
+                        r,
+                        burst.unwrap_or(r),
+                    )
+                    .await;
                 }
                 size += chunk.len();
                 hasher.update(&chunk);

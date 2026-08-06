@@ -1,5 +1,5 @@
 use std::future::Future;
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 
 use actix_web::{
     FromRequest, HttpRequest, HttpResponse, Responder, delete, dev::Payload, get, http::StatusCode,
@@ -12,8 +12,9 @@ use uuid::Uuid;
 use crate::ban_cache::BanCache;
 use crate::db;
 use crate::db_pool::DbPool;
+use crate::ip;
 use crate::model::{
-    BanType, BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpv4Range, BannedUserAgent,
+    BanType, BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpRange, BannedUserAgent,
     Upload,
 };
 use crate::settings::Settings;
@@ -186,7 +187,10 @@ impl From<Upload> for UploadDto {
             slug: u.slug,
             file_size: u.file_size,
             hash: u.hash.map(|h| hex_encode(&h)),
-            uploader_ip: u.uploader_ip.map(|ip| Ipv4Addr::from(ip).to_string()),
+            uploader_ip: u
+                .uploader_ip
+                .and_then(|b| ip::from_db_bytes(&b))
+                .map(|ip| ip.to_string()),
             content_type: u.content_type,
             user_agent: u.user_agent,
             nsfw_score: u.nsfw_score,
@@ -233,7 +237,9 @@ pub(crate) async fn stats(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Respo
         top_uploaders: top_uploaders
             .into_iter()
             .map(|u| TopUploaderDto {
-                ip: Ipv4Addr::from(u.ip).to_string(),
+                ip: ip::from_db_bytes(&u.ip)
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_default(),
                 count: u.count,
                 bytes: u.bytes,
             })
@@ -257,8 +263,8 @@ pub(crate) async fn list_uploads(
     db: web::Data<DbPool>,
     query: web::Query<ListUploadsQuery>,
 ) -> impl Responder {
-    let ip = match query.ip.as_deref().map(str::parse::<Ipv4Addr>) {
-        Some(Ok(ip)) => Some(u32::from(ip)),
+    let ip = match query.ip.as_deref().map(str::parse::<IpAddr>) {
+        Some(Ok(ip)) => Some(ip),
         Some(Err(_)) => return json_error(StatusCode::BAD_REQUEST, "Invalid ip"),
         None => None,
     };
@@ -324,10 +330,10 @@ pub(crate) async fn delete_upload_by_ip(
     settings: web::Data<Settings>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
-    let Ok(ip) = path.into_inner().0.parse::<Ipv4Addr>() else {
+    let Ok(ip) = path.into_inner().0.parse::<IpAddr>() else {
         return json_error(StatusCode::BAD_REQUEST, "Invalid ip");
     };
-    match db::delete_by_ip(db.get_ref(), &settings, u32::from(ip)).await {
+    match db::delete_by_ip(db.get_ref(), &settings, ip).await {
         Ok(deleted) => {
             log::info!("admin: deleted uploads by ip {ip} ({deleted} row(s))");
             HttpResponse::Ok().json(DeleteResult { deleted })
@@ -362,10 +368,9 @@ pub(crate) async fn ip_stats(
     db: web::Data<DbPool>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
-    let Ok(ip) = path.into_inner().0.parse::<Ipv4Addr>() else {
+    let Ok(ip) = path.into_inner().0.parse::<IpAddr>() else {
         return json_error(StatusCode::BAD_REQUEST, "Invalid ip");
     };
-    let ip = u32::from(ip);
 
     let hourly = match db::uploads_hourly_counts(db.get_ref(), ip, IP_STATS_HOURS).await {
         Ok(rows) => rows,
@@ -406,12 +411,16 @@ struct BannedIpRangeDto {
     type_: u32,
 }
 
-impl From<BannedIpv4Range> for BannedIpRangeDto {
-    fn from(b: BannedIpv4Range) -> Self {
+impl From<BannedIpRange> for BannedIpRangeDto {
+    fn from(b: BannedIpRange) -> Self {
         BannedIpRangeDto {
             id: b.id,
-            start_ip: Ipv4Addr::from(b.start_ip).to_string(),
-            end_ip: Ipv4Addr::from(b.end_ip).to_string(),
+            start_ip: ip::from_db_bytes(&b.start_ip)
+                .map(|ip| ip.to_string())
+                .unwrap_or_default(),
+            end_ip: ip::from_db_bytes(&b.end_ip)
+                .map(|ip| ip.to_string())
+                .unwrap_or_default(),
             reason: b.reason,
             banned_timestamp: format_ts(b.banned_timestamp),
             expires_timestamp: b.expires_timestamp.map(format_ts),
@@ -461,12 +470,18 @@ pub(crate) async fn add_banned_ip(
     ban_cache: web::Data<BanCache>,
     body: web::Json<BannedIpRangeCreate>,
 ) -> impl Responder {
-    let Ok(start_ip) = body.start_ip.parse::<Ipv4Addr>() else {
+    let Ok(start_ip) = body.start_ip.parse::<IpAddr>() else {
         return json_error(StatusCode::BAD_REQUEST, "Invalid start_ip");
     };
-    let Ok(end_ip) = body.end_ip.parse::<Ipv4Addr>() else {
+    let Ok(end_ip) = body.end_ip.parse::<IpAddr>() else {
         return json_error(StatusCode::BAD_REQUEST, "Invalid end_ip");
     };
+    if !ip::same_family(start_ip, end_ip) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "start_ip and end_ip must be the same IP version",
+        );
+    }
     let expires_timestamp = match body.expires_timestamp.as_deref() {
         Some(s) => match parse_rfc3339(s) {
             Some(ts) => Some(ts),
@@ -482,8 +497,8 @@ pub(crate) async fn add_banned_ip(
 
     match db::insert_banned_ip(
         db.get_ref(),
-        u32::from(start_ip),
-        u32::from(end_ip),
+        start_ip,
+        end_ip,
         body.reason.as_deref(),
         expires_timestamp,
         body.blacklist_id,

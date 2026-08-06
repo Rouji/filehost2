@@ -1,3 +1,5 @@
+use std::net::{IpAddr, Ipv4Addr};
+
 use anyhow::Result;
 use futures_util::future::join_all;
 use regex::Regex;
@@ -7,6 +9,7 @@ use crate::db;
 use crate::db_pool;
 use crate::db_pool::DbPool;
 
+// TODO: ipv6
 static IP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?:/(\d{1,2}))?").unwrap()
 });
@@ -17,8 +20,8 @@ fn seconds_since(last: PrimitiveDateTime) -> i64 {
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct IpRangeEntry {
-    pub start_ip: u32,
-    pub end_ip: u32,
+    pub start: IpAddr,
+    pub end: IpAddr,
 }
 
 /// fetches a blacklist URL and parses IP ranges from the response body.
@@ -46,7 +49,7 @@ fn cidr_range(addr: u32, prefix: u8) -> (u32, u32) {
 pub(crate) fn parse_body(body: &str) -> Vec<IpRangeEntry> {
     let mut entries = Vec::new();
     for cap in IP_RE.captures_iter(body) {
-        let addr: std::net::Ipv4Addr = match cap[1].parse() {
+        let addr: Ipv4Addr = match cap[1].parse() {
             Ok(ip) => ip,
             Err(_) => continue,
         };
@@ -66,8 +69,8 @@ pub(crate) fn parse_body(body: &str) -> Vec<IpRangeEntry> {
         };
 
         entries.push(IpRangeEntry {
-            start_ip: start,
-            end_ip: end,
+            start: IpAddr::V4(Ipv4Addr::from(start)),
+            end: IpAddr::V4(Ipv4Addr::from(end)),
         });
     }
     entries
@@ -90,8 +93,8 @@ pub(crate) async fn sync_blacklist(db: DbPool, blacklist_id: i32) -> Result<()> 
     for entry in entries {
         db::insert_banned_ip(
             &db,
-            entry.start_ip,
-            entry.end_ip,
+            entry.start,
+            entry.end,
             None,
             None,
             Some(blacklist_id),
@@ -170,8 +173,8 @@ pub(crate) async fn sync_all(db: &DbPool) -> Result<()> {
 mod tests {
     use crate::sync::parse_body;
 
-    fn ip(s: &str) -> u32 {
-        s.parse::<std::net::Ipv4Addr>().unwrap().into()
+    fn ip(s: &str) -> std::net::IpAddr {
+        s.parse().unwrap()
     }
 
     macro_rules! test_parse {
@@ -182,8 +185,8 @@ mod tests {
                     let input = $input;
                     let entries = parse_body(input);
                     assert_eq!(entries.len(), 1, "{input}");
-                    assert_eq!(entries[0].start_ip, $start, "{input}");
-                    assert_eq!(entries[0].end_ip, $end, "{input}");
+                    assert_eq!(entries[0].start, $start, "{input}");
+                    assert_eq!(entries[0].end, $end, "{input}");
                 }
             )*
         };
@@ -196,7 +199,7 @@ mod tests {
         cidr_16: "172.16.0.0/16" => (ip("172.16.0.0"), ip("172.16.255.255"));
         cidr_8: "10.0.0.0/8" => (ip("10.0.0.0"), ip("10.255.255.255"));
         cidr_32: "192.168.1.1/32" => (ip("192.168.1.1"), ip("192.168.1.1"));
-        cidr_0: "0.0.0.0/0" => (0, 0xffff_ffff);
+        cidr_0: "0.0.0.0/0" => (ip("0.0.0.0"), ip("255.255.255.255"));
         cidr_20: "192.168.16.0/20" => (ip("192.168.16.0"), ip("192.168.31.255"));
         cidr_27: "172.16.5.32/27" => (ip("172.16.5.32"), ip("172.16.5.63"));
         cidr_comment: "217.60.250.0/24 ; SBL694808" => (ip("217.60.250.0"), ip("217.60.250.255"));
@@ -207,12 +210,12 @@ mod tests {
     fn multiple_entries() {
         let entries = parse_body("10.0.0.1\n192.168.1.100\n172.16.0.0/16");
         assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].start_ip, ip("10.0.0.1"));
-        assert_eq!(entries[0].end_ip, ip("10.0.0.1"));
-        assert_eq!(entries[1].start_ip, ip("192.168.1.100"));
-        assert_eq!(entries[1].end_ip, ip("192.168.1.100"));
-        assert_eq!(entries[2].start_ip, ip("172.16.0.0"));
-        assert_eq!(entries[2].end_ip, ip("172.16.255.255"));
+        assert_eq!(entries[0].start, ip("10.0.0.1"));
+        assert_eq!(entries[0].end, ip("10.0.0.1"));
+        assert_eq!(entries[1].start, ip("192.168.1.100"));
+        assert_eq!(entries[1].end, ip("192.168.1.100"));
+        assert_eq!(entries[2].start, ip("172.16.0.0"));
+        assert_eq!(entries[2].end, ip("172.16.255.255"));
     }
 
     #[test]
@@ -231,8 +234,8 @@ mod tests {
         let body = r#"{"ip":"10.0.0.1","reason":"spam"}"#;
         let entries = parse_body(body);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].start_ip, ip("10.0.0.1"));
-        assert_eq!(entries[0].end_ip, ip("10.0.0.1"));
+        assert_eq!(entries[0].start, ip("10.0.0.1"));
+        assert_eq!(entries[0].end, ip("10.0.0.1"));
     }
 
     #[test]
@@ -240,16 +243,16 @@ mod tests {
         let body = r#"<item><ip>10.0.0.0/24</ip><note>SBL</note></item>"#;
         let entries = parse_body(body);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].start_ip, ip("10.0.0.0"));
-        assert_eq!(entries[0].end_ip, ip("10.0.0.255"));
+        assert_eq!(entries[0].start, ip("10.0.0.0"));
+        assert_eq!(entries[0].end, ip("10.0.0.255"));
     }
 
     #[test]
     fn invalid_ip_skipped() {
         let entries = parse_body("999.0.0.1\n10.0.0.1");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].start_ip, ip("10.0.0.1"));
-        assert_eq!(entries[0].end_ip, ip("10.0.0.1"));
+        assert_eq!(entries[0].start, ip("10.0.0.1"));
+        assert_eq!(entries[0].end, ip("10.0.0.1"));
     }
 
     #[test]

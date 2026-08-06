@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::hash::Hash;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -79,7 +80,7 @@ where
 }
 
 pub(crate) struct BanCache {
-    ip_bans: KeyedTtlCache<(u32, BanType), bool>,
+    ip_bans: KeyedTtlCache<(IpAddr, BanType), bool>,
     extensions: TtlCell<HashSet<String>>,
     mimes: TtlCell<HashSet<String>>,
     hashes: TtlCell<HashSet<Vec<u8>>>,
@@ -100,7 +101,7 @@ impl BanCache {
     pub(crate) async fn is_ip_banned(
         &self,
         db: &DbPool,
-        ip: u32,
+        ip: IpAddr,
         ban_type: BanType,
     ) -> Result<bool, sqlx::Error> {
         self.ip_bans

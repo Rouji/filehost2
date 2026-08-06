@@ -41,14 +41,14 @@ fn error_page(status: StatusCode, message: &str) -> HttpResponse {
         .body(body)
 }
 
-fn format_ip(ip: Option<u32>) -> String {
-    ip.map(|ip| std::net::Ipv4Addr::from(ip).to_string())
+fn format_ip(ip: Option<std::net::IpAddr>) -> String {
+    ip.map(|ip| ip.to_string())
         .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn respond_to_check(
     condition: Result<bool, sqlx::Error>,
-    ip: Option<u32>,
+    ip: Option<std::net::IpAddr>,
     check_name: &str,
     fail_status: StatusCode,
     fail_message: &str,
@@ -73,7 +73,7 @@ fn respond_to_check(
 /// banned, a logged 500 if the check itself failed, otherwise `Ok(())`.
 async fn check_not_banned(
     check: impl std::future::Future<Output = Result<bool, sqlx::Error>>,
-    ip: Option<u32>,
+    ip: Option<std::net::IpAddr>,
     check_name: &str,
     forbidden_message: &str,
 ) -> Result<(), HttpResponse> {
@@ -89,7 +89,7 @@ async fn check_not_banned(
 async fn check_under_limit(
     limit: Option<i64>,
     check: impl std::future::Future<Output = Result<i64, sqlx::Error>>,
-    ip: Option<u32>,
+    ip: Option<std::net::IpAddr>,
     check_name: &str,
     too_many_message: &str,
 ) -> Result<(), HttpResponse> {
@@ -255,7 +255,7 @@ async fn process_file(
     settings: &Settings,
     nsfw_model: Option<Arc<NsfwModel>>,
     file: HashedTempFile,
-    uploader_ip: Option<u32>,
+    uploader_ip: Option<std::net::IpAddr>,
     user_agent: Option<&str>,
     id_len: usize,
     keep_name: bool,
@@ -438,7 +438,7 @@ async fn enforce_upload_gates(
     db: &DbPool,
     ban_cache: &BanCache,
     settings: &Settings,
-    uploader_ip: Option<u32>,
+    uploader_ip: Option<std::net::IpAddr>,
     user_agent: Option<&str>,
 ) -> Result<(), HttpResponse> {
     if let Some(ip) = uploader_ip {
@@ -587,9 +587,9 @@ pub(crate) async fn get_file(
 ) -> actix_web::Result<HttpResponse> {
     let slug = &path.0;
 
-    if let Some(ipv4) = extract_ip(&req, settings.trust_xff)
+    if let Some(ip) = extract_ip(&req, settings.trust_xff)
         && ban_cache
-            .is_ip_banned(db.get_ref(), ipv4, BanType::Full)
+            .is_ip_banned(db.get_ref(), ip, BanType::Full)
             .await
             .map_err(actix_web::error::ErrorInternalServerError)?
     {
@@ -601,7 +601,7 @@ pub(crate) async fn get_file(
         .map_err(actix_web::error::ErrorInternalServerError)?
         .ok_or_else(|| actix_web::error::ErrorNotFound("File not found"))?;
 
-    let ipv4 = extract_ip(&req, settings.trust_xff);
+    let ip = extract_ip(&req, settings.trust_xff);
     let user_agent = req
         .headers()
         .get("User-Agent")
@@ -610,8 +610,7 @@ pub(crate) async fn get_file(
     let upload_id = row.id;
     let db_log = db.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            db::log_access(db_log.get_ref(), upload_id, ipv4, user_agent.as_deref()).await
+        if let Err(e) = db::log_access(db_log.get_ref(), upload_id, ip, user_agent.as_deref()).await
         {
             log::warn!("Failed to log file access: {e}");
         }

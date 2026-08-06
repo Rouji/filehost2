@@ -1,16 +1,16 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT uploader_ip AS \"ip!: u32\", CAST(COUNT(*) AS SIGNED) AS \"count!: i64\", CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS \"bytes!: i64\"\n           FROM uploads\n           WHERE deleted_timestamp IS NULL AND uploader_ip IS NOT NULL\n           GROUP BY uploader_ip\n           ORDER BY 2 DESC\n           LIMIT ?",
+  "query": "SELECT uploader_ip AS \"ip!: Vec<u8>\", CAST(COUNT(*) AS SIGNED) AS \"count!: i64\", CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS \"bytes!: i64\"\n           FROM uploads\n           WHERE deleted_timestamp IS NULL AND uploader_ip IS NOT NULL\n           GROUP BY uploader_ip\n           ORDER BY 2 DESC\n           LIMIT ?",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "ip!: u32",
+        "name": "ip!: Vec<u8>",
         "type_info": {
-          "type": "Long",
-          "flags": "MULTIPLE_KEY | UNSIGNED",
+          "type": "VarString",
+          "flags": "MULTIPLE_KEY | BINARY",
           "collation": 63,
-          "max_size": 10
+          "max_size": 16
         },
         "origin": {
           "Table": {
@@ -51,5 +51,5 @@
       false
     ]
   },
-  "hash": "d700f7d4358639af4a05f272b4195c0ca0498fa816289dbec94b77457fabeea4"
+  "hash": "45ecd42a865b321f4371b4c77d81c2bedc8c75c69121e49c849165dacc385893"
 }

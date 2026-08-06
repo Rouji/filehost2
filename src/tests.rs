@@ -178,6 +178,10 @@ mod tests {
         url.trim().trim_start_matches("http://localhost:8080/")
     }
 
+    fn ip_bytes(s: &str) -> Vec<u8> {
+        crate::ip::to_db_bytes(s.parse().unwrap()).to_vec()
+    }
+
     #[sqlx::test]
     async fn upload_and_retrieve(pool: MySqlPool) {
         let app = full_app(test_settings(), pool).await;
@@ -408,13 +412,13 @@ mod tests {
         );
     }
 
-    async fn ban_ip(pool: &MySqlPool, ip: std::net::Ipv4Addr, ban_type: u32) {
-        let ip_int = u32::from(ip);
+    async fn ban_ip(pool: &MySqlPool, ip: std::net::IpAddr, ban_type: u32) {
+        let ip_bytes = crate::ip::to_db_bytes(ip).to_vec();
         sqlx::query(
-            "INSERT INTO banned_ipv4_ranges (start_ip, end_ip, banned_timestamp, type) VALUES (?, ?, NOW(), ?)",
+            "INSERT INTO banned_ip_ranges (start_ip, end_ip, banned_timestamp, type) VALUES (?, ?, NOW(), ?)",
         )
-        .bind(ip_int)
-        .bind(ip_int)
+        .bind(&ip_bytes)
+        .bind(&ip_bytes)
         .bind(ban_type)
         .execute(pool)
         .await
@@ -423,7 +427,7 @@ mod tests {
 
     #[sqlx::test]
     async fn xff_used_when_trust_xff_enabled(pool: MySqlPool) {
-        let banned_ip: std::net::Ipv4Addr = "1.2.3.4".parse().unwrap();
+        let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 1).await;
 
         let mut settings = test_settings();
@@ -439,8 +443,46 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn ipv6_xff_banned_ip_rejected(pool: MySqlPool) {
+        let banned_ip: std::net::IpAddr = "2001:db8::1".parse().unwrap();
+        ban_ip(&pool, banned_ip, 1).await;
+
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool).await;
+
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "2001:db8::1")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+    }
+
+    #[sqlx::test]
+    async fn ipv6_xff_non_banned_ip_uploads_fine(pool: MySqlPool) {
+        let banned_ip: std::net::IpAddr = "2001:db8::1".parse().unwrap();
+        ban_ip(&pool, banned_ip, 1).await;
+
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool).await;
+
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "2001:db8::2")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "expected success, got: {}",
+            resp.status()
+        );
+    }
+
+    #[sqlx::test]
     async fn xff_ignored_when_trust_xff_disabled(pool: MySqlPool) {
-        let banned_ip: std::net::Ipv4Addr = "1.2.3.4".parse().unwrap();
+        let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 1).await;
 
         let app = full_app(test_settings(), pool).await;
@@ -459,7 +501,7 @@ mod tests {
 
     #[sqlx::test]
     async fn full_ban_blocks_get(pool: MySqlPool) {
-        let banned_ip: std::net::Ipv4Addr = "1.2.3.4".parse().unwrap();
+        let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 2).await; // Full ban
 
         let mut settings = test_settings();
@@ -485,7 +527,7 @@ mod tests {
 
     #[sqlx::test]
     async fn read_only_ban_does_not_block_get(pool: MySqlPool) {
-        let banned_ip: std::net::Ipv4Addr = "1.2.3.4".parse().unwrap();
+        let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 1).await; // ReadOnly ban
 
         let mut settings = test_settings();
@@ -514,6 +556,44 @@ mod tests {
             .to_request();
         let resp = test::call_service(&app, req).await;
         assert!(resp.status().is_success());
+    }
+
+    #[sqlx::test]
+    async fn ipv6_daily_quota_shared_within_64_prefix(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        settings.max_uploads_per_day = Some(1);
+        let app = full_app(settings, pool).await;
+
+        let req = upload_req(
+            &multipart_body("a.txt", "hello"),
+            &[("X-Forwarded-For", "2001:db8:1234:5678::1")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success(), "first upload should succeed");
+
+        // Different address, but same /64 as above -- should share the quota bucket.
+        let req = upload_req(
+            &multipart_body("b.txt", "hello"),
+            &[("X-Forwarded-For", "2001:db8:1234:5678:ffff::2")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(
+            resp.status(),
+            429,
+            "second address in the same /64 should be rate-limited"
+        );
+
+        // Different /64 entirely -- should have its own, unspent quota.
+        let req = upload_req(
+            &multipart_body("c.txt", "hello"),
+            &[("X-Forwarded-For", "2001:db8:1234:9999::1")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "a different /64 should not share the exhausted quota"
+        );
     }
 
     async fn ban_user_agent(pool: &MySqlPool, pattern: &str) {
@@ -624,11 +704,11 @@ mod tests {
         assert!(resp.status().is_success());
 
         wait_for_accesses_count(&pool, 1).await;
-        let ipv4: Option<u32> = sqlx::query_scalar("SELECT ipv4 FROM accesses LIMIT 1")
+        let ip: Option<Vec<u8>> = sqlx::query_scalar("SELECT ip FROM accesses LIMIT 1")
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(ipv4, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
+        assert_eq!(ip, Some(ip_bytes("10.0.0.1")));
     }
 
     fn php_log_path() -> String {
@@ -648,7 +728,7 @@ mod tests {
         (settings, src)
     }
 
-    async fn upload_name_and_ip(pool: &MySqlPool, slug: &str) -> (String, Option<u32>) {
+    async fn upload_name_and_ip(pool: &MySqlPool, slug: &str) -> (String, Option<Vec<u8>>) {
         sqlx::query_as("SELECT original_name, uploader_ip FROM uploads WHERE slug = ?")
             .bind(slug)
             .fetch_one(pool)
@@ -694,7 +774,7 @@ mod tests {
 
         let (name, ip) = upload_name_and_ip(&pool, "abc123.txt").await;
         assert_eq!(name, "original name.txt");
-        assert_eq!(ip, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
+        assert_eq!(ip, Some(ip_bytes("10.0.0.1")));
 
         std::fs::remove_dir_all(&src).ok();
     }
@@ -725,7 +805,7 @@ mod tests {
 
         let (name, ip) = upload_name_and_ip(&pool, "present.txt").await;
         assert_eq!(name, "original name.txt");
-        assert_eq!(ip, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 1))));
+        assert_eq!(ip, Some(ip_bytes("10.0.0.1")));
 
         let row: (String, i64) =
             sqlx::query_as("SELECT original_name, file_size FROM uploads WHERE slug = 'gone.txt'")
@@ -788,7 +868,7 @@ mod tests {
         .await
         .unwrap();
 
-        let row: (String, i64, Option<u32>, Option<time::PrimitiveDateTime>) = sqlx::query_as(
+        let row: (String, i64, Option<Vec<u8>>, Option<time::PrimitiveDateTime>) = sqlx::query_as(
             "SELECT original_name, file_size, uploader_ip, deleted_timestamp FROM uploads WHERE slug = 'gone.txt'",
         )
         .fetch_one(&pool)
@@ -796,7 +876,7 @@ mod tests {
         .unwrap();
         assert_eq!(row.0, "old upload.bin");
         assert_eq!(row.1, 1234);
-        assert_eq!(row.2, Some(u32::from(std::net::Ipv4Addr::new(10, 0, 0, 2))));
+        assert_eq!(row.2, Some(ip_bytes("10.0.0.2")));
         assert!(row.3.is_some(), "historical entry should be soft-deleted");
 
         // No file backs it, so it must never be served.
@@ -1511,8 +1591,8 @@ mod sync_tests {
         r.last_insert_id() as i32
     }
 
-    fn ip(s: &str) -> u32 {
-        s.parse::<std::net::Ipv4Addr>().unwrap().into()
+    fn ip(s: &str) -> Vec<u8> {
+        crate::ip::to_db_bytes(s.parse().unwrap()).to_vec()
     }
 
     macro_rules! bl_mock {
@@ -1531,8 +1611,8 @@ mod sync_tests {
         bl_mock!(s, "10.0.0.1\n192.168.1.100\n");
         let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
         sync::sync_blacklist(db(&pool), id).await.unwrap();
-        let ranges: Vec<(u32, u32)> =
-            sqlx::query_as("SELECT start_ip, end_ip FROM banned_ipv4_ranges ORDER BY start_ip")
+        let ranges: Vec<(Vec<u8>, Vec<u8>)> =
+            sqlx::query_as("SELECT start_ip, end_ip FROM banned_ip_ranges ORDER BY start_ip")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -1551,8 +1631,8 @@ mod sync_tests {
         bl_mock!(s, "10.0.0.0/24\n172.16.0.0/16\n");
         let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
         sync::sync_blacklist(db(&pool), id).await.unwrap();
-        let ranges: Vec<(u32, u32)> =
-            sqlx::query_as("SELECT start_ip, end_ip FROM banned_ipv4_ranges ORDER BY start_ip")
+        let ranges: Vec<(Vec<u8>, Vec<u8>)> =
+            sqlx::query_as("SELECT start_ip, end_ip FROM banned_ip_ranges ORDER BY start_ip")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -1571,7 +1651,7 @@ mod sync_tests {
         bl_mock!(s, "192.168.1.1\n10.0.0.5\n");
         let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
         sync::sync_blacklist(db(&pool), id).await.unwrap();
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM banned_ipv4_ranges")
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM banned_ip_ranges")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -1584,7 +1664,7 @@ mod sync_tests {
         bl_mock!(s, "# comment\n10.0.0.1\n\n# another\n192.168.1.1\n   \n");
         let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
         sync::sync_blacklist(db(&pool), id).await.unwrap();
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM banned_ipv4_ranges")
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM banned_ip_ranges")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -1614,7 +1694,7 @@ mod sync_tests {
         let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
         sync::sync_blacklist(db(&pool), id).await.unwrap();
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM banned_ipv4_ranges")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM banned_ip_ranges")
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
@@ -1622,13 +1702,13 @@ mod sync_tests {
         );
 
         sync::sync_blacklist(db(&pool), id).await.unwrap();
-        let ranges: Vec<(u32, u32)> =
-            sqlx::query_as("SELECT start_ip, end_ip FROM banned_ipv4_ranges ORDER BY start_ip")
+        let ranges: Vec<(Vec<u8>, Vec<u8>)> =
+            sqlx::query_as("SELECT start_ip, end_ip FROM banned_ip_ranges ORDER BY start_ip")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM banned_ipv4_ranges")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM banned_ip_ranges")
                 .fetch_one(&pool)
                 .await
                 .unwrap(),
@@ -1665,7 +1745,7 @@ mod sync_tests {
         let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
         sync::sync_blacklist(db(&pool), id).await.unwrap();
         let ids: Vec<i32> = sqlx::query_scalar(
-            "SELECT DISTINCT blacklist_id FROM banned_ipv4_ranges ORDER BY blacklist_id",
+            "SELECT DISTINCT blacklist_id FROM banned_ip_ranges ORDER BY blacklist_id",
         )
         .fetch_all(&pool)
         .await
@@ -1679,7 +1759,7 @@ mod sync_tests {
         bl_mock!(s, "");
         let id = insert_bl(&pool, &(s.uri() + "/blacklist"), BanType::ReadOnly, 3600).await;
         sync::sync_blacklist(db(&pool), id).await.unwrap();
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM banned_ipv4_ranges")
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM banned_ip_ranges")
             .fetch_one(&pool)
             .await
             .unwrap();

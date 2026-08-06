@@ -1,4 +1,4 @@
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -9,6 +9,7 @@ use crate::db;
 use crate::db_pool::{self, DbPool};
 use crate::dedup;
 use crate::import;
+use crate::ip;
 use crate::model::BanType;
 use crate::settings::Settings;
 use crate::util::{format_ts, hex_decode, hex_encode, parse_rfc3339};
@@ -92,8 +93,8 @@ pub(crate) enum BanTarget {
 pub(crate) enum BanIpCommand {
     List,
     Add {
-        start: Ipv4Addr,
-        end: Ipv4Addr,
+        start: IpAddr,
+        end: IpAddr,
         #[arg(long)]
         reason: Option<String>,
         /// RFC3339 expiry timestamp, e.g. 2026-01-01T00:00:00Z
@@ -171,8 +172,8 @@ pub(crate) enum BlacklistCommand {
 pub(crate) enum DeleteTarget {
     Id { id: Uuid },
     Slug { slug: String },
-    Ip { ip: Ipv4Addr },
-    IpRange { start: Ipv4Addr, end: Ipv4Addr },
+    Ip { ip: IpAddr },
+    IpRange { start: IpAddr, end: IpAddr },
 }
 
 fn parse_ban_type(type_: u32) -> Result<BanType> {
@@ -252,9 +253,9 @@ pub(crate) async fn delete(db: &DbPool, settings: &Settings, target: DeleteTarge
     let count = match target {
         DeleteTarget::Id { id } => db::delete_by_id(db, settings, id).await?,
         DeleteTarget::Slug { slug } => db::delete_by_slug(db, settings, &slug).await?,
-        DeleteTarget::Ip { ip } => db::delete_by_ip(db, settings, u32::from(ip)).await?,
+        DeleteTarget::Ip { ip } => db::delete_by_ip(db, settings, ip).await?,
         DeleteTarget::IpRange { start, end } => {
-            db::delete_by_ip_range(db, settings, u32::from(start), u32::from(end)).await?
+            db::delete_by_ip_range(db, settings, start, end).await?
         }
     };
     println!("Deleted {count} upload(s).");
@@ -328,11 +329,17 @@ async fn ban_ip(db: &DbPool, command: BanIpCommand) -> Result<()> {
                     .expires_timestamp
                     .map(format_ts)
                     .unwrap_or_else(|| "never".to_string());
+                let start = ip::from_db_bytes(&entry.start_ip)
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_default();
+                let end = ip::from_db_bytes(&entry.end_ip)
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_default();
                 println!(
                     "{:>6}  {:<15}-{:<15}  type={:<8}  reason={:<20}  expires={}",
                     entry.id,
-                    Ipv4Addr::from(entry.start_ip),
-                    Ipv4Addr::from(entry.end_ip),
+                    start,
+                    end,
                     entry.type_.to_string(),
                     reason,
                     expires
@@ -347,6 +354,10 @@ async fn ban_ip(db: &DbPool, command: BanIpCommand) -> Result<()> {
             expires,
             type_,
         } => {
+            anyhow::ensure!(
+                ip::same_family(start, end),
+                "start and end must be the same IP version"
+            );
             let ban_type = parse_ban_type(type_)?;
             let expires_timestamp = match expires.as_deref() {
                 Some(s) => Some(
@@ -357,8 +368,8 @@ async fn ban_ip(db: &DbPool, command: BanIpCommand) -> Result<()> {
             };
             let id = db::insert_banned_ip(
                 db,
-                u32::from(start),
-                u32::from(end),
+                start,
+                end,
                 reason.as_deref(),
                 expires_timestamp,
                 None,

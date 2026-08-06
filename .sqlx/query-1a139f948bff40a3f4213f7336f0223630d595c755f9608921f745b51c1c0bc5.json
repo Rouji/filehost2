@@ -1,0 +1,26 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT 1 AS found FROM banned_ip_ranges WHERE ? BETWEEN start_ip AND end_ip AND type >= ? AND (expires_timestamp IS NULL OR expires_timestamp > NOW())",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "found",
+        "type_info": {
+          "type": "Long",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 1
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1a139f948bff40a3f4213f7336f0223630d595c755f9608921f745b51c1c0bc5"
+}
