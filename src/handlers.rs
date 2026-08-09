@@ -200,11 +200,14 @@ fn reconcile_content_type_for_db(
 }
 
 /// Takes ownership of everything since it outlives `process_file`'s return.
+#[allow(clippy::too_many_arguments)]
 fn spawn_clamd_scan(
     db: DbPool,
+    ban_cache: web::Data<BanCache>,
     settings: Settings,
     uuid: Uuid,
     slug: String,
+    hash: [u8; 32],
     save_path: std::path::PathBuf,
 ) {
     let Some(addr) = settings.clamd_addr.clone() else {
@@ -215,6 +218,12 @@ fn spawn_clamd_scan(
             Ok(clamd::ScanResult::Clean) => log::info!("clamd: {uuid} ({slug}) clean"),
             Ok(clamd::ScanResult::Infected(name)) => {
                 log::warn!("clamd: {uuid} ({slug}) infected with {name:?}, deleting");
+                let reason = format!("clamd: {name}");
+                if let Err(e) = db::insert_banned_hash(&db, hash.as_slice(), Some(&reason)).await {
+                    log::error!("clamd: failed to ban hash for infected file {uuid}: {e}");
+                } else {
+                    ban_cache.invalidate_hashes().await;
+                }
                 if let Err(e) = db::delete_by_id(&db, &settings, uuid).await {
                     log::error!("clamd: failed to delete infected file {uuid}: {e}");
                 }
@@ -251,7 +260,7 @@ fn spawn_nsfw_scan(
 #[allow(clippy::too_many_arguments)]
 async fn process_file(
     db: &DbPool,
-    ban_cache: &BanCache,
+    ban_cache: web::Data<BanCache>,
     settings: &Settings,
     nsfw_model: Option<Arc<NsfwModel>>,
     file: HashedTempFile,
@@ -364,9 +373,11 @@ async fn process_file(
 
     spawn_clamd_scan(
         db.clone(),
+        ban_cache.clone(),
         settings.clone(),
         uuid,
         slug.clone(),
+        hash,
         save_path.clone(),
     );
 
@@ -558,7 +569,7 @@ pub(crate) async fn upload(
     for file in form.files {
         match process_file(
             db.get_ref(),
-            ban_cache.get_ref(),
+            ban_cache.clone(),
             &settings,
             nsfw_model.get_ref().clone(),
             file,
