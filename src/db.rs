@@ -346,6 +346,33 @@ pub(crate) async fn top_uploader_ips(
     .await
 }
 
+pub(crate) struct TopNsfwUploader {
+    pub ip: Vec<u8>,
+    pub count: i64,
+    pub avg_score: f64,
+}
+
+pub(crate) async fn top_nsfw_uploader_ips(
+    db: &DbPool,
+    min_score: f32,
+    limit: i64,
+) -> Result<Vec<TopNsfwUploader>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    sqlx::query_as!(
+        TopNsfwUploader,
+        r#"SELECT uploader_ip AS "ip!: Vec<u8>", CAST(COUNT(*) AS SIGNED) AS "count!: i64", CAST(AVG(nsfw_score) AS DOUBLE) AS "avg_score!: f64"
+           FROM uploads
+           WHERE deleted_timestamp IS NULL AND uploader_ip IS NOT NULL AND nsfw_score >= ?
+           GROUP BY uploader_ip
+           ORDER BY 2 DESC
+           LIMIT ?"#,
+        min_score,
+        limit
+    )
+    .fetch_all(&mut *conn)
+    .await
+}
+
 pub(crate) struct HourlyUploadCount {
     pub hour: String,
     pub count: i64,

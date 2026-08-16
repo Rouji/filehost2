@@ -199,12 +199,20 @@ impl From<Upload> for UploadDto {
 }
 
 const TOP_UPLOADERS_LIMIT: i64 = 10;
+const NSFW_TOP_THRESHOLD: f32 = 0.85;
 
 #[derive(Serialize)]
 struct TopUploaderDto {
     ip: String,
     count: i64,
     bytes: i64,
+}
+
+#[derive(Serialize)]
+struct TopNsfwUploaderDto {
+    ip: String,
+    count: i64,
+    avg_score: f64,
 }
 
 #[derive(Serialize)]
@@ -215,6 +223,7 @@ struct StatsDto {
     uploads_last_24h: i64,
     bytes_last_24h: i64,
     top_uploaders: Vec<TopUploaderDto>,
+    top_nsfw_uploaders: Vec<TopNsfwUploaderDto>,
 }
 
 #[get("/stats")]
@@ -226,6 +235,16 @@ pub(crate) async fn stats(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Respo
     let top_uploaders = match db::top_uploader_ips(db.get_ref(), TOP_UPLOADERS_LIMIT).await {
         Ok(rows) => rows,
         Err(e) => return internal_err(e, "top_uploader_ips"),
+    };
+    let top_nsfw_uploaders = match db::top_nsfw_uploader_ips(
+        db.get_ref(),
+        NSFW_TOP_THRESHOLD,
+        TOP_UPLOADERS_LIMIT,
+    )
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => return internal_err(e, "top_nsfw_uploader_ips"),
     };
 
     HttpResponse::Ok().json(StatsDto {
@@ -242,6 +261,16 @@ pub(crate) async fn stats(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Respo
                     .unwrap_or_default(),
                 count: u.count,
                 bytes: u.bytes,
+            })
+            .collect(),
+        top_nsfw_uploaders: top_nsfw_uploaders
+            .into_iter()
+            .map(|u| TopNsfwUploaderDto {
+                ip: ip::from_db_bytes(&u.ip)
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_default(),
+                count: u.count,
+                avg_score: u.avg_score,
             })
             .collect(),
     })

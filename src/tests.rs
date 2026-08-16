@@ -878,6 +878,81 @@ mod tests {
     }
 
     #[derive(Deserialize)]
+    struct TopNsfwUploaderResponse {
+        ip: String,
+        count: i64,
+        avg_score: f64,
+    }
+
+    #[derive(Deserialize)]
+    struct StatsWithTopNsfwUploadersResponse {
+        top_nsfw_uploaders: Vec<TopNsfwUploaderResponse>,
+    }
+
+    #[sqlx::test]
+    async fn admin_stats_includes_top_nsfw_uploaders(pool: MySqlPool) {
+        let mut settings = admin_settings();
+        settings.trust_xff = true;
+        let db_pool = to_db_pool(&pool);
+        let app = full_app(settings, pool).await;
+
+        let nsfw_resp = test::call_service(
+            &app,
+            upload_req(
+                &multipart_body("nsfw.txt", "nsfw"),
+                &[("X-Forwarded-For", "7.7.7.7")],
+            ),
+        )
+        .await;
+        assert!(nsfw_resp.status().is_success());
+        let nsfw_slug =
+            slug(core::str::from_utf8(&test::read_body(nsfw_resp).await).unwrap()).to_string();
+
+        // Below the top-uploaders threshold, so this uploader shouldn't show up.
+        let sfw_resp = test::call_service(
+            &app,
+            upload_req(
+                &multipart_body("sfw.txt", "sfw"),
+                &[("X-Forwarded-For", "8.8.8.8")],
+            ),
+        )
+        .await;
+        assert!(sfw_resp.status().is_success());
+        let sfw_slug =
+            slug(core::str::from_utf8(&test::read_body(sfw_resp).await).unwrap()).to_string();
+
+        let uploads: Vec<UploadResponse> = admin_list(&app, "/admin/uploads").await;
+        let nsfw_id = uploads
+            .iter()
+            .find(|u| u.slug == nsfw_slug)
+            .unwrap()
+            .id
+            .parse()
+            .unwrap();
+        let sfw_id = uploads
+            .iter()
+            .find(|u| u.slug == sfw_slug)
+            .unwrap()
+            .id
+            .parse()
+            .unwrap();
+        crate::db::update_nsfw_score(&db_pool, nsfw_id, 0.9)
+            .await
+            .unwrap();
+        crate::db::update_nsfw_score(&db_pool, sfw_id, 0.1)
+            .await
+            .unwrap();
+
+        let stats: StatsWithTopNsfwUploadersResponse =
+            test::read_body_json(admin_get(&app, "/admin/stats").await).await;
+
+        assert_eq!(stats.top_nsfw_uploaders.len(), 1);
+        assert_eq!(stats.top_nsfw_uploaders[0].ip, "7.7.7.7");
+        assert_eq!(stats.top_nsfw_uploaders[0].count, 1);
+        assert!((stats.top_nsfw_uploaders[0].avg_score - 0.9).abs() < 0.01);
+    }
+
+    #[derive(Deserialize)]
     struct UploadResponse {
         id: String,
         slug: String,

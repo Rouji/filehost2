@@ -1,0 +1,55 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT uploader_ip AS \"ip!: Vec<u8>\", CAST(COUNT(*) AS SIGNED) AS \"count!: i64\", CAST(AVG(nsfw_score) AS DOUBLE) AS \"avg_score!: f64\"\n           FROM uploads\n           WHERE deleted_timestamp IS NULL AND uploader_ip IS NOT NULL AND nsfw_score >= ?\n           GROUP BY uploader_ip\n           ORDER BY 2 DESC\n           LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ip!: Vec<u8>",
+        "type_info": {
+          "type": "VarString",
+          "flags": "MULTIPLE_KEY | BINARY",
+          "collation": 63,
+          "max_size": 16
+        },
+        "origin": {
+          "Table": {
+            "table": "filehost.uploads",
+            "name": "uploader_ip"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "count!: i64",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 21
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "avg_score!: f64",
+        "type_info": {
+          "type": "Double",
+          "flags": "BINARY",
+          "collation": 63,
+          "max_size": 22
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "b32dfa1415910234776a368b2781a93847136dd1ff423cec42b4278c841a561a"
+}
