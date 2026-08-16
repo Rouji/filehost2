@@ -1,5 +1,4 @@
 use std::net::IpAddr;
-use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -8,7 +7,6 @@ use uuid::Uuid;
 use crate::db;
 use crate::db_pool::{self, DbPool};
 use crate::dedup;
-use crate::import;
 use crate::ip;
 use crate::model::BanType;
 use crate::settings::Settings;
@@ -28,14 +26,6 @@ pub(crate) enum Command {
     Delete {
         #[command(subcommand)]
         target: DeleteTarget,
-    },
-    /// Import files from a single_php_filehost instance
-    ImportPhp {
-        /// Path to the PHP filehost's files directory
-        files: PathBuf,
-        /// Path to the PHP filehost's upload log
-        #[arg(long)]
-        log: Option<PathBuf>,
     },
     /// replace existing duplicate upload files with symlinks to the newest duplicate
     Dedup {
@@ -221,15 +211,6 @@ pub(crate) async fn delete_expired(db: &DbPool, settings: &Settings) -> Result<(
     let count = db::delete_expired(db, settings).await?;
     println!("Deleted {count} expired upload(s).");
     Ok(())
-}
-
-pub(crate) async fn import_php(
-    db: &DbPool,
-    settings: &Settings,
-    files: PathBuf,
-    log: Option<PathBuf>,
-) -> Result<()> {
-    import::import_php(db, settings, files, log).await
 }
 
 pub(crate) async fn dedup(db: &DbPool, settings: &Settings, dry_run: bool) -> Result<()> {

@@ -213,96 +213,10 @@ pub(crate) async fn delete_by_ip_range(
     .await
 }
 
-pub(crate) struct NewUpload<'a> {
-    pub id: Uuid,
-    pub slug: &'a str,
-    pub original_name: &'a str,
-    pub upload_timestamp: time::PrimitiveDateTime,
-    pub expiry_timestamp: time::PrimitiveDateTime,
-    pub file_size: i64,
-    pub uploader_ip: Option<IpAddr>,
-    pub content_type: Option<&'a str>,
-    pub user_agent: Option<&'a str>,
-}
-
-/// A live upload shouldn't reclaim a slug still held by a not-yet-expired historical
-/// record, so the existence check only ignores `deleted_timestamp` for historical rows.
-async fn insert_upload_checked(
-    db: &DbPool,
-    upload: &NewUpload<'_>,
-    deleted_timestamp: Option<time::PrimitiveDateTime>,
-) -> anyhow::Result<bool> {
-    let mut conn = db_pool::conn(db).await?;
-
-    let exists = if deleted_timestamp.is_some() {
-        sqlx::query!("SELECT 1 AS found FROM uploads WHERE slug = ?", upload.slug)
-            .fetch_optional(&mut *conn)
-            .await?
-            .is_some()
-    } else {
-        sqlx::query!(
-            "SELECT 1 AS found FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
-            upload.slug
-        )
-        .fetch_optional(&mut *conn)
-        .await?
-        .is_some()
-    };
-
-    if exists {
-        return Ok(false);
-    }
-
-    let uploader_ip = upload.uploader_ip.map(|ip| ip::to_db_bytes(ip).to_vec());
-    sqlx::query!(
-        "INSERT INTO uploads (id, slug, original_name, upload_timestamp, expiry_timestamp, deleted_timestamp, file_size, uploader_ip, content_type, user_agent) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        upload.id,
-        upload.slug,
-        upload.original_name,
-        upload.upload_timestamp,
-        upload.expiry_timestamp,
-        deleted_timestamp,
-        upload.file_size,
-        uploader_ip,
-        upload.content_type,
-        upload.user_agent,
-    )
-    .execute(&mut *conn)
-    .await?;
-
-    Ok(true)
-}
-
-pub(crate) async fn insert_upload(db: &DbPool, upload: &NewUpload<'_>) -> anyhow::Result<bool> {
-    insert_upload_checked(db, upload, None).await
-}
-
-/// Like `insert_upload`, but for log entries whose file no longer exists on disk: the
-/// row is inserted already soft-deleted so the app never tries to serve it. Unlike
-/// `insert_upload`, existence is checked regardless of `deleted_timestamp` — these are
-/// one-time archival records, not something a slug should be allowed to reclaim.
-pub(crate) async fn insert_historical_upload(
-    db: &DbPool,
-    upload: &NewUpload<'_>,
-    deleted_timestamp: time::PrimitiveDateTime,
-) -> anyhow::Result<bool> {
-    insert_upload_checked(db, upload, Some(deleted_timestamp)).await
-}
-
-pub(crate) async fn historical_upload_slugs(
-    db: &DbPool,
-) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    let rows = sqlx::query!(
-        r#"SELECT id AS `id: Uuid`, slug FROM uploads WHERE deleted_timestamp IS NOT NULL"#
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-    Ok(rows.into_iter().map(|r| (r.id, r.slug)).collect())
-}
-
-/// Inserts a freshly-uploaded file's row. Distinct from `insert_upload`: this one
+/// Inserts a freshly-uploaded file's row. Distinct from the old `insert_upload` (removed with
+/// the import feature): this one carries the content hash and lets the DB default
+/// `upload_timestamp`, matching what `handlers::process_file` needs right after saving
+/// the file to disk.
 /// carries the content hash and lets the DB default `upload_timestamp`, matching
 /// what `handlers::process_file` needs right after saving the file to disk.
 #[allow(clippy::too_many_arguments)]
@@ -326,15 +240,6 @@ pub(crate) async fn insert_upload_row(
     )
     .execute(&mut *conn)
     .await?;
-    Ok(())
-}
-
-/// Hard-deletes a row outright, rather than soft-deleting it like `delete_by_id` does.
-pub(crate) async fn hard_delete_upload(db: &DbPool, id: Uuid) -> Result<(), sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    sqlx::query!("DELETE FROM uploads WHERE id = ?", id)
-        .execute(&mut *conn)
-        .await?;
     Ok(())
 }
 

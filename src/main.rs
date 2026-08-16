@@ -6,7 +6,6 @@ mod db;
 mod db_pool;
 mod dedup;
 mod handlers;
-mod import;
 mod ip;
 mod model;
 mod nsfw;
@@ -56,9 +55,6 @@ async fn main() -> std::io::Result<()> {
             cli::Command::Migrate => cli::migrate(&db).await,
             cli::Command::DeleteExpired => cli::delete_expired(&db, &settings).await,
             cli::Command::Delete { target } => cli::delete(&db, &settings, target).await,
-            cli::Command::ImportPhp { files, log } => {
-                cli::import_php(&db, &settings, files, log).await
-            }
             cli::Command::Dedup { dry_run } => cli::dedup(&db, &settings, dry_run).await,
             cli::Command::Rehash => cli::rehash(&db, &settings).await,
             cli::Command::Rensfw { all, dry_run } => {
