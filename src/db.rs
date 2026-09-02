@@ -46,6 +46,38 @@ pub(crate) async fn is_ip_banned(
     .is_some())
 }
 
+pub(crate) async fn is_ip_challenge_verified(db: &DbPool, ip: IpAddr) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let ip = ip::to_db_bytes(ip).to_vec();
+    Ok(sqlx::query!(
+        "SELECT 1 AS found FROM challenge_verified_ips WHERE ip = ? AND expires_timestamp > NOW()",
+        ip
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .is_some())
+}
+
+pub(crate) async fn upsert_challenge_verified_ip(
+    db: &DbPool,
+    ip: IpAddr,
+    ttl_seconds: u64,
+) -> Result<(), sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let ip = ip::to_db_bytes(ip).to_vec();
+    sqlx::query!(
+        "INSERT INTO challenge_verified_ips (ip, verified_timestamp, expires_timestamp) \
+         VALUES (?, NOW(), NOW() + INTERVAL ? SECOND) \
+         ON DUPLICATE KEY UPDATE verified_timestamp = NOW(), expires_timestamp = NOW() + INTERVAL ? SECOND",
+        ip,
+        ttl_seconds,
+        ttl_seconds
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 pub(crate) async fn find_active_upload_by_hash(
     db: &DbPool,
     hash: &[u8],

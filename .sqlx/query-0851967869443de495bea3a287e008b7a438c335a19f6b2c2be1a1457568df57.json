@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO challenge_verified_ips (ip, verified_timestamp, expires_timestamp) VALUES (?, NOW(), NOW() + INTERVAL ? SECOND) ON DUPLICATE KEY UPDATE verified_timestamp = NOW(), expires_timestamp = NOW() + INTERVAL ? SECOND",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "0851967869443de495bea3a287e008b7a438c335a19f6b2c2be1a1457568df57"
+}

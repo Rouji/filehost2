@@ -1,0 +1,26 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT 1 AS found FROM challenge_verified_ips WHERE ip = ? AND expires_timestamp > NOW()",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "found",
+        "type_info": {
+          "type": "Long",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 1
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0e6df95911727158291705c9cfe2a6ca61b97211a50c48a009deedee12e5239b"
+}

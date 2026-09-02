@@ -13,15 +13,17 @@ use actix_web::{
     post, web,
 };
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::ban_cache::BanCache;
+use crate::challenge::ChallengeCache;
 use crate::clamd;
 use crate::db;
 use crate::db_pool::DbPool;
 use crate::model::BanType;
 use crate::nsfw::NsfwModel;
+use crate::pow::PowSecret;
 use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
 use crate::upload::{HashedTempFile, build_slug, calculate_expiry, extract_ip, uuid_to_path};
@@ -427,6 +429,71 @@ pub(crate) async fn index(
     }
 }
 
+#[get("/captcha")]
+pub(crate) async fn captcha_page(
+    rendered_templates: web::Data<RenderedTemplates>,
+) -> impl Responder {
+    HttpResponse::Ok()
+        .content_type(ContentType::html())
+        .body(rendered_templates.captcha.clone())
+}
+
+#[derive(Serialize)]
+struct ChallengeResponse {
+    token: String,
+    difficulty: u32,
+}
+
+#[get("/captcha/challenge")]
+pub(crate) async fn captcha_challenge(
+    pow: web::Data<PowSecret>,
+    settings: web::Data<Settings>,
+) -> impl Responder {
+    HttpResponse::Ok().json(ChallengeResponse {
+        token: pow.issue(settings.pow_challenge_ttl_seconds),
+        difficulty: settings.pow_difficulty,
+    })
+}
+
+#[derive(Deserialize)]
+pub(crate) struct VerifyRequest {
+    token: String,
+    nonce: String,
+}
+
+#[post("/captcha/verify")]
+pub(crate) async fn captcha_verify(
+    req: HttpRequest,
+    body: web::Json<VerifyRequest>,
+    db: web::Data<DbPool>,
+    settings: web::Data<Settings>,
+    pow: web::Data<PowSecret>,
+    challenge_cache: web::Data<ChallengeCache>,
+) -> impl Responder {
+    if !pow.verify(&body.token, &body.nonce, settings.pow_difficulty) {
+        return error_page(StatusCode::FORBIDDEN, "Challenge not solved.");
+    }
+
+    let Some(ip) = extract_ip(&req, settings.trust_xff) else {
+        return error_page(StatusCode::BAD_REQUEST, "Could not determine your IP.");
+    };
+
+    if let Err(e) = challenge_cache
+        .mark_ip_verified(db.get_ref(), ip, settings.challenge_verified_ttl_seconds)
+        .await
+    {
+        log::error!(
+            "failed to record challenge-verified IP {}: {e}",
+            format_ip(Some(ip))
+        );
+        return error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
+    }
+
+    HttpResponse::Ok()
+        .content_type(ContentType::plaintext())
+        .body("Verified -- you can retry your upload now.\n")
+}
+
 #[derive(MultipartForm)]
 pub(crate) struct UploadForm {
     #[multipart(rename = "file")]
@@ -444,10 +511,21 @@ fn escape_html(s: &str) -> String {
         .replace('\'', "&#039;")
 }
 
+// TODO: what's a sus upload
+fn is_upload_suspect(_ip: Option<std::net::IpAddr>, _user_agent: Option<&str>) -> bool {
+    false
+}
+
+fn challenge_required_message(settings: &Settings) -> String {
+    let base = settings.base_url.as_deref().unwrap_or("/");
+    format!("Please verify you're not a script before uploading: {base}captcha")
+}
+
 /// Run before the multipart body is even read.
 async fn enforce_upload_gates(
     db: &DbPool,
     ban_cache: &BanCache,
+    challenge_cache: &ChallengeCache,
     settings: &Settings,
     uploader_ip: Option<std::net::IpAddr>,
     user_agent: Option<&str>,
@@ -491,6 +569,18 @@ async fn enforce_upload_gates(
         .await?;
     }
 
+    if let Some(ip) = uploader_ip
+        && is_upload_suspect(uploader_ip, user_agent)
+    {
+        respond_to_check(
+            challenge_cache.is_ip_verified(db, ip).await.map(|v| !v),
+            uploader_ip,
+            "challenge required",
+            StatusCode::PRECONDITION_REQUIRED,
+            &challenge_required_message(settings),
+        )?;
+    }
+
     Ok(())
 }
 
@@ -523,6 +613,7 @@ pub(crate) async fn upload(
     db: web::Data<DbPool>,
     settings: web::Data<Settings>,
     ban_cache: web::Data<BanCache>,
+    challenge_cache: web::Data<ChallengeCache>,
     nsfw_model: web::Data<Option<Arc<NsfwModel>>>,
 ) -> impl Responder {
     let uploader_ip = extract_ip(&req, settings.trust_xff);
@@ -531,10 +622,11 @@ pub(crate) async fn upload(
         .get("User-Agent")
         .and_then(|v| v.to_str().ok());
 
-    // ban + rate-limit checks before the multipart body is read
+    // ban + rate-limit + challenge checks before the multipart body is read
     if let Err(resp) = enforce_upload_gates(
         db.get_ref(),
         ban_cache.get_ref(),
+        challenge_cache.get_ref(),
         &settings,
         uploader_ip,
         user_agent,

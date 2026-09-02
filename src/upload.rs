@@ -378,6 +378,9 @@ mod tests {
             dedup: true,
             db_max_connections: 20,
             ban_cache_ttl_seconds: 300,
+            pow_difficulty: 16,
+            pow_challenge_ttl_seconds: 300,
+            challenge_verified_ttl_seconds: 3600,
         }
     }
 

@@ -8,6 +8,7 @@ pub(crate) struct RenderedTemplates {
     pub(crate) index: Bytes,
     pub(crate) hupl: Bytes,
     pub(crate) sharex: Bytes,
+    pub(crate) captcha: Bytes,
 }
 
 pub(crate) fn render(settings: &Settings) -> RenderedTemplates {
@@ -32,5 +33,7 @@ pub(crate) fn render(settings: &Settings) -> RenderedTemplates {
             tt.render("sharex", &settings)
                 .expect("Failed to render sharex template"),
         ),
+        // no actual template vars in here, but lots of {} that would break templating
+        captcha: Bytes::from_static(include_bytes!("../templates/captcha.html")),
     }
 }

@@ -1,5 +1,6 @@
 mod admin;
 mod ban_cache;
+mod challenge;
 mod clamd;
 mod cli;
 mod db;
@@ -9,10 +10,12 @@ mod handlers;
 mod ip;
 mod model;
 mod nsfw;
+mod pow;
 mod rate_limit;
 mod settings;
 mod sync;
 mod templates;
+mod ttl_cache;
 mod upload;
 mod util;
 
@@ -82,6 +85,10 @@ async fn main() -> std::io::Result<()> {
     let ban_cache = web::Data::new(ban_cache::BanCache::new(std::time::Duration::from_secs(
         settings.ban_cache_ttl_seconds,
     )));
+    let challenge_cache = web::Data::new(challenge::ChallengeCache::new(
+        std::time::Duration::from_secs(settings.ban_cache_ttl_seconds),
+    ));
+    let pow_secret = web::Data::new(pow::PowSecret::generate());
 
     let nsfw_model = web::Data::new(match settings.nsfw_model_path() {
         Some(path) => match nsfw::NsfwModel::load(path) {
@@ -111,8 +118,11 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .service(handlers::index)
-            .service(handlers::get_file)
             .service(handlers::upload)
+            .service(handlers::captcha_page)
+            .service(handlers::captcha_challenge)
+            .service(handlers::captcha_verify)
+            .service(handlers::get_file)
             .service(
                 web::scope("/admin")
                     .wrap(
@@ -133,6 +143,8 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(rendered_templates.clone()))
             .app_data(throttle.clone())
             .app_data(ban_cache.clone())
+            .app_data(challenge_cache.clone())
+            .app_data(pow_secret.clone())
             .app_data(nsfw_model.clone())
             .app_data(
                 MultipartFormConfig::default()

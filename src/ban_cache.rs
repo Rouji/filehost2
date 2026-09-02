@@ -3,58 +3,12 @@ use std::future::Future;
 use std::hash::Hash;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use tokio::sync::RwLock;
+use std::time::Duration;
 
 use crate::db;
 use crate::db_pool::DbPool;
 use crate::model::BanType;
-
-struct KeyedTtlCache<K, V> {
-    ttl: Duration,
-    state: RwLock<std::collections::HashMap<K, (Instant, V)>>,
-}
-
-impl<K: Eq + Hash + Clone, V: Clone> KeyedTtlCache<K, V> {
-    fn new(ttl: Duration) -> Self {
-        Self {
-            ttl,
-            state: RwLock::new(std::collections::HashMap::new()),
-        }
-    }
-
-    async fn get_or_refresh<F, Fut>(&self, key: K, fetch: F) -> Result<V, sqlx::Error>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<V, sqlx::Error>>,
-    {
-        if let Some((fetched_at, value)) = self.state.read().await.get(&key)
-            && fetched_at.elapsed() < self.ttl
-        {
-            return Ok(value.clone());
-        }
-
-        let mut guard = self.state.write().await;
-        if let Some((fetched_at, value)) = guard.get(&key)
-            && fetched_at.elapsed() < self.ttl
-        {
-            return Ok(value.clone());
-        }
-
-        let fresh = fetch().await?;
-        guard.insert(key, (Instant::now(), fresh.clone()));
-        // opportunistic cleanup so IPs that stop showing up don't linger forever
-        let ttl = self.ttl;
-        guard.retain(|_, (fetched_at, _)| fetched_at.elapsed() < ttl);
-        Ok(fresh)
-    }
-
-    /// Forces the next `get_or_refresh` for any key to hit the DB.
-    async fn invalidate(&self) {
-        self.state.write().await.clear();
-    }
-}
+use crate::ttl_cache::KeyedTtlCache;
 
 /// `KeyedTtlCache` with `K = ()`; the `Arc` means a cache hit clones a pointer rather
 /// than the whole `HashSet`/`Vec`.

@@ -12,8 +12,10 @@ mod tests {
 
     use crate::admin;
     use crate::ban_cache::BanCache;
+    use crate::challenge::ChallengeCache;
     use crate::db_pool;
     use crate::handlers;
+    use crate::pow::PowSecret;
     use crate::settings::Settings;
     use crate::templates;
 
@@ -46,6 +48,9 @@ mod tests {
             dedup: true,
             db_max_connections: 20,
             ban_cache_ttl_seconds: 300,
+            pow_difficulty: 16,
+            pow_challenge_ttl_seconds: 300,
+            challenge_verified_ttl_seconds: 3600,
         }
     }
 
@@ -81,16 +86,24 @@ mod tests {
         let ban_cache = BanCache::new(std::time::Duration::from_secs(
             settings.ban_cache_ttl_seconds,
         ));
+        let challenge_cache = ChallengeCache::new(std::time::Duration::from_secs(
+            settings.ban_cache_ttl_seconds,
+        ));
         test::init_service(
             App::new()
                 .service(handlers::index)
                 .service(handlers::upload)
+                .service(handlers::captcha_page)
+                .service(handlers::captcha_challenge)
+                .service(handlers::captcha_verify)
                 .service(handlers::get_file)
                 .service(web::scope("/admin").configure(admin::configure))
                 .app_data(web::Data::new(db_pool))
                 .app_data(web::Data::new(settings.clone()))
                 .app_data(web::Data::new(tmpl))
                 .app_data(web::Data::new(ban_cache))
+                .app_data(web::Data::new(challenge_cache))
+                .app_data(web::Data::new(PowSecret::generate()))
                 .app_data(web::Data::new(
                     None::<std::sync::Arc<crate::nsfw::NsfwModel>>,
                 ))
@@ -130,6 +143,18 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), 404);
+    }
+
+    /// `get_file`'s `/{slug}` catch-all must be registered after `/captcha`,
+    /// or it silently swallows the route and this 404s as "File not found"
+    /// instead of serving the challenge page.
+    #[sqlx::test]
+    async fn captcha_page_is_not_shadowed_by_the_slug_route(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool).await;
+        let resp =
+            test::call_service(&app, test::TestRequest::get().uri("/captcha").to_request()).await;
+        assert_eq!(resp.status(), 200);
+        assert!(hdr(&resp, "content-type").contains("text/html"));
     }
 
     static BOUNDARY: &str = "----TestBoundary";

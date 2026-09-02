@@ -59,6 +59,13 @@ pub(crate) struct Settings {
 
     #[env_settings(default = 300)]
     pub ban_cache_ttl_seconds: u64, // how long banned IP/extension/mime/hash/UA lists are cached in memory
+
+    #[env_settings(default = 20)]
+    pub pow_difficulty: u32, // leading zero bits required to solve a challenge
+    #[env_settings(default = 300)]
+    pub pow_challenge_ttl_seconds: u64, // how long a fetched challenge stays solvable
+    #[env_settings(default = 86400)] // 24h
+    pub challenge_verified_ttl_seconds: u64, // how long a solved challenge exempts an IP from re-challenging
 }
 
 impl Settings {

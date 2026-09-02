@@ -40,6 +40,7 @@ percent-encoding = "2.3.2"
 deadpool = { version = "0.13.0", features = ["managed", "rt_tokio_1"] }
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 regex = "1"
+sha2 = "0.10"
 actix-cors = "0.7.1"
 tract-onnx = "0.23.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
