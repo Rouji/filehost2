@@ -120,6 +120,7 @@ async fn main() -> std::io::Result<()> {
             .service(handlers::index)
             .service(handlers::upload)
             .service(handlers::captcha_page)
+            .service(handlers::captcha_js)
             .service(handlers::captcha_challenge)
             .service(handlers::captcha_verify)
             .service(handlers::get_file)

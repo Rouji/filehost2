@@ -438,6 +438,13 @@ pub(crate) async fn captcha_page(
         .body(rendered_templates.captcha.clone())
 }
 
+#[get("/captcha.js")]
+pub(crate) async fn captcha_js(rendered_templates: web::Data<RenderedTemplates>) -> impl Responder {
+    HttpResponse::Ok()
+        .content_type(mime::TEXT_JAVASCRIPT)
+        .body(rendered_templates.captcha_js.clone())
+}
+
 #[derive(Serialize)]
 struct ChallengeResponse {
     token: String,

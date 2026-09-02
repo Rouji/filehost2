@@ -9,6 +9,7 @@ pub(crate) struct RenderedTemplates {
     pub(crate) hupl: Bytes,
     pub(crate) sharex: Bytes,
     pub(crate) captcha: Bytes,
+    pub(crate) captcha_js: Bytes,
 }
 
 pub(crate) fn render(settings: &Settings) -> RenderedTemplates {
@@ -35,5 +36,6 @@ pub(crate) fn render(settings: &Settings) -> RenderedTemplates {
         ),
         // no actual template vars in here, but lots of {} that would break templating
         captcha: Bytes::from_static(include_bytes!("../templates/captcha.html")),
+        captcha_js: Bytes::from_static(include_bytes!("../templates/captcha.js")),
     }
 }

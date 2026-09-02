@@ -94,6 +94,7 @@ mod tests {
                 .service(handlers::index)
                 .service(handlers::upload)
                 .service(handlers::captcha_page)
+                .service(handlers::captcha_js)
                 .service(handlers::captcha_challenge)
                 .service(handlers::captcha_verify)
                 .service(handlers::get_file)
@@ -155,6 +156,20 @@ mod tests {
             test::call_service(&app, test::TestRequest::get().uri("/captcha").to_request()).await;
         assert_eq!(resp.status(), 200);
         assert!(hdr(&resp, "content-type").contains("text/html"));
+    }
+
+    /// Same shadowing hazard as above, for the external script the challenge
+    /// page loads instead of an inline `<script>` (which a strict CSP blocks).
+    #[sqlx::test]
+    async fn captcha_js_is_not_shadowed_by_the_slug_route(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool).await;
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/captcha.js").to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 200);
+        assert!(hdr(&resp, "content-type").contains("javascript"));
     }
 
     static BOUNDARY: &str = "----TestBoundary";
