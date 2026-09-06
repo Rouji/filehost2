@@ -276,18 +276,13 @@ async fn process_file(
 
     let internal_err = || error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
 
-    if let Some(ext) = Path::new(&original_name)
-        .extension()
-        .and_then(|e| e.to_str())
-    {
-        check_not_banned(
-            ban_cache.is_extension_banned(db, ext),
-            uploader_ip,
-            "banned extension",
-            "File type not allowed.",
-        )
-        .await?;
-    }
+    check_not_banned(
+        ban_cache.is_filename_banned(db, &original_name),
+        uploader_ip,
+        "banned filename",
+        "File type not allowed.",
+    )
+    .await?;
 
     let (content_type_str, ct_subtype) = determine_content_type(&file, &original_name);
 

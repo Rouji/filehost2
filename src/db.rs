@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::db_pool::{self, DbPool};
 use crate::ip;
 use crate::model::{
-    BanType, BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpRange, BannedUserAgent,
+    BanType, BannedFileHash, BannedFileMime, BannedFilename, BannedIpRange, BannedUserAgent,
     Blacklist, Upload,
 };
 use crate::settings::Settings;
@@ -680,15 +680,15 @@ delete_by_id_bool!(
     "DELETE FROM banned_ip_ranges WHERE id = ?"
 );
 
-ban_set_crud!(
-    list_banned_extensions,
-    insert_banned_extension,
-    delete_banned_extension,
-    BannedFileExtension,
+ban_set_crud_with_reason!(
+    list_banned_filenames,
+    insert_banned_filename,
+    delete_banned_filename,
+    BannedFilename,
     &str,
-    list = "SELECT extension FROM banned_file_extensions ORDER BY extension",
-    insert = "INSERT IGNORE INTO banned_file_extensions (extension) VALUES (LOWER(?))",
-    delete = "DELETE FROM banned_file_extensions WHERE extension = LOWER(?)",
+    list = "SELECT pattern, reason FROM banned_filenames ORDER BY pattern",
+    insert = "INSERT IGNORE INTO banned_filenames (pattern, reason) VALUES (?, ?)",
+    delete = "DELETE FROM banned_filenames WHERE pattern = ?",
 );
 
 ban_set_crud!(

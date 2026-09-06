@@ -58,7 +58,7 @@ pub(crate) struct Settings {
     pub dedup: bool, // dedup by file hash
 
     #[env_settings(default = 300)]
-    pub ban_cache_ttl_seconds: u64, // how long banned IP/extension/mime/hash/UA lists are cached in memory
+    pub ban_cache_ttl_seconds: u64, // how long banned IP/filename/mime/hash/UA lists are cached in memory
 
     #[env_settings(default = 20)]
     pub pow_difficulty: u32, // leading zero bits required to solve a challenge

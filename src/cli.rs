@@ -48,7 +48,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: BlacklistCommand,
     },
-    /// manage individual bans (IPs, extensions, mimes, hashes, user agents)
+    /// manage individual bans (IPs, filenames, mimes, hashes, user agents)
     Ban {
         #[command(subcommand)]
         target: BanTarget,
@@ -61,9 +61,9 @@ pub(crate) enum BanTarget {
         #[command(subcommand)]
         command: BanIpCommand,
     },
-    Extension {
+    Filename {
         #[command(subcommand)]
-        command: BanExtensionCommand,
+        command: BanFilenameCommand,
     },
     Mime {
         #[command(subcommand)]
@@ -100,10 +100,17 @@ pub(crate) enum BanIpCommand {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum BanExtensionCommand {
+pub(crate) enum BanFilenameCommand {
     List,
-    Add { extension: String },
-    Remove { extension: String },
+    Add {
+        /// regex matched against the full uploaded filename
+        pattern: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    Remove {
+        pattern: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -293,7 +300,7 @@ async fn remove_blacklist(db: &DbPool, id: i32) -> Result<()> {
 pub(crate) async fn ban(db: &DbPool, target: BanTarget) -> Result<()> {
     match target {
         BanTarget::Ip { command } => ban_ip(db, command).await,
-        BanTarget::Extension { command } => ban_extension(db, command).await,
+        BanTarget::Filename { command } => ban_filename(db, command).await,
         BanTarget::Mime { command } => ban_mime(db, command).await,
         BanTarget::Hash { command } => ban_hash(db, command).await,
         BanTarget::UserAgent { command } => ban_user_agent(db, command).await,
@@ -372,27 +379,31 @@ async fn ban_ip(db: &DbPool, command: BanIpCommand) -> Result<()> {
     }
 }
 
-async fn ban_extension(db: &DbPool, command: BanExtensionCommand) -> Result<()> {
+async fn ban_filename(db: &DbPool, command: BanFilenameCommand) -> Result<()> {
     match command {
-        BanExtensionCommand::List => {
-            let entries = db::list_banned_extensions(db).await?;
-            print_list_or_empty(&entries, "No banned extensions.", |entry| {
-                println!("{}", entry.extension);
+        BanFilenameCommand::List => {
+            let entries = db::list_banned_filenames(db).await?;
+            print_list_or_empty(&entries, "No banned filename patterns.", |entry| {
+                let reason = entry.reason.as_deref().unwrap_or("-");
+                println!("{}  reason={}", entry.pattern, reason);
             });
             Ok(())
         }
-        BanExtensionCommand::Add { extension } => {
-            db::insert_banned_extension(db, &extension).await?;
-            log::info!("ban: banned extension {extension}");
-            println!("Banned extension {extension}.");
+        BanFilenameCommand::Add { pattern, reason } => {
+            if let Err(e) = regex::Regex::new(&pattern) {
+                anyhow::bail!("invalid regex {pattern:?}: {e}");
+            }
+            db::insert_banned_filename(db, &pattern, reason.as_deref()).await?;
+            log::info!("ban: banned filename pattern {pattern:?}");
+            println!("Banned filename pattern {pattern:?}.");
             Ok(())
         }
-        BanExtensionCommand::Remove { extension } => removal_result(
-            db::delete_banned_extension(db, &extension).await?,
+        BanFilenameCommand::Remove { pattern } => removal_result(
+            db::delete_banned_filename(db, &pattern).await?,
             RemovalMessages {
-                log: format!("ban: removed banned extension {extension}"),
-                ok: format!("Removed ban on extension {extension}."),
-                err: format!("No ban on extension {extension}."),
+                log: format!("ban: removed banned filename pattern {pattern:?}"),
+                ok: format!("Removed ban on filename pattern {pattern:?}."),
+                err: format!("No ban on filename pattern {pattern:?}."),
             },
         ),
     }

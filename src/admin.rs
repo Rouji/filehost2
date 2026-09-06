@@ -14,8 +14,7 @@ use crate::db;
 use crate::db_pool::DbPool;
 use crate::ip;
 use crate::model::{
-    BanType, BannedFileExtension, BannedFileHash, BannedFileMime, BannedIpRange, BannedUserAgent,
-    Upload,
+    BanType, BannedFileHash, BannedFileMime, BannedFilename, BannedIpRange, BannedUserAgent, Upload,
 };
 use crate::settings::Settings;
 use crate::util::{format_ts, hex_decode, hex_encode, parse_rfc3339};
@@ -33,9 +32,9 @@ pub(crate) fn configure(cfg: &mut web::ServiceConfig) {
         .service(list_banned_ips)
         .service(add_banned_ip)
         .service(remove_banned_ip)
-        .service(list_banned_extensions)
-        .service(add_banned_extension)
-        .service(remove_banned_extension)
+        .service(list_banned_filenames)
+        .service(add_banned_filename)
+        .service(remove_banned_filename)
         .service(list_banned_mimes)
         .service(add_banned_mime)
         .service(remove_banned_mime)
@@ -561,53 +560,72 @@ pub(crate) async fn remove_banned_ip(
     .await
 }
 
-#[derive(Deserialize)]
-pub(crate) struct ExtensionCreate {
-    extension: String,
+#[derive(Serialize)]
+struct BannedFilenameDto {
+    pattern: String,
+    reason: Option<String>,
 }
 
-#[get("/bans/extensions")]
-pub(crate) async fn list_banned_extensions(
+impl From<BannedFilename> for BannedFilenameDto {
+    fn from(b: BannedFilename) -> Self {
+        BannedFilenameDto {
+            pattern: b.pattern,
+            reason: b.reason,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct FilenameCreate {
+    pattern: String,
+    reason: Option<String>,
+}
+
+#[get("/bans/filenames")]
+pub(crate) async fn list_banned_filenames(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
 ) -> impl Responder {
     respond_list(
-        db::list_banned_extensions(db.get_ref()).await,
-        |r: BannedFileExtension| r.extension,
-        "list_banned_extensions",
+        db::list_banned_filenames(db.get_ref()).await,
+        BannedFilenameDto::from,
+        "list_banned_filenames",
     )
 }
 
-#[post("/bans/extensions")]
-pub(crate) async fn add_banned_extension(
+#[post("/bans/filenames")]
+pub(crate) async fn add_banned_filename(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
     ban_cache: web::Data<BanCache>,
-    body: web::Json<ExtensionCreate>,
+    body: web::Json<FilenameCreate>,
 ) -> impl Responder {
-    let ext = body.extension.to_lowercase();
+    if let Err(e) = regex::Regex::new(&body.pattern) {
+        return json_error(StatusCode::BAD_REQUEST, &format!("Invalid regex: {e}"));
+    }
     respond_created(
-        db::insert_banned_extension(db.get_ref(), &ext).await,
-        || ban_cache.invalidate_extensions(),
-        || format!("admin: banned extension {ext}"),
-        "insert_banned_extension",
+        db::insert_banned_filename(db.get_ref(), &body.pattern, body.reason.as_deref()).await,
+        || ban_cache.invalidate_filenames(),
+        || format!("admin: banned filename pattern {:?}", body.pattern),
+        "insert_banned_filename",
     )
     .await
 }
 
-#[delete("/bans/extensions/{extension}")]
-pub(crate) async fn remove_banned_extension(
+// Filename patterns can contain '/', hence the greedy path match.
+#[delete("/bans/filenames/{pattern:.*}")]
+pub(crate) async fn remove_banned_filename(
     _auth: AdminAuth,
     db: web::Data<DbPool>,
     ban_cache: web::Data<BanCache>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
-    let ext = path.into_inner().0.to_lowercase();
+    let pattern = path.into_inner().0;
     respond_removed(
-        db::delete_banned_extension(db.get_ref(), &ext).await,
-        || ban_cache.invalidate_extensions(),
-        || format!("admin: removed banned extension {ext}"),
-        "delete_banned_extension",
+        db::delete_banned_filename(db.get_ref(), &pattern).await,
+        || ban_cache.invalidate_filenames(),
+        || format!("admin: removed banned filename pattern {pattern:?}"),
+        "delete_banned_filename",
     )
     .await
 }

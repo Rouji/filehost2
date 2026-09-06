@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM banned_filenames WHERE pattern = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "c9ee9b4507fae05445637c5e0501531a6b2d70ecd1b259463ea3d0bb59102262"
+}

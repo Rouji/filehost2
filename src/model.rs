@@ -73,8 +73,9 @@ pub(crate) struct BannedFileHash {
 }
 
 #[derive(Debug, sqlx::FromRow)]
-pub(crate) struct BannedFileExtension {
-    pub extension: String,
+pub(crate) struct BannedFilename {
+    pub pattern: String,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]

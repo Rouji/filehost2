@@ -5,10 +5,22 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use regex::{Regex, RegexBuilder};
+
 use crate::db;
 use crate::db_pool::DbPool;
 use crate::model::BanType;
 use crate::ttl_cache::KeyedTtlCache;
+
+/// A pattern an admin entered by hand may not compile; log and drop it rather than
+/// poisoning the whole cached list over one bad entry.
+fn compile_filename_pattern(pattern: &str) -> Option<Regex> {
+    RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+        .inspect_err(|e| log::warn!("banned filename pattern {pattern:?} failed to compile: {e}"))
+        .ok()
+}
 
 /// `KeyedTtlCache` with `K = ()`; the `Arc` means a cache hit clones a pointer rather
 /// than the whole `HashSet`/`Vec`.
@@ -35,7 +47,7 @@ where
 
 pub(crate) struct BanCache {
     ip_bans: KeyedTtlCache<(IpAddr, BanType), bool>,
-    extensions: TtlCell<HashSet<String>>,
+    filename_patterns: TtlCell<Vec<Regex>>,
     mimes: TtlCell<HashSet<String>>,
     hashes: TtlCell<HashSet<Vec<u8>>>,
     user_agent_patterns: TtlCell<Vec<String>>,
@@ -45,7 +57,7 @@ impl BanCache {
     pub(crate) fn new(ttl: Duration) -> Self {
         Self {
             ip_bans: KeyedTtlCache::new(ttl),
-            extensions: TtlCell::new(ttl),
+            filename_patterns: TtlCell::new(ttl),
             mimes: TtlCell::new(ttl),
             hashes: TtlCell::new(ttl),
             user_agent_patterns: TtlCell::new(ttl),
@@ -63,24 +75,23 @@ impl BanCache {
             .await
     }
 
-    pub(crate) async fn is_extension_banned(
+    pub(crate) async fn is_filename_banned(
         &self,
         db: &DbPool,
-        ext: &str,
+        filename: &str,
     ) -> Result<bool, sqlx::Error> {
-        let ext_lower = ext.to_lowercase();
-        is_in_cached_set(
-            &self.extensions,
-            || async {
-                Ok(db::list_banned_extensions(db)
-                    .await?
-                    .into_iter()
-                    .map(|e| e.extension)
-                    .collect())
-            },
-            &ext_lower,
-        )
-        .await
+        let patterns = self
+            .filename_patterns
+            .get_or_refresh((), || async {
+                let filenames = db::list_banned_filenames(db).await?;
+                let compiled = filenames
+                    .iter()
+                    .filter_map(|f| compile_filename_pattern(&f.pattern))
+                    .collect();
+                Ok(Arc::new(compiled))
+            })
+            .await?;
+        Ok(patterns.iter().any(|re| re.is_match(filename)))
     }
 
     pub(crate) async fn is_mime_banned(
@@ -147,8 +158,8 @@ impl BanCache {
         self.ip_bans.invalidate().await;
     }
 
-    pub(crate) async fn invalidate_extensions(&self) {
-        self.extensions.invalidate().await;
+    pub(crate) async fn invalidate_filenames(&self) {
+        self.filename_patterns.invalidate().await;
     }
 
     pub(crate) async fn invalidate_mimes(&self) {

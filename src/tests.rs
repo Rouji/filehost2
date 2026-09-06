@@ -1187,31 +1187,42 @@ mod tests {
     }
 
     #[derive(Serialize)]
-    struct ExtensionBody<'a> {
-        extension: &'a str,
+    struct FilenameBody<'a> {
+        pattern: &'a str,
+        reason: Option<&'a str>,
+    }
+
+    #[derive(Deserialize)]
+    struct FilenameResponse {
+        pattern: String,
     }
 
     #[sqlx::test]
-    async fn admin_bans_extension_add_list_delete_and_enforced(pool: MySqlPool) {
+    async fn admin_bans_filename_add_list_delete_and_enforced(pool: MySqlPool) {
         let app = full_app(admin_settings(), pool).await;
 
         let resp = admin_post(
             &app,
-            "/admin/bans/extensions",
-            &ExtensionBody { extension: "exe" },
+            "/admin/bans/filenames",
+            &FilenameBody {
+                pattern: r"\.exe$",
+                reason: Some("executables"),
+            },
         )
         .await;
         assert_eq!(resp.status(), 201);
 
-        let extensions: Vec<String> = admin_list(&app, "/admin/bans/extensions").await;
-        assert!(extensions.contains(&"exe".to_string()));
+        let patterns: Vec<FilenameResponse> = admin_list(&app, "/admin/bans/filenames").await;
+        assert!(patterns.iter().any(|p| p.pattern == r"\.exe$"));
 
-        // Banned extension is rejected at upload time.
+        // Banned filename pattern is rejected at upload time.
         let req = multipart_request(&multipart_body("test.exe", "MZ"));
         let resp = test::call_service(&app, req).await;
         assert_eq!(resp.status(), 403);
 
-        let resp = admin_delete(&app, "/admin/bans/extensions/exe").await;
+        let encoded_pattern =
+            percent_encoding::utf8_percent_encode(r"\.exe$", percent_encoding::NON_ALPHANUMERIC);
+        let resp = admin_delete(&app, &format!("/admin/bans/filenames/{encoded_pattern}")).await;
         assert_eq!(resp.status(), 204);
 
         // Upload succeeds again once the ban is lifted.
