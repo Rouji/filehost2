@@ -41,6 +41,7 @@ mod tests {
             admin_token: None,
             clamd_addr: None,
             nsfw_model_path: None,
+            nsfw_threshold: 0.9,
             max_uploads_per_day: None,
             max_bytes_per_day: None,
             max_upload_bytes_per_sec: None,

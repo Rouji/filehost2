@@ -198,7 +198,6 @@ impl From<Upload> for UploadDto {
 }
 
 const TOP_UPLOADERS_LIMIT: i64 = 10;
-const NSFW_TOP_THRESHOLD: f32 = 0.85;
 
 #[derive(Serialize)]
 struct TopUploaderDto {
@@ -226,7 +225,11 @@ struct StatsDto {
 }
 
 #[get("/stats")]
-pub(crate) async fn stats(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Responder {
+pub(crate) async fn stats(
+    _auth: AdminAuth,
+    db: web::Data<DbPool>,
+    settings: web::Data<Settings>,
+) -> impl Responder {
     let stats = match db::global_stats(db.get_ref()).await {
         Ok(s) => s,
         Err(e) => return internal_err(e, "global_stats"),
@@ -235,16 +238,13 @@ pub(crate) async fn stats(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Respo
         Ok(rows) => rows,
         Err(e) => return internal_err(e, "top_uploader_ips"),
     };
-    let top_nsfw_uploaders = match db::top_nsfw_uploader_ips(
-        db.get_ref(),
-        NSFW_TOP_THRESHOLD,
-        TOP_UPLOADERS_LIMIT,
-    )
-    .await
-    {
-        Ok(rows) => rows,
-        Err(e) => return internal_err(e, "top_nsfw_uploader_ips"),
-    };
+    let top_nsfw_uploaders =
+        match db::top_nsfw_uploader_ips(db.get_ref(), settings.nsfw_threshold, TOP_UPLOADERS_LIMIT)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => return internal_err(e, "top_nsfw_uploader_ips"),
+        };
 
     HttpResponse::Ok().json(StatsDto {
         active_uploads: stats.active_uploads,

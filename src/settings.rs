@@ -48,6 +48,8 @@ pub(crate) struct Settings {
     pub clamd_addr: Option<String>,
 
     pub nsfw_model_path: Option<String>, //path to NSFW detection model; preferrably OwenElliott/image-safety-classifier-xs
+    #[env_settings(default = 0.9)]
+    pub nsfw_threshold: f32,
 
     pub max_uploads_per_day: Option<usize>,
     pub max_bytes_per_day: Option<u64>,
