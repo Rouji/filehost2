@@ -637,6 +637,73 @@ mod tests {
         );
     }
 
+    /// Uploads once from `ip`, then marks that upload as NSFW, `age_days` old.
+    async fn seed_nsfw_upload(
+        app: &impl actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error>,
+        pool: &MySqlPool,
+        ip: &str,
+        age_days: u32,
+    ) {
+        let req = upload_req(
+            &multipart_body("a.txt", "hello"),
+            &[("X-Forwarded-For", ip)],
+        );
+        let resp = test::call_service(app, req).await;
+        assert!(resp.status().is_success(), "seed upload should succeed");
+        sqlx::query(
+            "UPDATE uploads SET nsfw_score = 0.99, upload_timestamp = NOW() - INTERVAL ? DAY \
+             WHERE uploader_ip = ?",
+        )
+        .bind(age_days)
+        .bind(ip_bytes(ip))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn recent_nsfw_uploader_must_solve_challenge(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool.clone()).await;
+        seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
+
+        let req = upload_req(
+            &multipart_body("b.txt", "hello"),
+            &[("X-Forwarded-For", "198.51.100.7")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 428);
+
+        let req = upload_req(
+            &multipart_body("c.txt", "hello"),
+            &[("X-Forwarded-For", "198.51.100.8")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "other IPs should not be affected"
+        );
+    }
+
+    #[sqlx::test]
+    async fn old_nsfw_upload_does_not_make_ip_suspect(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool.clone()).await;
+        seed_nsfw_upload(&app, &pool, "198.51.100.7", 8).await;
+
+        let req = upload_req(
+            &multipart_body("b.txt", "hello"),
+            &[("X-Forwarded-For", "198.51.100.7")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "NSFW upload older than 7 days should be ignored"
+        );
+    }
+
     async fn ban_user_agent(pool: &MySqlPool, pattern: &str) {
         sqlx::query("INSERT INTO banned_user_agents (pattern, banned_timestamp) VALUES (?, NOW())")
             .bind(pattern)

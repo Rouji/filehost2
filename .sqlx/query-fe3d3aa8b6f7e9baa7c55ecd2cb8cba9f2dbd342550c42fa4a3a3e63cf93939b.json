@@ -1,0 +1,26 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT EXISTS(SELECT 1 FROM uploads WHERE uploader_ip BETWEEN ? AND ? AND upload_timestamp > NOW() - INTERVAL 7 DAY AND nsfw_score >= ?)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "EXISTS(SELECT 1 FROM uploads WHERE uploader_ip BETWEEN ? AND ? AND upload_timestamp > NOW() - INTERVAL 7 DAY AND nsfw_score >= ?)",
+        "type_info": {
+          "type": "Long",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 1
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fe3d3aa8b6f7e9baa7c55ecd2cb8cba9f2dbd342550c42fa4a3a3e63cf93939b"
+}

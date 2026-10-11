@@ -292,6 +292,29 @@ pub(crate) async fn uploads_count_last_day(db: &DbPool, ip: IpAddr) -> Result<i6
     Ok(count)
 }
 
+pub(crate) async fn has_nsfw_upload_last_week(
+    db: &DbPool,
+    ip: IpAddr,
+    min_score: f32,
+) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let (start, end) = ip::quota_range(ip);
+    let start = ip::to_db_bytes(start).to_vec();
+    let end = ip::to_db_bytes(end).to_vec();
+    let found = sqlx::query_scalar!(
+        "SELECT EXISTS(SELECT 1 FROM uploads \
+         WHERE uploader_ip BETWEEN ? AND ? \
+         AND upload_timestamp > NOW() - INTERVAL 7 DAY \
+         AND nsfw_score >= ?)",
+        start,
+        end,
+        min_score
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(found != 0)
+}
+
 pub(crate) async fn uploads_bytes_last_day(db: &DbPool, ip: IpAddr) -> Result<i64, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let (start, end) = ip::quota_range(ip);

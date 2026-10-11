@@ -513,9 +513,14 @@ fn escape_html(s: &str) -> String {
         .replace('\'', "&#039;")
 }
 
-// TODO: what's a sus upload
-fn is_upload_suspect(_ip: Option<std::net::IpAddr>, _user_agent: Option<&str>) -> bool {
-    false
+/// An IP is suspect if it uploaded something the NSFW
+/// scanner flagged within the last 7 days.
+async fn is_upload_suspect(
+    db: &DbPool,
+    settings: &Settings,
+    ip: std::net::IpAddr,
+) -> Result<bool, sqlx::Error> {
+    db::has_nsfw_upload_last_week(db, ip, settings.nsfw_threshold).await
 }
 
 fn challenge_required_message(settings: &Settings) -> String {
@@ -571,11 +576,15 @@ async fn enforce_upload_gates(
         .await?;
     }
 
-    if let Some(ip) = uploader_ip
-        && is_upload_suspect(uploader_ip, user_agent)
-    {
+    if let Some(ip) = uploader_ip {
+        // verification is cached, so check it first to skip the suspect query
+        let needs_challenge = match challenge_cache.is_ip_verified(db, ip).await {
+            Ok(true) => Ok(false),
+            Ok(false) => is_upload_suspect(db, settings, ip).await,
+            Err(e) => Err(e),
+        };
         respond_to_check(
-            challenge_cache.is_ip_verified(db, ip).await.map(|v| !v),
+            needs_challenge,
             uploader_ip,
             "challenge required",
             StatusCode::PRECONDITION_REQUIRED,
