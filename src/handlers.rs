@@ -502,7 +502,6 @@ pub(crate) struct UploadForm {
     files: Vec<HashedTempFile>,
     id_length: Option<Text<usize>>,
     keep_name: Option<Text<String>>,
-    formatted: Option<Text<String>>,
 }
 
 fn escape_html(s: &str) -> String {
@@ -523,9 +522,23 @@ async fn is_upload_suspect(
     db::has_nsfw_upload_last_week(db, ip, settings.nsfw_threshold).await
 }
 
-fn challenge_required_message(settings: &Settings) -> String {
+fn challenge_required_response(settings: &Settings, formatted: bool) -> HttpResponse {
     let base = settings.base_url.as_deref().unwrap_or("/");
-    format!("Please verify you're not a script before uploading: {base}captcha")
+    let url = format!("{base}captcha");
+    let message = "Please verify you're not a script before uploading:";
+    if formatted {
+        HttpResponse::PreconditionRequired()
+            .content_type(ContentType::html())
+            .body(format!(
+                "<pre>{message} <a href=\"{url}\">{}</a></pre>\n",
+                escape_html(&url)
+            ))
+    } else {
+        error_page(
+            StatusCode::PRECONDITION_REQUIRED,
+            &format!("{message} {url}"),
+        )
+    }
 }
 
 /// Run before the multipart body is even read.
@@ -536,6 +549,7 @@ async fn enforce_upload_gates(
     settings: &Settings,
     uploader_ip: Option<std::net::IpAddr>,
     user_agent: Option<&str>,
+    formatted: bool,
 ) -> Result<(), HttpResponse> {
     if let Some(ip) = uploader_ip {
         check_not_banned(
@@ -583,13 +597,23 @@ async fn enforce_upload_gates(
             Ok(false) => is_upload_suspect(db, settings, ip).await,
             Err(e) => Err(e),
         };
-        respond_to_check(
-            needs_challenge,
-            uploader_ip,
-            "challenge required",
-            StatusCode::PRECONDITION_REQUIRED,
-            &challenge_required_message(settings),
-        )?;
+        match needs_challenge {
+            Ok(true) => {
+                log::info!(
+                    "upload rejected: challenge required (ip={})",
+                    format_ip(uploader_ip)
+                );
+                return Err(challenge_required_response(settings, formatted));
+            }
+            Ok(false) => {}
+            Err(e) => {
+                log::error!("challenge required check failed: {e}");
+                return Err(error_page(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Something went wrong.",
+                ));
+            }
+        }
     }
 
     Ok(())
@@ -617,6 +641,15 @@ fn format_links(links: &[String], formatted: bool) -> HttpResponse {
     }
 }
 
+/// Browsers submitting the web form send `Accept: text/html`; curl, ShareX
+/// and Hupl don't. Header-based so it's known before the body is read.
+fn wants_html(req: &HttpRequest) -> bool {
+    req.headers()
+        .get("Accept")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("text/html"))
+}
+
 #[post("/")]
 pub(crate) async fn upload(
     req: HttpRequest,
@@ -632,6 +665,7 @@ pub(crate) async fn upload(
         .headers()
         .get("User-Agent")
         .and_then(|v| v.to_str().ok());
+    let formatted = wants_html(&req);
 
     // ban + rate-limit + challenge checks before the multipart body is read
     if let Err(resp) = enforce_upload_gates(
@@ -641,6 +675,7 @@ pub(crate) async fn upload(
         &settings,
         uploader_ip,
         user_agent,
+        formatted,
     )
     .await
     {
@@ -666,7 +701,6 @@ pub(crate) async fn upload(
         settings.min_id_length
     };
     let keep_name = form.keep_name.is_some();
-    let formatted = form.formatted.is_some();
 
     let mut links = Vec::new();
     for file in form.files {

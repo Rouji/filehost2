@@ -424,15 +424,10 @@ mod tests {
     async fn formatted_upload_returns_html_link(pool: MySqlPool) {
         let app = full_app(test_settings(), pool).await;
 
-        let content = format!(
-            "--{BOUNDARY}\r\n\
-             Content-Disposition: form-data; name=\"formatted\"\r\n\
-             \r\n\
-             true\r\n\
-             {}",
-            multipart_body("test.txt", "hello")
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")],
         );
-        let req = multipart_request(&content);
         let resp = test::call_service(&app, req).await;
         assert!(
             resp.status().is_success(),
@@ -683,6 +678,36 @@ mod tests {
         assert!(
             resp.status().is_success(),
             "other IPs should not be affected"
+        );
+    }
+
+    #[sqlx::test]
+    async fn challenge_link_is_clickable_for_web_form(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool.clone()).await;
+        seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
+
+        let req = test::TestRequest::post()
+            .uri("/")
+            .insert_header(("Accept", "text/html,application/xhtml+xml,*/*;q=0.8"))
+            .insert_header((
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            ))
+            .insert_header(("X-Forwarded-For", "198.51.100.7"))
+            .set_payload(format!(
+                "{}--{BOUNDARY}--\r\n",
+                multipart_body("b.txt", "hello")
+            ))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 428);
+        assert!(hdr(&resp, "content-type").contains("text/html"));
+        let body = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+        assert!(
+            body.contains("<a href=\"http://localhost:8080/captcha\">"),
+            "expected captcha link, got: {body}"
         );
     }
 
