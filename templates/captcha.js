@@ -18,6 +18,19 @@ async function sha256(text) {
     return new Uint8Array(digest);
 }
 
+// Where to go after verifying: `?next=<slug>`, resolved against this page so a
+// base_url path prefix is respected. null if missing or off-origin.
+function nextUrl() {
+    const next = new URLSearchParams(window.location.search).get('next');
+    if (!next) return null;
+    try {
+        const url = new URL(next, new URL('.', window.location.href));
+        return url.origin === window.location.origin ? url : null;
+    } catch {
+        return null;
+    }
+}
+
 async function solve() {
     const status = document.getElementById('status');
     const bar = document.getElementById('bar');
@@ -46,13 +59,21 @@ async function solve() {
         body: JSON.stringify({ token, nonce: String(nonce) }),
     });
 
-    status.textContent = res.ok
-        ? 'Verified. You can retry your upload now.'
-        : 'Verification failed, please reload this page.';
-
-    if (res.ok) {
-        setTimeout(function() { window.location = '/'; }, 2000);
+    if (!res.ok) {
+        status.textContent = 'Verification failed, please reload this page.';
+        return;
     }
+
+    // straight back to the requested file; replace() keeps the captcha out of history
+    const next = nextUrl();
+    if (next) {
+        status.textContent = 'Verified. Redirecting...';
+        window.location.replace(next);
+        return;
+    }
+
+    status.textContent = 'Verified. You can retry your upload now.';
+    setTimeout(function() { window.location = new URL('.', window.location.href); }, 2000);
 }
 
 solve().catch((e) => {

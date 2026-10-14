@@ -632,28 +632,109 @@ mod tests {
         );
     }
 
-    /// Uploads once from `ip`, then marks that upload as NSFW, `age_days` old.
+    /// Seeds an NSFW upload by `ip`, `age_days` old, and returns its slug. Uploads from
+    /// a throwaway IP and reassigns it, so `ip`'s "not suspect" answer doesn't get cached
+    /// by the upload gate (there's no NSFW model in tests to mark it suspect afterwards).
     async fn seed_nsfw_upload(
         app: &impl actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error>,
         pool: &MySqlPool,
         ip: &str,
         age_days: u32,
-    ) {
+    ) -> String {
         let req = upload_req(
-            &multipart_body("a.txt", "hello"),
-            &[("X-Forwarded-For", ip)],
+            &multipart_body("a.png", "hello"),
+            &[("X-Forwarded-For", "192.0.2.1")],
         );
         let resp = test::call_service(app, req).await;
         assert!(resp.status().is_success(), "seed upload should succeed");
+        let body = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+        let slug = slug(&body).to_string();
         sqlx::query(
-            "UPDATE uploads SET nsfw_score = 0.99, upload_timestamp = NOW() - INTERVAL ? DAY \
-             WHERE uploader_ip = ?",
+            "UPDATE uploads SET nsfw_score = 0.99, upload_timestamp = NOW() - INTERVAL ? DAY, \
+             uploader_ip = ? WHERE slug = ?",
         )
         .bind(age_days)
+        .bind(ip_bytes(ip))
+        .bind(&slug)
+        .execute(pool)
+        .await
+        .unwrap();
+        slug
+    }
+
+    async fn mark_verified(pool: &MySqlPool, ip: &str) {
+        sqlx::query(
+            "INSERT INTO challenge_verified_ips (ip, expires_timestamp) \
+             VALUES (?, NOW() + INTERVAL 1 HOUR)",
+        )
         .bind(ip_bytes(ip))
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    fn download_req(slug: &str, ip: &str, accept: Option<&str>) -> actix_http::Request {
+        let mut req = test::TestRequest::get()
+            .uri(&format!("/{slug}"))
+            .insert_header(("X-Forwarded-For", ip));
+        if let Some(accept) = accept {
+            req = req.insert_header(("Accept", accept));
+        }
+        req.to_request()
+    }
+
+    const BROWSER_ACCEPT: &str = "text/html,application/xhtml+xml,*/*;q=0.8";
+
+    #[sqlx::test]
+    async fn suspect_browser_download_redirects_to_captcha(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool.clone()).await;
+        let slug = seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
+
+        let resp = test::call_service(
+            &app,
+            download_req(&slug, "198.51.100.7", Some(BROWSER_ACCEPT)),
+        )
+        .await;
+        assert_eq!(resp.status(), 302);
+        assert_eq!(
+            hdr(&resp, "location"),
+            format!("http://localhost:8080/captcha?next={slug}")
+        );
+    }
+
+    #[sqlx::test]
+    async fn suspect_script_download_gets_428(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool.clone()).await;
+        let slug = seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
+
+        let resp = test::call_service(&app, download_req(&slug, "198.51.100.7", None)).await;
+        assert_eq!(resp.status(), 428);
+        assert!(hdr(&resp, "content-type").contains("text/plain"));
+        let body = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+        assert!(
+            body.contains("http://localhost:8080/captcha"),
+            "expected captcha URL, got: {body}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn verified_suspect_can_download(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool.clone()).await;
+        let slug = seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
+        mark_verified(&pool, "198.51.100.7").await;
+
+        let resp = test::call_service(&app, download_req(&slug, "198.51.100.7", None)).await;
+        assert!(resp.status().is_success(), "got {}", resp.status());
+
+        // and a non-suspect IP was never gated in the first place
+        let resp = test::call_service(&app, download_req(&slug, "198.51.100.8", None)).await;
+        assert!(resp.status().is_success(), "got {}", resp.status());
     }
 
     #[sqlx::test]

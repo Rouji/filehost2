@@ -235,9 +235,13 @@ fn spawn_clamd_scan(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_nsfw_scan(
     nsfw_model: Option<Arc<NsfwModel>>,
     db: DbPool,
+    challenge_cache: web::Data<ChallengeCache>,
+    nsfw_threshold: f32,
+    uploader_ip: Option<std::net::IpAddr>,
     uuid: Uuid,
     slug: String,
     save_path: std::path::PathBuf,
@@ -252,6 +256,11 @@ fn spawn_nsfw_scan(
                 if let Err(e) = db::update_nsfw_score(&db, uuid, c.score).await {
                     log::error!("nsfw: failed to update score for {uuid}: {e}");
                 }
+                if c.score >= nsfw_threshold
+                    && let Some(ip) = uploader_ip
+                {
+                    challenge_cache.mark_ip_suspect(ip).await;
+                }
             }
             Ok(Err(e)) => log::error!("nsfw: classification failed for {uuid} ({slug}): {e:#}"),
             Err(e) => log::error!("nsfw: scan task panicked for {uuid} ({slug}): {e}"),
@@ -263,6 +272,7 @@ fn spawn_nsfw_scan(
 async fn process_file(
     db: &DbPool,
     ban_cache: web::Data<BanCache>,
+    challenge_cache: web::Data<ChallengeCache>,
     settings: &Settings,
     nsfw_model: Option<Arc<NsfwModel>>,
     file: HashedTempFile,
@@ -379,7 +389,16 @@ async fn process_file(
     );
 
     if content_type_for_db.starts_with("image/") {
-        spawn_nsfw_scan(nsfw_model, db.clone(), uuid, slug.clone(), save_path);
+        spawn_nsfw_scan(
+            nsfw_model,
+            db.clone(),
+            challenge_cache,
+            settings.nsfw_threshold,
+            uploader_ip,
+            uuid,
+            slug.clone(),
+            save_path,
+        );
     }
 
     let encoded_slug = utf8_percent_encode(&slug, PATH_SEGMENT).to_string();
@@ -493,7 +512,7 @@ pub(crate) async fn captcha_verify(
 
     HttpResponse::Ok()
         .content_type(ContentType::plaintext())
-        .body("Verified -- you can retry your upload now.\n")
+        .body("Verified -- you can retry your request now.\n")
 }
 
 #[derive(MultipartForm)]
@@ -512,20 +531,15 @@ fn escape_html(s: &str) -> String {
         .replace('\'', "&#039;")
 }
 
-/// An IP is suspect if it uploaded something the NSFW
-/// scanner flagged within the last 7 days.
-async fn is_upload_suspect(
-    db: &DbPool,
-    settings: &Settings,
-    ip: std::net::IpAddr,
-) -> Result<bool, sqlx::Error> {
-    db::has_nsfw_upload_last_week(db, ip, settings.nsfw_threshold).await
+fn captcha_url(settings: &Settings) -> String {
+    let base = settings.base_url.as_deref().unwrap_or("/");
+    format!("{base}captcha")
 }
 
-fn challenge_required_response(settings: &Settings, formatted: bool) -> HttpResponse {
-    let base = settings.base_url.as_deref().unwrap_or("/");
-    let url = format!("{base}captcha");
-    let message = "Please verify you're not a script before uploading:";
+/// `action` completes "Please verify you're not a script before ...".
+fn challenge_required_response(settings: &Settings, action: &str, formatted: bool) -> HttpResponse {
+    let url = captcha_url(settings);
+    let message = format!("Please verify you're not a script before {action}:");
     if formatted {
         HttpResponse::PreconditionRequired()
             .content_type(ContentType::html())
@@ -591,19 +605,20 @@ async fn enforce_upload_gates(
     }
 
     if let Some(ip) = uploader_ip {
-        // verification is cached, so check it first to skip the suspect query
-        let needs_challenge = match challenge_cache.is_ip_verified(db, ip).await {
-            Ok(true) => Ok(false),
-            Ok(false) => is_upload_suspect(db, settings, ip).await,
-            Err(e) => Err(e),
-        };
-        match needs_challenge {
+        match challenge_cache
+            .needs_challenge(db, ip, settings.nsfw_threshold)
+            .await
+        {
             Ok(true) => {
                 log::info!(
                     "upload rejected: challenge required (ip={})",
                     format_ip(uploader_ip)
                 );
-                return Err(challenge_required_response(settings, formatted));
+                return Err(challenge_required_response(
+                    settings,
+                    "uploading",
+                    formatted,
+                ));
             }
             Ok(false) => {}
             Err(e) => {
@@ -707,6 +722,7 @@ pub(crate) async fn upload(
         match process_file(
             db.get_ref(),
             ban_cache.clone(),
+            challenge_cache.clone(),
             &settings,
             nsfw_model.get_ref().clone(),
             file,
@@ -732,6 +748,7 @@ pub(crate) async fn get_file(
     db: web::Data<DbPool>,
     settings: web::Data<Settings>,
     ban_cache: web::Data<BanCache>,
+    challenge_cache: web::Data<ChallengeCache>,
 ) -> actix_web::Result<HttpResponse> {
     let slug = &path.0;
 
@@ -742,6 +759,26 @@ pub(crate) async fn get_file(
             .map_err(actix_web::error::ErrorInternalServerError)?
     {
         return Ok(error_page(StatusCode::FORBIDDEN, "Your IP is banned."));
+    }
+
+    if let Some(ip) = extract_ip(&req, settings.trust_xff)
+        && challenge_cache
+            .needs_challenge(db.get_ref(), ip, settings.nsfw_threshold)
+            .await
+            .map_err(actix_web::error::ErrorInternalServerError)?
+    {
+        log::info!("download rejected: challenge required (ip={ip})");
+        // browsers get sent through the captcha and back to the file
+        if wants_html(&req) {
+            let next = utf8_percent_encode(slug, PATH_SEGMENT);
+            return Ok(HttpResponse::Found()
+                .insert_header((
+                    actix_web::http::header::LOCATION,
+                    format!("{}?next={next}", captcha_url(&settings)),
+                ))
+                .finish());
+        }
+        return Ok(challenge_required_response(&settings, "downloading", false));
     }
 
     let row = db::get_upload_by_slug(db.get_ref(), slug)
