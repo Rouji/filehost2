@@ -21,8 +21,8 @@ pub(crate) fn random_string(len: usize) -> String {
 }
 
 pub(crate) fn uuid_to_path(root: &Path, uuid: &Uuid) -> PathBuf {
-    let folder = format!("{:04x}", uuid.as_u128() >> 112);
-    root.join(folder).join(uuid.to_string())
+    let name = uuid.to_string();
+    root.join(&name[0..2]).join(&name[2..4]).join(name)
 }
 
 /// Resolves the client's IP address (v4 or v6) for a request, honoring
@@ -403,10 +403,9 @@ mod tests {
     fn uuid_to_path_structure() {
         let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let path = uuid_to_path(Path::new("files"), &uuid);
-        // top 16 bits of 0x550e8400e29b41d4a716446655440000 >> 112 = 0x550e
         assert_eq!(
             path,
-            Path::new("files/550e/550e8400-e29b-41d4-a716-446655440000")
+            Path::new("files/55/0e/550e8400-e29b-41d4-a716-446655440000")
         );
     }
 
