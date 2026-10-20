@@ -24,7 +24,9 @@ mod tests;
 
 use actix_cors::Cors;
 use actix_multipart::{MultipartError, form::MultipartFormConfig};
-use actix_web::{App, Error, HttpRequest, HttpServer, http::header, middleware::Logger, web};
+use actix_web::{
+    App, Error, HttpRequest, HttpResponse, HttpServer, http::header, middleware::Logger, web,
+};
 use clap::Parser;
 use futures_util::StreamExt;
 use rustls_acme::AcmeConfig;
@@ -204,6 +206,41 @@ async fn main() -> std::io::Result<()> {
                     }
                 }
             });
+
+            // plain HTTP on port 80 is only used to redirect to HTTPS,
+            // except when the TLS listener itself is on port 80
+            // (TLS-ALPN-01 needs 443 anyway, so this would be a misconfiguration)
+            if settings.listen_port != 80 {
+                match HttpServer::new(|| {
+                    App::new().default_service(web::to(|req: HttpRequest| async move {
+                        let host = req.connection_info().host().to_string();
+                        Ok::<HttpResponse, Error>(
+                            HttpResponse::PermanentRedirect()
+                                .insert_header((
+                                    header::LOCATION,
+                                    format!("https://{host}{}", req.uri()),
+                                ))
+                                .finish(),
+                        )
+                    }))
+                })
+                .bind((settings.listen_addr.clone(), 80))
+                {
+                    Ok(srv) => {
+                        log::info!("listening on port 80 to redirect to https");
+                        let srv_run = srv.run();
+                        tokio::spawn(async move {
+                            if let Err(err) = srv_run.await {
+                                log::error!("http redirect server error: {err}");
+                            }
+                        });
+                    }
+                    Err(err) => {
+                        log::error!("failed to bind http redirect listener on port 80: {err}")
+                    }
+                }
+            }
+
             http_server.bind_rustls_0_23(
                 (settings.listen_addr.clone(), settings.listen_port),
                 challenge_rustls_config,
