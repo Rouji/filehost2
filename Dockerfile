@@ -14,9 +14,10 @@ WORKDIR /app
 
 ENV SQLX_OFFLINE=true
 
-# pre build and cache (in an image layer) dependencies only
+# pre build and cache (in a cache mount + image layer) dependencies only
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs \
+RUN --mount=type=cache,sharing=private,target=/app/build \
+    mkdir src && echo "fn main() {}" > src/main.rs \
     && xx-cargo build --release --target-dir ./build \
     && rm -rf src
 
@@ -25,7 +26,8 @@ COPY . .
 # make sure mtime is newer than the stub main.rs
 RUN find . -path ./build -prune -o -type f -exec touch {} +
 
-RUN xx-cargo build --release --target-dir ./build \
+RUN --mount=type=cache,sharing=private,target=/app/build \
+    xx-cargo build --release --target-dir ./build \
     && xx-verify "./build/$(xx-cargo --print-target-triple)/release/filehost2" \
     && cp "./build/$(xx-cargo --print-target-triple)/release/filehost2" /filehost2
 
