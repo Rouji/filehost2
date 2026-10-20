@@ -26,7 +26,11 @@ use actix_cors::Cors;
 use actix_multipart::{MultipartError, form::MultipartFormConfig};
 use actix_web::{App, Error, HttpRequest, HttpServer, http::header, middleware::Logger, web};
 use clap::Parser;
+use futures_util::StreamExt;
+use rustls_acme::AcmeConfig;
+use rustls_acme::caches::DirCache;
 use settings::Settings;
+use std::sync::Arc;
 
 fn handle_multipart_error(err: MultipartError, _req: &HttpRequest) -> Error {
     match err {
@@ -73,9 +77,27 @@ async fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
+    let acme_domains: Option<Vec<String>> = settings
+        .acme_domains
+        .as_deref()
+        .map(|domains| {
+            domains
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .filter(|domains: &Vec<String>| !domains.is_empty());
+
     if settings.base_url.is_none() {
+        let scheme = if acme_domains.is_some() {
+            "https"
+        } else {
+            "http"
+        };
         settings.base_url = Some(format!(
-            "http://{}:{}/",
+            "{scheme}://{}:{}/",
             settings.listen_addr, settings.listen_port
         ));
     }
@@ -115,7 +137,25 @@ async fn main() -> std::io::Result<()> {
     };
 
     let s = settings.clone();
-    HttpServer::new(move || {
+    let acme = acme_domains.map(|domains| {
+        let cache_dir = settings
+            .acme_cache_dir
+            .clone()
+            .unwrap_or_else(|| "acme-cache".to_string());
+        let mut config = AcmeConfig::new(domains.iter())
+            .contact_push(format!("mailto:{}", settings.admin_email))
+            .cache(DirCache::new(cache_dir));
+        config = match settings.acme_directory_url.as_deref() {
+            Some(url) => config.directory(url),
+            _ => config.directory_lets_encrypt(true),
+        };
+        let state = config.state();
+        let challenge_rustls_config = Arc::into_inner(state.challenge_rustls_config())
+            .expect("acme: challenge rustls config");
+        (state, challenge_rustls_config)
+    });
+
+    let http_server = HttpServer::new(move || {
         App::new()
             .service(handlers::index)
             .service(handlers::upload)
@@ -152,8 +192,24 @@ async fn main() -> std::io::Result<()> {
                     .total_limit(s.max_filesize * 1024 * 1024)
                     .error_handler(handle_multipart_error),
             )
-    })
-    .bind_auto_h2c((settings.listen_addr, settings.listen_port))?
-    .run()
-    .await
+    });
+    let server = match acme {
+        Some((mut state, challenge_rustls_config)) => {
+            tokio::spawn(async move {
+                loop {
+                    match state.next().await {
+                        Some(Ok(event)) => log::info!("acme: {event:?}"),
+                        Some(Err(err)) => log::error!("acme: {err:?}"),
+                        _ => break,
+                    }
+                }
+            });
+            http_server.bind_rustls_0_23(
+                (settings.listen_addr.clone(), settings.listen_port),
+                challenge_rustls_config,
+            )?
+        }
+        _ => http_server.bind_auto_h2c((settings.listen_addr, settings.listen_port))?,
+    };
+    server.run().await
 }

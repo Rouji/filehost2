@@ -17,6 +17,10 @@ pub(crate) struct Settings {
     #[env_settings(default = 8080)]
     pub listen_port: u16,
 
+    pub acme_domains: Option<String>, // comma-separated domains for automatic TLS via ACME (TLS-ALPN-01); unset disables TLS
+    pub acme_directory_url: Option<String>, // ACME directory URL; defaults to Let's Encrypt production when unset
+    pub acme_cache_dir: Option<String>, // directory for ACME account/certificate persistence; default "acme-cache"
+
     #[env_settings(default = 512)]
     pub max_filesize: usize, //max. filesize in mib
     #[env_settings(default = 180)]
