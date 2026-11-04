@@ -176,7 +176,7 @@ pub(crate) fn client_ip(
         match entries.len().checked_sub(trust.hops) {
             // Fewer entries than trusted hops: the chain doesn't reach a client
             // address, so the header can't vouch for anything.
-            _ => log::warn!(
+            None => log::warn!(
                 "X-Forwarded-For {header:?} has fewer entries than the {} configured hop(s); \
                  falling back to peer {peer_addr}",
                 trust.hops

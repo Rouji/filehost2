@@ -260,12 +260,12 @@ pub(crate) async fn insert_upload_row(
     slug: &str,
     file_size: i64,
     hash: &[u8],
-    uploader_ip: Option<IpAddr>,
+    uploader_ip: IpAddr,
     content_type: &str,
     user_agent: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
-    let uploader_ip = uploader_ip.map(|ip| ip::to_db_bytes(ip).to_vec());
+    let uploader_ip = ip::to_db_bytes(uploader_ip).to_vec();
     sqlx::query!(
         "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type, user_agent,

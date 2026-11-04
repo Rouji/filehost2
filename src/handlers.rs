@@ -277,7 +277,7 @@ async fn process_file(
     settings: &Settings,
     nsfw_model: Option<Arc<NsfwModel>>,
     file: HashedTempFile,
-    uploader_ip: Option<std::net::IpAddr>,
+    uploader_ip: std::net::IpAddr,
     user_agent: Option<&str>,
     id_len: usize,
     keep_name: bool,
@@ -289,7 +289,7 @@ async fn process_file(
 
     check_not_banned(
         ban_cache.is_filename_banned(db, &original_name),
-        uploader_ip,
+        Some(uploader_ip),
         "banned filename",
         "File type not allowed.",
     )
@@ -303,7 +303,7 @@ async fn process_file(
     {
         check_not_banned(
             ban_cache.is_mime_banned(db, ct.as_ref()),
-            uploader_ip,
+            Some(uploader_ip),
             "banned mime",
             "Your upload was rejected.",
         )
@@ -314,7 +314,7 @@ async fn process_file(
 
     check_not_banned(
         ban_cache.is_hash_banned(db, hash.as_slice()),
-        uploader_ip,
+        Some(uploader_ip),
         "banned hash",
         "Your upload was rejected.",
     )
@@ -395,7 +395,7 @@ async fn process_file(
             db.clone(),
             challenge_cache,
             settings.nsfw_threshold,
-            uploader_ip,
+            Some(uploader_ip),
             uuid,
             slug.clone(),
             save_path,
@@ -680,15 +680,13 @@ pub(crate) async fn upload(
     nsfw_model: web::Data<Option<Arc<NsfwModel>>>,
     xff_trust: web::Data<XffTrust>,
 ) -> impl Responder {
-    let client_ip = extract_ip(&req, &xff_trust);
-    if client_ip.is_none() {
+    let Some(uploader_ip) = extract_ip(&req, &xff_trust) else {
         log::error!("upload rejected: could not determine client address (peer_addr unavailable)");
         return error_page(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Could not determine your IP address.",
         );
-    }
-    let uploader_ip = client_ip;
+    };
     let user_agent = req
         .headers()
         .get("User-Agent")
@@ -701,7 +699,7 @@ pub(crate) async fn upload(
         ban_cache.get_ref(),
         challenge_cache.get_ref(),
         &settings,
-        uploader_ip,
+        Some(uploader_ip),
         user_agent,
         formatted,
     )
@@ -717,7 +715,7 @@ pub(crate) async fn upload(
             Err(e) => {
                 log::info!(
                     "upload rejected: malformed request ({e}) (ip={})",
-                    format_ip(uploader_ip)
+                    format_ip(Some(uploader_ip))
                 );
                 return HttpResponse::from_error(e);
             }

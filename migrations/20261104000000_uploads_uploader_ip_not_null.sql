@@ -1,0 +1,13 @@
+-- uploader_ip NOT NULL (1c in docs/abuse-analysis-2026-11-03.md).
+--
+-- Since fail-closed IP extraction, the app rejects any request whose client IP
+-- cannot be determined, so no new NULL rows can be inserted and an insert that
+-- somehow tried would now fail loudly instead of silently dropping the IP.
+--
+-- This migration intentionally does NOT touch existing NULL rows. If the table
+-- still contains rows with uploader_ip = NULL (the Oct 2026 NULL-ip incident
+-- rows, or incomplete rows imported from the previous filehost), this statement
+-- fails with "Invalid use of NULL value" until those rows are resolved by hand
+-- (delete or backfill). That is deliberate: the choice of what to do with
+-- unattributable production data is an operator decision, not a migration one.
+ALTER TABLE uploads MODIFY COLUMN uploader_ip VARBINARY(16) NOT NULL;
