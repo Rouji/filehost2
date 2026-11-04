@@ -443,9 +443,6 @@ mod tests {
 
     #[test]
     fn client_falls_back_to_peer_when_no_proxies_configured() {
-        // this is the config that caused the Oct 2026 NULL-ip incident: trust_xff was on
-        // with no allowlist, so the header was the only candidate and its absence left
-        // nothing. the peer is always the fallback now.
         let (trust, _) = XffTrust::new(None, 1);
         assert_eq!(
             client_ip(None, Some(ip("198.51.100.7")), &trust),

@@ -39,10 +39,9 @@ mod tests {
             store_path: format!("/tmp/filehost_test_{}/", uuid::Uuid::new_v4()),
             max_ext_len: 7,
             auto_file_ext: false,
-            trust_xff: false,
-            // 127.0.0.1 is also the socket peer every test request carries (see `peer`),
-            // so enabling trust_xff on a test makes the header win over the peer as intended.
-            trusted_proxies: Some("127.0.0.1".to_string()),
+            // XFF headers are ignored unless a test opts in by making the socket peer
+            // (always 127.0.0.1, see `TEST_PROXY`) a trusted proxy.
+            trusted_proxies: None,
             xff_hops: 1,
             admin_email: "test@example.com".to_string(),
             admin_token: None,
@@ -488,12 +487,12 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn xff_used_when_trust_xff_enabled(pool: MySqlPool) {
+    async fn xff_used_when_peer_is_trusted_proxy(pool: MySqlPool) {
         let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 1).await;
 
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
         let req = upload_req(
@@ -510,7 +509,7 @@ mod tests {
         ban_ip(&pool, banned_ip, 1).await;
 
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
         let req = upload_req(
@@ -527,7 +526,7 @@ mod tests {
         ban_ip(&pool, banned_ip, 1).await;
 
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
         let req = upload_req(
@@ -543,7 +542,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn xff_ignored_when_trust_xff_disabled(pool: MySqlPool) {
+    async fn xff_ignored_when_no_trusted_proxies(pool: MySqlPool) {
         let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 1).await;
 
@@ -556,7 +555,7 @@ mod tests {
         let resp = test::call_service(&app, req).await;
         assert!(
             resp.status().is_success(),
-            "XFF should be ignored when trust_xff=false, got: {}",
+            "XFF should be ignored without TRUSTED_PROXIES, got: {}",
             resp.status()
         );
     }
@@ -567,7 +566,6 @@ mod tests {
         ban_ip(&pool, banned_ip, 2).await; // Full ban
 
         let mut settings = test_settings();
-        settings.trust_xff = true;
         // a proxy that isn't us: the header arrives, but the peer never vouches for it
         settings.trusted_proxies = Some("10.0.0.1".to_string());
         let app = full_app(settings, pool).await;
@@ -590,7 +588,7 @@ mod tests {
         ban_ip(&pool, banned_ip, 2).await; // Full ban
 
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
         // the client tries to hide behind a clean first entry; the trusted hop appended the
@@ -611,7 +609,7 @@ mod tests {
         ban_ip(&pool, banned_ip, 2).await; // Full ban, on the socket peer itself
 
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
         let req = upload_req(&multipart_body("test.txt", "hello"), &[]);
@@ -656,7 +654,7 @@ mod tests {
         ban_ip(&pool, banned_ip, 2).await; // Full ban
 
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
         let req = upload_req(
@@ -682,7 +680,7 @@ mod tests {
         ban_ip(&pool, banned_ip, 1).await; // ReadOnly ban
 
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
         let req = upload_req(
@@ -712,7 +710,7 @@ mod tests {
     #[sqlx::test]
     async fn ipv6_daily_quota_shared_within_64_prefix(pool: MySqlPool) {
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         settings.max_uploads_per_day = Some(1);
         let app = full_app(settings, pool).await;
 
@@ -803,7 +801,7 @@ mod tests {
     #[sqlx::test]
     async fn suspect_browser_download_redirects_to_captcha(pool: MySqlPool) {
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         let slug = seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
 
@@ -822,7 +820,7 @@ mod tests {
     #[sqlx::test]
     async fn suspect_script_download_gets_428(pool: MySqlPool) {
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         let slug = seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
 
@@ -839,7 +837,7 @@ mod tests {
     #[sqlx::test]
     async fn verified_suspect_can_download(pool: MySqlPool) {
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         let slug = seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
         mark_verified(&pool, "198.51.100.7").await;
@@ -855,7 +853,7 @@ mod tests {
     #[sqlx::test]
     async fn recent_nsfw_uploader_must_solve_challenge(pool: MySqlPool) {
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
 
@@ -880,7 +878,7 @@ mod tests {
     #[sqlx::test]
     async fn challenge_link_is_clickable_for_web_form(pool: MySqlPool) {
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
 
@@ -910,7 +908,7 @@ mod tests {
     #[sqlx::test]
     async fn old_nsfw_upload_does_not_make_ip_suspect(pool: MySqlPool) {
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         seed_nsfw_upload(&app, &pool, "198.51.100.7", 8).await;
 
@@ -1018,7 +1016,7 @@ mod tests {
     #[sqlx::test]
     async fn download_logs_xff_ip(pool: MySqlPool) {
         let mut settings = test_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         let slug = upload_and_get_slug(&app, "test.txt").await;
 
@@ -1189,7 +1187,7 @@ mod tests {
     #[sqlx::test]
     async fn admin_stats_includes_top_uploaders(pool: MySqlPool) {
         let mut settings = admin_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
         for (ip, bodies) in [
@@ -1229,7 +1227,7 @@ mod tests {
     #[sqlx::test]
     async fn admin_stats_includes_top_nsfw_uploaders(pool: MySqlPool) {
         let mut settings = admin_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let db_pool = to_db_pool(&pool);
         let app = full_app(settings, pool).await;
 
@@ -1352,7 +1350,7 @@ mod tests {
     #[sqlx::test]
     async fn admin_deletes_uploads_by_ip(pool: MySqlPool) {
         let mut settings = admin_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
         let ip = "6.6.6.6";
@@ -1395,7 +1393,7 @@ mod tests {
     #[sqlx::test]
     async fn admin_ip_stats_returns_hourly_and_top_mimes(pool: MySqlPool) {
         let mut settings = admin_settings();
-        settings.trust_xff = true;
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
         let ip = "9.9.9.9";

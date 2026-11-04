@@ -42,9 +42,7 @@ pub(crate) struct Settings {
     pub max_ext_len: usize, //max. length for file extensions
     #[env_settings(default = "false")]
     pub auto_file_ext: bool, //automatically try to detect file extension for files that have none
-    #[env_settings(default = "false")]
-    pub trust_xff: bool, //trust X-Forwarded-For header; enable only when behind a reverse proxy
-    pub trusted_proxies: Option<String>, // comma-separated CIDRs of reverse proxies to trust
+    pub trusted_proxies: Option<String>, // comma-separated CIDRs of reverse proxies to trust; X-Forwarded-For is only honored from these
     #[env_settings(default = 1)]
     pub xff_hops: usize, //trusted proxies between us and the client, counting the socket peer
 
@@ -85,9 +83,6 @@ impl Settings {
     }
 
     pub(crate) fn xff_trust(&self) -> (crate::ip::XffTrust, Vec<String>) {
-        if !self.trust_xff {
-            return (crate::ip::XffTrust::untrusted(), Vec::new());
-        }
         crate::ip::XffTrust::new(self.trusted_proxies.as_deref(), self.xff_hops)
     }
 }

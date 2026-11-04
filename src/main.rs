@@ -118,20 +118,18 @@ async fn main() -> std::io::Result<()> {
     for entry in &invalid_proxies {
         log::error!("TRUSTED_PROXIES: ignoring unparsable entry {entry:?}");
     }
-    if settings.trust_xff {
-        let proxies = policy.proxy_count();
-        if proxies == 0 {
-            log::error!("TRUST_XFF is enabled but TRUSTED_PROXIES resolves to nothing");
-        } else {
-            log::info!(
-                "trusting X-Forwarded-For from {proxies} proxy range(s), \
-                 taking the client from {hops} hop(s) back",
-                hops = settings.xff_hops,
-            );
-        }
+    let proxies = policy.proxy_count();
+    if proxies == 0 {
+        log::warn!("TRUSTED_PROXIES is unset or empty; X-Forwarded-For headers will be ignored");
+    } else {
+        log::info!(
+            "trusting X-Forwarded-For from {proxies} proxy range(s), \
+             taking the client from {hops} hop(s) back",
+            hops = settings.xff_hops,
+        );
     }
 
-    let xff_credible = settings.trust_xff && policy.proxy_count() > 0;
+    let xff_credible = proxies > 0;
     let xff_trust = web::Data::new(policy);
 
     let nsfw_model = web::Data::new(match settings.nsfw_model_path() {

@@ -366,7 +366,6 @@ mod tests {
             store_path: "files/".to_string(),
             max_ext_len: 7,
             auto_file_ext: false,
-            trust_xff: false,
             trusted_proxies: None,
             xff_hops: 1,
             admin_email: "admin@example.com".to_string(),
