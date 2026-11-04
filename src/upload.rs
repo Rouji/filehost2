@@ -377,6 +377,8 @@ mod tests {
             max_bytes_per_day: None,
             max_upload_bytes_per_sec: None,
             max_upload_burst_bytes: None,
+            max_download_bytes_per_sec: None,
+            max_download_burst_bytes: None,
             dedup: true,
             db_max_connections: 20,
             ban_cache_ttl_seconds: 300,

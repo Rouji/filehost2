@@ -37,7 +37,7 @@ pub(crate) async fn fetch_ip_ranges(url: &str) -> Result<Vec<IpRangeEntry>> {
 fn cidr_range(addr: u32, prefix: u8) -> (u32, u32) {
     match crate::ip::cidr_bounds(u128::from(addr), prefix, 32) {
         Some((start, end)) => (start as u32, end as u32),
-        _ => (addr, addr),
+        None => (addr, addr),
     }
 }
 

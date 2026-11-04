@@ -52,6 +52,8 @@ mod tests {
             max_bytes_per_day: None,
             max_upload_bytes_per_sec: None,
             max_upload_burst_bytes: None,
+            max_download_bytes_per_sec: None,
+            max_download_burst_bytes: None,
             dedup: true,
             db_max_connections: 20,
             ban_cache_ttl_seconds: 300,
@@ -120,6 +122,7 @@ mod tests {
                 .app_data(web::Data::new(ban_cache))
                 .app_data(web::Data::new(challenge_cache))
                 .app_data(web::Data::new(xff_trust))
+                .app_data(web::Data::new(crate::rate_limit::DownloadThrottle::new()))
                 .app_data(web::Data::new(PowSecret::generate()))
                 .app_data(web::Data::new(
                     None::<std::sync::Arc<crate::nsfw::NsfwModel>>,
@@ -1036,6 +1039,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ip, Some(ip_bytes("10.0.0.1")));
+    }
+
+    #[sqlx::test]
+    async fn download_throttle_paces_hot_clients(pool: MySqlPool) {
+        let mut settings = test_settings();
+        // 10 B/s with a 5 B burst: the first download drains the burst, the
+        // immediate second one has to wait for the bucket to refill
+        settings.max_download_bytes_per_sec = Some(10.0);
+        settings.max_download_burst_bytes = Some(5.0);
+        let app = full_app(settings, pool).await;
+        let slug = upload_and_get_slug(&app, "test.txt").await;
+
+        let get = || async {
+            test::call_service(
+                &app,
+                peer(test::TestRequest::get())
+                    .uri(&format!("/{slug}"))
+                    .to_request(),
+            )
+            .await
+        };
+        let start = std::time::Instant::now();
+        let resp = get().await;
+        assert!(resp.status().is_success());
+        // pacing happens in the body stream, so it must be drained to be timed
+        test::read_body(resp).await;
+        let unthrottled = start.elapsed();
+
+        let resp = get().await;
+        assert!(resp.status().is_success());
+        test::read_body(resp).await;
+        let gap = start.elapsed() - unthrottled;
+        assert!(
+            gap >= std::time::Duration::from_millis(400),
+            "second download should wait for the bucket to refill, waited {gap:?}"
+        );
     }
 
     #[sqlx::test]

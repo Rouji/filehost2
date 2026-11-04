@@ -25,6 +25,7 @@ use crate::ip::XffTrust;
 use crate::model::BanType;
 use crate::nsfw::NsfwModel;
 use crate::pow::PowSecret;
+use crate::rate_limit;
 use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
 use crate::upload::{HashedTempFile, build_slug, calculate_expiry, extract_ip, uuid_to_path};
@@ -753,6 +754,7 @@ pub(crate) async fn upload(
 }
 
 #[get("/{slug}")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn get_file(
     req: HttpRequest,
     path: web::Path<(String,)>,
@@ -761,6 +763,7 @@ pub(crate) async fn get_file(
     ban_cache: web::Data<BanCache>,
     challenge_cache: web::Data<ChallengeCache>,
     xff_trust: web::Data<XffTrust>,
+    download_throttle: web::Data<rate_limit::DownloadThrottle>,
 ) -> actix_web::Result<HttpResponse> {
     let slug = &path.0;
 
@@ -809,6 +812,7 @@ pub(crate) async fn get_file(
         .get("User-Agent")
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+
     let upload_id = row.id;
     let db_log = db.clone();
     tokio::spawn(async move {
@@ -860,6 +864,19 @@ pub(crate) async fn get_file(
     if is_identity {
         res.headers_mut()
             .remove(actix_web::http::header::CONTENT_ENCODING);
+    }
+
+    if let Some(rate) = settings.max_download_bytes_per_sec {
+        let burst = settings.max_download_burst_bytes.unwrap_or(rate);
+        res = res.map_body(|_, body| {
+            actix_web::body::BoxBody::new(rate_limit::ThrottledBody::new(
+                body,
+                download_throttle.clone().into_inner(),
+                ip,
+                rate,
+                burst,
+            ))
+        });
     }
 
     Ok(res)

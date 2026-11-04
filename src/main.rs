@@ -106,6 +106,7 @@ async fn main() -> std::io::Result<()> {
 
     let rendered_templates = templates::render(&settings);
     let throttle = web::Data::new(rate_limit::UploadThrottle::new());
+    let download_throttle = web::Data::new(rate_limit::DownloadThrottle::new());
     let ban_cache = web::Data::new(ban_cache::BanCache::new(std::time::Duration::from_secs(
         settings.ban_cache_ttl_seconds,
     )));
@@ -199,6 +200,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(s.clone()))
             .app_data(web::Data::new(rendered_templates.clone()))
             .app_data(throttle.clone())
+            .app_data(download_throttle.clone())
             .app_data(ban_cache.clone())
             .app_data(challenge_cache.clone())
             .app_data(pow_secret.clone())
