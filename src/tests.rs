@@ -40,6 +40,10 @@ mod tests {
             max_ext_len: 7,
             auto_file_ext: false,
             trust_xff: false,
+            // 127.0.0.1 is also the socket peer every test request carries (see `peer`),
+            // so enabling trust_xff on a test makes the header win over the peer as intended.
+            trusted_proxies: Some("127.0.0.1".to_string()),
+            xff_hops: 1,
             admin_email: "test@example.com".to_string(),
             admin_token: None,
             clamd_addr: None,
@@ -80,6 +84,13 @@ mod tests {
             .expect("Failed to build test database pool")
     }
 
+    fn peer(req: test::TestRequest) -> test::TestRequest {
+        req.peer_addr(TEST_PROXY)
+    }
+
+    const TEST_PROXY: std::net::SocketAddr =
+        std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 54321);
+
     async fn full_app(
         settings: Settings,
         pool: MySqlPool,
@@ -93,6 +104,7 @@ mod tests {
         let challenge_cache = ChallengeCache::new(std::time::Duration::from_secs(
             settings.ban_cache_ttl_seconds,
         ));
+        let (xff_trust, _) = settings.xff_trust();
         test::init_service(
             App::new()
                 .service(handlers::index)
@@ -108,6 +120,7 @@ mod tests {
                 .app_data(web::Data::new(tmpl))
                 .app_data(web::Data::new(ban_cache))
                 .app_data(web::Data::new(challenge_cache))
+                .app_data(web::Data::new(xff_trust))
                 .app_data(web::Data::new(PowSecret::generate()))
                 .app_data(web::Data::new(
                     None::<std::sync::Arc<crate::nsfw::NsfwModel>>,
@@ -122,7 +135,8 @@ mod tests {
     #[actix_web::test]
     async fn index_returns_200() {
         let app = index_app(test_settings()).await;
-        let resp = test::call_service(&app, test::TestRequest::get().uri("/").to_request()).await;
+        let resp =
+            test::call_service(&app, peer(test::TestRequest::get()).uri("/").to_request()).await;
         assert!(resp.status().is_success());
     }
 
@@ -131,7 +145,9 @@ mod tests {
         let app = index_app(test_settings()).await;
         let resp = test::call_service(
             &app,
-            test::TestRequest::get().uri("/?config=hupl").to_request(),
+            peer(test::TestRequest::get())
+                .uri("/?config=hupl")
+                .to_request(),
         )
         .await;
         assert!(resp.status().is_success());
@@ -144,7 +160,9 @@ mod tests {
         let app = full_app(test_settings(), pool).await;
         let resp = test::call_service(
             &app,
-            test::TestRequest::get().uri("/doesntexist").to_request(),
+            peer(test::TestRequest::get())
+                .uri("/doesntexist")
+                .to_request(),
         )
         .await;
         assert_eq!(resp.status(), 404);
@@ -156,8 +174,11 @@ mod tests {
     #[sqlx::test]
     async fn captcha_page_is_not_shadowed_by_the_slug_route(pool: MySqlPool) {
         let app = full_app(test_settings(), pool).await;
-        let resp =
-            test::call_service(&app, test::TestRequest::get().uri("/captcha").to_request()).await;
+        let resp = test::call_service(
+            &app,
+            peer(test::TestRequest::get()).uri("/captcha").to_request(),
+        )
+        .await;
         assert_eq!(resp.status(), 200);
         assert!(hdr(&resp, "content-type").contains("text/html"));
     }
@@ -169,7 +190,9 @@ mod tests {
         let app = full_app(test_settings(), pool).await;
         let resp = test::call_service(
             &app,
-            test::TestRequest::get().uri("/captcha.js").to_request(),
+            peer(test::TestRequest::get())
+                .uri("/captcha.js")
+                .to_request(),
         )
         .await;
         assert_eq!(resp.status(), 200);
@@ -195,7 +218,7 @@ mod tests {
     /// Builds a POST / multipart request, optionally with extra headers (e.g. User-Agent,
     /// X-Forwarded-For) — shared by every test that needs to twiddle upload request headers.
     fn upload_req(content: &str, headers: &[(&str, &str)]) -> actix_http::Request {
-        let mut req = test::TestRequest::post().uri("/").insert_header((
+        let mut req = peer(test::TestRequest::post()).uri("/").insert_header((
             "content-type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
         ));
@@ -249,7 +272,7 @@ mod tests {
         let slug = slug(&url);
         let resp = test::call_service(
             &app,
-            test::TestRequest::get()
+            peer(test::TestRequest::get())
                 .uri(&format!("/{slug}"))
                 .to_request(),
         )
@@ -283,7 +306,7 @@ mod tests {
 
         let resp = test::call_service(
             &app,
-            test::TestRequest::get()
+            peer(test::TestRequest::get())
                 .uri(&format!("/{slug}"))
                 .to_request(),
         )
@@ -324,7 +347,7 @@ mod tests {
 
         let resp = test::call_service(
             &app,
-            test::TestRequest::get()
+            peer(test::TestRequest::get())
                 .uri(&format!("/{slug}"))
                 .to_request(),
         )
@@ -368,7 +391,7 @@ mod tests {
 
         let resp = test::call_service(
             &app,
-            test::TestRequest::get()
+            peer(test::TestRequest::get())
                 .uri(&format!("/{slug}"))
                 .to_request(),
         )
@@ -403,7 +426,7 @@ mod tests {
 
         let resp = test::call_service(
             &app,
-            test::TestRequest::get()
+            peer(test::TestRequest::get())
                 .uri(&format!("/{slug}"))
                 .to_request(),
         )
@@ -539,6 +562,95 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn xff_from_untrusted_peer_is_not_believed(pool: MySqlPool) {
+        let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
+        ban_ip(&pool, banned_ip, 2).await; // Full ban
+
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        // a proxy that isn't us: the header arrives, but the peer never vouches for it
+        settings.trusted_proxies = Some("10.0.0.1".to_string());
+        let app = full_app(settings, pool).await;
+
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "1.2.3.4")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "X-Forwarded-For from a peer outside TRUSTED_PROXIES must not be believed, got: {}",
+            resp.status()
+        );
+    }
+
+    #[sqlx::test]
+    async fn xff_rightmost_entry_is_the_client_not_the_leftmost(pool: MySqlPool) {
+        let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
+        ban_ip(&pool, banned_ip, 2).await; // Full ban
+
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool).await;
+
+        // the client tries to hide behind a clean first entry; the trusted hop appended the
+        // real address to the right of it, and that's the one we act on
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "8.8.8.8, 1.2.3.4")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+    }
+
+    #[sqlx::test]
+    async fn xff_missing_falls_back_to_banned_peer(pool: MySqlPool) {
+        // the Oct 2026 case: TLS/ACME edge dropped the header, every request became
+        // unattributable, and the fail-open path let a banned client keep going.
+        let banned_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        ban_ip(&pool, banned_ip, 2).await; // Full ban, on the socket peer itself
+
+        let mut settings = test_settings();
+        settings.trust_xff = true;
+        let app = full_app(settings, pool).await;
+
+        let req = upload_req(&multipart_body("test.txt", "hello"), &[]);
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+    }
+
+    #[sqlx::test]
+    async fn upload_without_client_address_is_rejected(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool).await;
+
+        let mut req = test::TestRequest::post().uri("/").insert_header((
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        ));
+        req = req.set_payload(format!(
+            "{}--{BOUNDARY}--\r\n",
+            multipart_body("test.txt", "hello")
+        ));
+        let resp = test::call_service(&app, req.to_request()).await;
+        assert_eq!(resp.status(), 500);
+    }
+
+    #[sqlx::test]
+    async fn get_without_client_address_is_rejected(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool).await;
+
+        let req = upload_req(&multipart_body("test.txt", "hello"), &[]);
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+        let body = test::read_body(resp).await;
+        let url = std::str::from_utf8(&body).unwrap().trim().to_string();
+
+        let req = test::TestRequest::get().uri(&url).to_request();
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
+    }
+
+    #[sqlx::test]
     async fn full_ban_blocks_get(pool: MySqlPool) {
         let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 2).await; // Full ban
@@ -556,7 +668,7 @@ mod tests {
         let body = test::read_body(resp).await;
         let url = std::str::from_utf8(&body).unwrap().trim().to_string();
 
-        let req = test::TestRequest::get()
+        let req = peer(test::TestRequest::get())
             .uri(&url)
             .insert_header(("X-Forwarded-For", "1.2.3.4"))
             .to_request();
@@ -589,7 +701,7 @@ mod tests {
         let body = test::read_body(resp).await;
         let url = std::str::from_utf8(&body).unwrap().trim().to_string();
 
-        let req = test::TestRequest::get()
+        let req = peer(test::TestRequest::get())
             .uri(&url)
             .insert_header(("X-Forwarded-For", "1.2.3.4"))
             .to_request();
@@ -677,7 +789,7 @@ mod tests {
     }
 
     fn download_req(slug: &str, ip: &str, accept: Option<&str>) -> actix_http::Request {
-        let mut req = test::TestRequest::get()
+        let mut req = peer(test::TestRequest::get())
             .uri(&format!("/{slug}"))
             .insert_header(("X-Forwarded-For", ip));
         if let Some(accept) = accept {
@@ -772,7 +884,7 @@ mod tests {
         let app = full_app(settings, pool.clone()).await;
         seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
 
-        let req = test::TestRequest::post()
+        let req = peer(test::TestRequest::post())
             .uri("/")
             .insert_header(("Accept", "text/html,application/xhtml+xml,*/*;q=0.8"))
             .insert_header((
@@ -888,7 +1000,7 @@ mod tests {
 
         let resp = test::call_service(
             &app,
-            test::TestRequest::get()
+            peer(test::TestRequest::get())
                 .uri(&format!("/{slug}"))
                 .to_request(),
         )
@@ -912,7 +1024,7 @@ mod tests {
 
         let resp = test::call_service(
             &app,
-            test::TestRequest::get()
+            peer(test::TestRequest::get())
                 .uri(&format!("/{slug}"))
                 .insert_header(("X-Forwarded-For", "10.0.0.1"))
                 .to_request(),
@@ -969,7 +1081,11 @@ mod tests {
     where
         S: actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error>,
     {
-        test::call_service(app, admin_req(test::TestRequest::get(), path).to_request()).await
+        test::call_service(
+            app,
+            admin_req(peer(test::TestRequest::get()), path).to_request(),
+        )
+        .await
     }
 
     async fn admin_post<S>(app: &S, path: &str, body: &impl Serialize) -> ServiceResponse
@@ -978,7 +1094,7 @@ mod tests {
     {
         test::call_service(
             app,
-            admin_req(test::TestRequest::post(), path)
+            admin_req(peer(test::TestRequest::post()), path)
                 .set_json(body)
                 .to_request(),
         )
@@ -991,7 +1107,7 @@ mod tests {
     {
         test::call_service(
             app,
-            admin_req(test::TestRequest::delete(), path).to_request(),
+            admin_req(peer(test::TestRequest::delete()), path).to_request(),
         )
         .await
     }
@@ -1014,7 +1130,9 @@ mod tests {
         let app = full_app(test_settings(), pool).await; // admin_token defaults to None
         let resp = test::call_service(
             &app,
-            test::TestRequest::get().uri("/admin/stats").to_request(),
+            peer(test::TestRequest::get())
+                .uri("/admin/stats")
+                .to_request(),
         )
         .await;
         assert_eq!(resp.status(), 404);
@@ -1025,7 +1143,9 @@ mod tests {
         let app = full_app(admin_settings(), pool).await;
         let resp = test::call_service(
             &app,
-            test::TestRequest::get().uri("/admin/stats").to_request(),
+            peer(test::TestRequest::get())
+                .uri("/admin/stats")
+                .to_request(),
         )
         .await;
         assert_eq!(resp.status(), 401);
@@ -1036,7 +1156,7 @@ mod tests {
         let app = full_app(admin_settings(), pool).await;
         let resp = test::call_service(
             &app,
-            test::TestRequest::get()
+            peer(test::TestRequest::get())
                 .uri("/admin/stats")
                 .insert_header(("Authorization", "Bearer wrong"))
                 .to_request(),
@@ -1198,7 +1318,7 @@ mod tests {
         // And the file is no longer servable.
         let resp = test::call_service(
             &app,
-            test::TestRequest::get()
+            peer(test::TestRequest::get())
                 .uri(&format!("/{slug}"))
                 .to_request(),
         )
@@ -1216,7 +1336,7 @@ mod tests {
 
         let resp = test::call_service(
             &app,
-            test::TestRequest::get()
+            peer(test::TestRequest::get())
                 .uri(&format!("/{slug}"))
                 .to_request(),
         )
@@ -1547,7 +1667,7 @@ mod tests {
 
         let resp = test::call_service(
             &app,
-            test::TestRequest::get()
+            peer(test::TestRequest::get())
                 .uri(&format!("/{slug}"))
                 .insert_header(("User-Agent", "DownloaderAgent/2.0"))
                 .to_request(),

@@ -10,6 +10,7 @@ use rand::distr::{Alphanumeric, SampleString};
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 use tokio::io::AsyncWriteExt as _;
 
+use crate::ip::XffTrust;
 use crate::rate_limit::UploadThrottle;
 use crate::settings::Settings;
 
@@ -25,19 +26,16 @@ pub(crate) fn uuid_to_path(root: &Path, uuid: &Uuid) -> PathBuf {
     root.join(&name[0..2]).join(&name[2..4]).join(name)
 }
 
-/// Resolves the client's IP address (v4 or v6) for a request, honoring
-/// `trust_xff` so every consumer (ban checks, quotas, throttling, access
-/// logs) agrees on the same notion of "client IP" behind a reverse proxy.
-pub(crate) fn extract_ip(req: &HttpRequest, trust_xff: bool) -> Option<std::net::IpAddr> {
-    if trust_xff {
+/// Resolves the client's IP address (v4 or v6) for a request, so every consumer (ban
+/// checks, quotas, throttling, access logs) agrees on the same notion of "client IP".
+pub(crate) fn extract_ip(req: &HttpRequest, xff_trust: &XffTrust) -> Option<std::net::IpAddr> {
+    crate::ip::client_ip(
         req.headers()
             .get("X-Forwarded-For")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
-    } else {
-        req.peer_addr().map(|addr| addr.ip())
-    }
+            .and_then(|v| v.to_str().ok()),
+        req.peer_addr().map(|addr| addr.ip()),
+        xff_trust,
+    )
 }
 
 /// A multipart field reader that writes the upload to a temp file and
@@ -142,17 +140,16 @@ impl<'t> FieldReader<'t> for HashedTempFile {
             let throttle = _req
                 .app_data::<actix_web::web::Data<UploadThrottle>>()
                 .cloned();
-            let (rate, burst, trust_xff) = _req
+            let (rate, burst) = _req
                 .app_data::<actix_web::web::Data<Settings>>()
-                .map(|s| {
-                    (
-                        s.max_upload_bytes_per_sec,
-                        s.max_upload_burst_bytes,
-                        s.trust_xff,
-                    )
-                })
-                .unwrap_or((None, None, false));
-            let ip: Option<std::net::IpAddr> = extract_ip(_req, trust_xff);
+                .map(|s| (s.max_upload_bytes_per_sec, s.max_upload_burst_bytes))
+                .unwrap_or((None, None));
+            let untrusted = XffTrust::untrusted();
+            let xff_trust = _req
+                .app_data::<actix_web::web::Data<XffTrust>>()
+                .map(|t| &***t)
+                .unwrap_or(&untrusted);
+            let ip: Option<std::net::IpAddr> = extract_ip(_req, xff_trust);
 
             let to_field_err = |e: std::io::Error| MultipartError::Field {
                 name: field_name.clone(),
@@ -370,6 +367,8 @@ mod tests {
             max_ext_len: 7,
             auto_file_ext: false,
             trust_xff: false,
+            trusted_proxies: None,
+            xff_hops: 1,
             admin_email: "admin@example.com".to_string(),
             admin_token: None,
             clamd_addr: None,

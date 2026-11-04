@@ -35,15 +35,10 @@ pub(crate) async fn fetch_ip_ranges(url: &str) -> Result<Vec<IpRangeEntry>> {
 /// cleared for the first address, set for the last, so a non-aligned `addr` (e.g.
 /// `10.0.0.5/24`) is normalized down to its block's actual range. `prefix` must be 0..=32.
 fn cidr_range(addr: u32, prefix: u8) -> (u32, u32) {
-    let host_bit_count = 32 - u32::from(prefix);
-    // A full 32-bit shift panics in Rust, so /0 (every bit is a host bit) is its own case.
-    let host_mask = if host_bit_count == 32 {
-        u32::MAX
-    } else {
-        !(u32::MAX << host_bit_count)
-    };
-    let network_mask = !host_mask;
-    (addr & network_mask, addr | host_mask)
+    match crate::ip::cidr_bounds(u128::from(addr), prefix, 32) {
+        Some((start, end)) => (start as u32, end as u32),
+        _ => (addr, addr),
+    }
 }
 
 pub(crate) fn parse_body(body: &str) -> Vec<IpRangeEntry> {

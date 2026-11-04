@@ -21,6 +21,7 @@ use crate::challenge::ChallengeCache;
 use crate::clamd;
 use crate::db;
 use crate::db_pool::DbPool;
+use crate::ip::XffTrust;
 use crate::model::BanType;
 use crate::nsfw::NsfwModel;
 use crate::pow::PowSecret;
@@ -490,12 +491,14 @@ pub(crate) async fn captcha_verify(
     settings: web::Data<Settings>,
     pow: web::Data<PowSecret>,
     challenge_cache: web::Data<ChallengeCache>,
+    xff_trust: web::Data<XffTrust>,
 ) -> impl Responder {
     if !pow.verify(&body.token, &body.nonce, settings.pow_difficulty) {
         return error_page(StatusCode::FORBIDDEN, "Challenge not solved.");
     }
 
-    let Some(ip) = extract_ip(&req, settings.trust_xff) else {
+    let Some(ip) = extract_ip(&req, &xff_trust) else {
+        log::error!("challenge verification rejected: no client address (peer_addr unavailable)");
         return error_page(StatusCode::BAD_REQUEST, "Could not determine your IP.");
     };
 
@@ -666,6 +669,7 @@ fn wants_html(req: &HttpRequest) -> bool {
 }
 
 #[post("/")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn upload(
     req: HttpRequest,
     payload: web::Payload,
@@ -674,8 +678,17 @@ pub(crate) async fn upload(
     ban_cache: web::Data<BanCache>,
     challenge_cache: web::Data<ChallengeCache>,
     nsfw_model: web::Data<Option<Arc<NsfwModel>>>,
+    xff_trust: web::Data<XffTrust>,
 ) -> impl Responder {
-    let uploader_ip = extract_ip(&req, settings.trust_xff);
+    let client_ip = extract_ip(&req, &xff_trust);
+    if client_ip.is_none() {
+        log::error!("upload rejected: could not determine client address (peer_addr unavailable)");
+        return error_page(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not determine your IP address.",
+        );
+    }
+    let uploader_ip = client_ip;
     let user_agent = req
         .headers()
         .get("User-Agent")
@@ -749,23 +762,30 @@ pub(crate) async fn get_file(
     settings: web::Data<Settings>,
     ban_cache: web::Data<BanCache>,
     challenge_cache: web::Data<ChallengeCache>,
+    xff_trust: web::Data<XffTrust>,
 ) -> actix_web::Result<HttpResponse> {
     let slug = &path.0;
 
-    if let Some(ip) = extract_ip(&req, settings.trust_xff)
-        && ban_cache
-            .is_ip_banned(db.get_ref(), ip, BanType::Full)
-            .await
-            .map_err(actix_web::error::ErrorInternalServerError)?
+    let Some(ip) = extract_ip(&req, &xff_trust) else {
+        log::error!("download rejected for slug {slug}: no client address (peer_addr unavailable)");
+        return Ok(error_page(
+            StatusCode::FORBIDDEN,
+            "Could not determine your IP address.",
+        ));
+    };
+
+    if ban_cache
+        .is_ip_banned(db.get_ref(), ip, BanType::Full)
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?
     {
         return Ok(error_page(StatusCode::FORBIDDEN, "Your IP is banned."));
     }
 
-    if let Some(ip) = extract_ip(&req, settings.trust_xff)
-        && challenge_cache
-            .needs_challenge(db.get_ref(), ip, settings.nsfw_threshold)
-            .await
-            .map_err(actix_web::error::ErrorInternalServerError)?
+    if challenge_cache
+        .needs_challenge(db.get_ref(), ip, settings.nsfw_threshold)
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?
     {
         log::info!("download rejected: challenge required (ip={ip})");
         // browsers get sent through the captcha and back to the file
@@ -786,7 +806,6 @@ pub(crate) async fn get_file(
         .map_err(actix_web::error::ErrorInternalServerError)?
         .ok_or_else(|| actix_web::error::ErrorNotFound("File not found"))?;
 
-    let ip = extract_ip(&req, settings.trust_xff);
     let user_agent = req
         .headers()
         .get("User-Agent")
@@ -795,7 +814,8 @@ pub(crate) async fn get_file(
     let upload_id = row.id;
     let db_log = db.clone();
     tokio::spawn(async move {
-        if let Err(e) = db::log_access(db_log.get_ref(), upload_id, ip, user_agent.as_deref()).await
+        if let Err(e) =
+            db::log_access(db_log.get_ref(), upload_id, Some(ip), user_agent.as_deref()).await
         {
             log::warn!("Failed to log file access: {e}");
         }

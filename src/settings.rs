@@ -44,6 +44,9 @@ pub(crate) struct Settings {
     pub auto_file_ext: bool, //automatically try to detect file extension for files that have none
     #[env_settings(default = "false")]
     pub trust_xff: bool, //trust X-Forwarded-For header; enable only when behind a reverse proxy
+    pub trusted_proxies: Option<String>, // comma-separated CIDRs of reverse proxies to trust
+    #[env_settings(default = 1)]
+    pub xff_hops: usize, //trusted proxies between us and the client, counting the socket peer
 
     #[env_settings(default = "admin@example.com")]
     pub admin_email: String,
@@ -79,5 +82,12 @@ impl Settings {
     pub(crate) fn nsfw_model_path(&self) -> Option<&std::path::Path> {
         let path = std::path::Path::new(self.nsfw_model_path.as_deref()?);
         path.is_file().then_some(path)
+    }
+
+    pub(crate) fn xff_trust(&self) -> (crate::ip::XffTrust, Vec<String>) {
+        if !self.trust_xff {
+            return (crate::ip::XffTrust::untrusted(), Vec::new());
+        }
+        crate::ip::XffTrust::new(self.trusted_proxies.as_deref(), self.xff_hops)
     }
 }

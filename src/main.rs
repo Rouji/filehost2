@@ -114,6 +114,26 @@ async fn main() -> std::io::Result<()> {
     ));
     let pow_secret = web::Data::new(pow::PowSecret::generate());
 
+    let (policy, invalid_proxies) = settings.xff_trust();
+    for entry in &invalid_proxies {
+        log::error!("TRUSTED_PROXIES: ignoring unparsable entry {entry:?}");
+    }
+    if settings.trust_xff {
+        let proxies = policy.proxy_count();
+        if proxies == 0 {
+            log::error!("TRUST_XFF is enabled but TRUSTED_PROXIES resolves to nothing");
+        } else {
+            log::info!(
+                "trusting X-Forwarded-For from {proxies} proxy range(s), \
+                 taking the client from {hops} hop(s) back",
+                hops = settings.xff_hops,
+            );
+        }
+    }
+
+    let xff_credible = settings.trust_xff && policy.proxy_count() > 0;
+    let xff_trust = web::Data::new(policy);
+
     let nsfw_model = web::Data::new(match settings.nsfw_model_path() {
         Some(path) => match nsfw::NsfwModel::load(path) {
             Ok(model) => {
@@ -128,11 +148,7 @@ async fn main() -> std::io::Result<()> {
         None => None,
     });
 
-    // `%a` is the raw peer address, which is the reverse proxy's IP rather
-    // than the client's whenever trust_xff is set; `%{r}a` resolves the
-    // client IP from X-Forwarded-For/Forwarded instead, matching the
-    // XFF-aware IP resolution already used for the DB access log.
-    let log_format = if settings.trust_xff {
+    let log_format = if xff_credible {
         "%{r}a %t \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T"
     } else {
         "%a %t \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T"
@@ -189,6 +205,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(challenge_cache.clone())
             .app_data(pow_secret.clone())
             .app_data(nsfw_model.clone())
+            .app_data(xff_trust.clone())
             .app_data(
                 MultipartFormConfig::default()
                     .total_limit(s.max_filesize * 1024 * 1024)
