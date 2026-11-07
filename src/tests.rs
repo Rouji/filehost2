@@ -995,6 +995,40 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn miss_logs_ip_and_slug(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool.clone()).await;
+
+        let resp = test::call_service(
+            &app,
+            peer(test::TestRequest::get())
+                .uri("/no-such-slug")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 404);
+
+        // since log_miss is a background task ...
+        for _ in 0..100 {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM misses")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            if count >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let (ip, slug): (Option<Vec<u8>>, String) =
+            sqlx::query_as("SELECT ip, slug FROM misses LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ip, Some(ip_bytes("127.0.0.1")));
+        assert_eq!(slug, "no-such-slug");
+    }
+
+    #[sqlx::test]
     async fn download_is_logged(pool: MySqlPool) {
         let app = full_app(test_settings(), pool.clone()).await;
         let slug = upload_and_get_slug(&app, "test.txt").await;
@@ -1034,11 +1068,15 @@ mod tests {
         assert!(resp.status().is_success());
 
         wait_for_accesses_count(&pool, 1).await;
-        let ip: Option<Vec<u8>> = sqlx::query_scalar("SELECT ip FROM accesses LIMIT 1")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (ip, bytes, status): (Option<Vec<u8>>, Option<u64>, Option<u16>) =
+            sqlx::query_as("SELECT ip, bytes, status FROM accesses LIMIT 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(ip, Some(ip_bytes("10.0.0.1")));
+        // the uploaded file is 7 bytes of body, served whole
+        assert_eq!(bytes, Some(7), "served byte count should be logged");
+        assert_eq!(status, Some(200), "response status should be logged");
     }
 
     #[sqlx::test]

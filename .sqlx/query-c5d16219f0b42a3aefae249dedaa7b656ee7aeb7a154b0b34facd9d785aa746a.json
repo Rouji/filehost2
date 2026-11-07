@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO accesses (upload_id, ip, user_agent, bytes, status) VALUES (?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "c5d16219f0b42a3aefae249dedaa7b656ee7aeb7a154b0b34facd9d785aa746a"
+}

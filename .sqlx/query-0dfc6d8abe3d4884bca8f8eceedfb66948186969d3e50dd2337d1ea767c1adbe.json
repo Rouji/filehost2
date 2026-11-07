@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM misses WHERE timestamp < NOW() - INTERVAL 7 DAY",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "0dfc6d8abe3d4884bca8f8eceedfb66948186969d3e50dd2337d1ea767c1adbe"
+}

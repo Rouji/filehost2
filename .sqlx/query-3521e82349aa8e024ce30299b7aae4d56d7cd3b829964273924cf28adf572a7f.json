@@ -136,7 +136,7 @@
         "name": "uploader_ip",
         "type_info": {
           "type": "VarString",
-          "flags": "MULTIPLE_KEY | BINARY",
+          "flags": "NOT_NULL | MULTIPLE_KEY | BINARY | NO_DEFAULT_VALUE",
           "collation": 63,
           "max_size": 16
         },
@@ -208,7 +208,7 @@
       false,
       false,
       true,
-      true,
+      false,
       true,
       true,
       true

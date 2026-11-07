@@ -275,6 +275,36 @@ pub(crate) async fn insert_upload_row(
     Ok(())
 }
 
+pub(crate) async fn log_miss(
+    db: &DbPool,
+    ip: IpAddr,
+    slug: &str,
+    user_agent: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let ip = ip::to_db_bytes(ip).to_vec();
+    let slug: String = slug.chars().take(255).collect();
+    let user_agent = user_agent.map(|ua| ua.chars().take(512).collect::<String>());
+    sqlx::query!(
+        "INSERT INTO misses (ip, slug, user_agent) VALUES (?, ?, ?)",
+        ip,
+        slug,
+        user_agent
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Deletes logged misses older than the retention window.
+pub(crate) async fn delete_old_misses(db: &DbPool) -> Result<u64> {
+    let mut conn = db_pool::conn(db).await?;
+    let res = sqlx::query!("DELETE FROM misses WHERE timestamp < NOW() - INTERVAL 7 DAY")
+        .execute(&mut *conn)
+        .await?;
+    Ok(res.rows_affected())
+}
+
 pub(crate) async fn uploads_count_last_day(db: &DbPool, ip: IpAddr) -> Result<i64, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let (start, end) = ip::quota_range(ip);
@@ -337,14 +367,18 @@ pub(crate) async fn log_access(
     upload_id: Uuid,
     ip: Option<IpAddr>,
     user_agent: Option<&str>,
+    bytes: Option<i64>,
+    status: u16,
 ) -> Result<(), sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let ip = ip.map(|ip| ip::to_db_bytes(ip).to_vec());
     sqlx::query!(
-        "INSERT INTO accesses (upload_id, ip, user_agent) VALUES (?, ?, ?)",
+        "INSERT INTO accesses (upload_id, ip, user_agent, bytes, status) VALUES (?, ?, ?, ?, ?)",
         upload_id,
         ip,
-        user_agent
+        user_agent,
+        bytes,
+        status
     )
     .execute(&mut *conn)
     .await?;

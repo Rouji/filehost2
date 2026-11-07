@@ -217,6 +217,8 @@ pub(crate) async fn migrate(db: &DbPool) -> Result<()> {
 pub(crate) async fn delete_expired(db: &DbPool, settings: &Settings) -> Result<()> {
     let count = db::delete_expired(db, settings).await?;
     println!("Deleted {count} expired upload(s).");
+    let misses = db::delete_old_misses(db).await?;
+    println!("Pruned {misses} old slug miss(es).");
     Ok(())
 }
 

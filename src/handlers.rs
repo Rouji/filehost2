@@ -802,26 +802,31 @@ pub(crate) async fn get_file(
         return Ok(challenge_required_response(&settings, "downloading", false));
     }
 
-    let row = db::get_upload_by_slug(db.get_ref(), slug)
-        .await
-        .map_err(actix_web::error::ErrorInternalServerError)?
-        .ok_or_else(|| actix_web::error::ErrorNotFound("File not found"))?;
-
     let user_agent = req
         .headers()
         .get("User-Agent")
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
 
+    let row = db::get_upload_by_slug(db.get_ref(), slug)
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?;
+
+    let Some(row) = row else {
+        log::info!("download miss: {slug} (ip={})", format_ip(Some(ip)));
+        let db_log = db.clone();
+        let miss_slug = slug.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                db::log_miss(db_log.get_ref(), ip, &miss_slug, user_agent.as_deref()).await
+            {
+                log::warn!("Failed to log slug miss: {e}");
+            }
+        });
+        return Err(actix_web::error::ErrorNotFound("File not found"));
+    };
+
     let upload_id = row.id;
-    let db_log = db.clone();
-    tokio::spawn(async move {
-        if let Err(e) =
-            db::log_access(db_log.get_ref(), upload_id, Some(ip), user_agent.as_deref()).await
-        {
-            log::warn!("Failed to log file access: {e}");
-        }
-    });
 
     let mime: mime_guess::Mime = row
         .content_type
@@ -878,6 +883,31 @@ pub(crate) async fn get_file(
             ))
         });
     }
+
+    let status = res.status().as_u16();
+    let bytes = if req.method() == actix_web::http::Method::HEAD {
+        None
+    } else {
+        match actix_web::body::MessageBody::size(res.body()) {
+            actix_web::body::BodySize::Sized(n) => Some(n as i64),
+            _ => None,
+        }
+    };
+    let db_log = db.clone();
+    tokio::spawn(async move {
+        if let Err(e) = db::log_access(
+            db_log.get_ref(),
+            upload_id,
+            Some(ip),
+            user_agent.as_deref(),
+            bytes,
+            status,
+        )
+        .await
+        {
+            log::warn!("Failed to log file access: {e}");
+        }
+    });
 
     Ok(res)
 }
