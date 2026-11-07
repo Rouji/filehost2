@@ -193,6 +193,7 @@ async fn main() -> std::io::Result<()> {
             .service(handlers::captcha_js)
             .service(handlers::captcha_challenge)
             .service(handlers::captcha_verify)
+            .service(handlers::favicon)
             .service(handlers::get_file)
             .service(
                 web::scope("/admin")

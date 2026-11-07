@@ -114,6 +114,7 @@ mod tests {
                 .service(handlers::captcha_js)
                 .service(handlers::captcha_challenge)
                 .service(handlers::captcha_verify)
+                .service(handlers::favicon)
                 .service(handlers::get_file)
                 .service(web::scope("/admin").configure(admin::configure))
                 .app_data(web::Data::new(db_pool))
@@ -1026,6 +1027,32 @@ mod tests {
                 .unwrap();
         assert_eq!(ip, Some(ip_bytes("127.0.0.1")));
         assert_eq!(slug, "no-such-slug");
+    }
+
+    #[sqlx::test]
+    async fn favicon_is_served(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool.clone()).await;
+
+        let resp = test::call_service(
+            &app,
+            test::TestRequest::get().uri("/favicon.ico").to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("image/x-icon")
+        );
+        assert!(!test::read_body(resp).await.is_empty());
+
+        // it stays out of the slug namespace: no miss row for it
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM misses")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[sqlx::test]

@@ -753,6 +753,16 @@ pub(crate) async fn upload(
     format_links(&links, formatted)
 }
 
+const FAVICON: &[u8] = include_bytes!("../assets/favicon.ico");
+
+#[get("/favicon.ico")]
+pub(crate) async fn favicon() -> HttpResponse {
+    HttpResponse::Ok()
+        .insert_header(("Content-Type", "image/x-icon"))
+        .insert_header(("Cache-Control", "public, max-age=604800, immutable"))
+        .body(FAVICON)
+}
+
 #[route("/{slug}", method = "GET", method = "HEAD")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn get_file(
