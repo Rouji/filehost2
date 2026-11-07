@@ -10,7 +10,7 @@ use actix_web::{
         StatusCode,
         header::{ContentDisposition, ContentType, DispositionParam, DispositionType},
     },
-    post, web,
+    post, route, web,
 };
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
@@ -753,7 +753,7 @@ pub(crate) async fn upload(
     format_links(&links, formatted)
 }
 
-#[get("/{slug}")]
+#[route("/{slug}", method = "GET", method = "HEAD")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn get_file(
     req: HttpRequest,

@@ -1029,6 +1029,50 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn head_requests_hit_the_file_route(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool.clone()).await;
+        let slug = upload_and_get_slug(&app, "test.txt").await;
+
+        // HEAD used to fall through to the router's bare 404 (#[get] doesn't
+        // match HEAD), breaking HEAD-first download clients
+        let resp = test::call_service(
+            &app,
+            peer(test::TestRequest::default())
+                .method(actix_http::Method::HEAD)
+                .uri(&format!("/{slug}"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 200);
+
+        let resp = test::call_service(
+            &app,
+            peer(test::TestRequest::default())
+                .method(actix_http::Method::HEAD)
+                .uri("/no-such-slug")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 404);
+
+        for _ in 0..100 {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM misses")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            if count >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let slug_logged: String = sqlx::query_scalar("SELECT slug FROM misses LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(slug_logged, "no-such-slug");
+    }
+
+    #[sqlx::test]
     async fn download_is_logged(pool: MySqlPool) {
         let app = full_app(test_settings(), pool.clone()).await;
         let slug = upload_and_get_slug(&app, "test.txt").await;
