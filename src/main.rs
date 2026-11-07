@@ -79,6 +79,19 @@ async fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
+    match db_pool::conn(&db).await {
+        Ok(mut conn) => {
+            if let Err(e) = sqlx::migrate!().run(&mut *conn).await {
+                log::error!("failed to apply database migrations: {e}");
+                return Err(std::io::Error::other("migration failure"));
+            }
+        }
+        Err(e) => {
+            log::error!("failed to connect to database for migrations: {e}");
+            return Err(std::io::Error::other("database connection failure"));
+        }
+    }
+
     let acme_domains: Option<Vec<String>> = settings
         .acme_domains
         .as_deref()
