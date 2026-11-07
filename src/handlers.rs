@@ -774,6 +774,7 @@ pub(crate) async fn get_file(
     challenge_cache: web::Data<ChallengeCache>,
     xff_trust: web::Data<XffTrust>,
     download_throttle: web::Data<rate_limit::DownloadThrottle>,
+    miss_tracker: web::Data<rate_limit::MissTracker>,
 ) -> actix_web::Result<HttpResponse> {
     let slug = &path.0;
 
@@ -823,16 +824,14 @@ pub(crate) async fn get_file(
         .map_err(actix_web::error::ErrorInternalServerError)?;
 
     let Some(row) = row else {
+        // slug enumeration (D8) detection happens on this miss: count it per IP
+        // in memory and challenge the IP once it crosses the threshold
         log::info!("download miss: {slug} (ip={})", format_ip(Some(ip)));
-        let db_log = db.clone();
-        let miss_slug = slug.clone();
-        tokio::spawn(async move {
-            if let Err(e) =
-                db::log_miss(db_log.get_ref(), ip, &miss_slug, user_agent.as_deref()).await
-            {
-                log::warn!("Failed to log slug miss: {e}");
-            }
-        });
+        let misses = miss_tracker.register(ip);
+        if settings.max_misses_per_minute > 0 && misses == settings.max_misses_per_minute as u32 {
+            log::warn!("marking {ip} suspect: {misses} slug misses within a minute");
+            challenge_cache.mark_ip_suspect(ip).await;
+        }
         return Err(actix_web::error::ErrorNotFound("File not found"));
     };
 

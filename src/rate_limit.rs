@@ -72,6 +72,30 @@ pub(crate) type UploadThrottle = ByteThrottle;
 /// file streams out.
 pub(crate) type DownloadThrottle = ByteThrottle;
 
+pub(crate) struct MissTracker(Mutex<HashMap<IpAddr, (Instant, u32)>>);
+
+impl MissTracker {
+    pub(crate) fn new() -> Self {
+        Self(Mutex::new(HashMap::new()))
+    }
+
+    /// Registers a miss for `ip`, returning the count within the current window.
+    pub(crate) fn register(&self, ip: IpAddr) -> u32 {
+        let mut map = self.0.lock().unwrap();
+        let now = Instant::now();
+        map.retain(|_, (window_start, _)| {
+            now.duration_since(*window_start) < Duration::from_secs(120)
+        });
+        let (window_start, count) = map.entry(ip).or_insert_with(|| (now, 0));
+        if now.duration_since(*window_start) >= Duration::from_secs(60) {
+            *window_start = now;
+            *count = 0;
+        }
+        *count += 1;
+        *count
+    }
+}
+
 /// `MessageBody` wrapper that paces chunks of `inner` through a shared
 /// [`ByteThrottle`]. Bytes are buffered across the wait, so the client keeps
 /// seeing data flow at `rate` instead of a frozen connection; range requests

@@ -54,6 +54,7 @@ mod tests {
             max_upload_burst_bytes: None,
             max_download_bytes_per_sec: None,
             max_download_burst_bytes: None,
+            max_misses_per_minute: 30,
             dedup: true,
             db_max_connections: 20,
             ban_cache_ttl_seconds: 300,
@@ -124,6 +125,7 @@ mod tests {
                 .app_data(web::Data::new(challenge_cache))
                 .app_data(web::Data::new(xff_trust))
                 .app_data(web::Data::new(crate::rate_limit::DownloadThrottle::new()))
+                .app_data(web::Data::new(crate::rate_limit::MissTracker::new()))
                 .app_data(web::Data::new(PowSecret::generate()))
                 .app_data(web::Data::new(
                     None::<std::sync::Arc<crate::nsfw::NsfwModel>>,
@@ -996,7 +998,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn miss_logs_ip_and_slug(pool: MySqlPool) {
+    async fn miss_returns_404(pool: MySqlPool) {
         let app = full_app(test_settings(), pool.clone()).await;
 
         let resp = test::call_service(
@@ -1007,26 +1009,40 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), 404);
+    }
 
-        // since log_miss is a background task ...
-        for _ in 0..100 {
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM misses")
-                .fetch_one(&pool)
+    #[sqlx::test]
+    async fn miss_brute_force_marks_ip_suspect(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.max_misses_per_minute = 2;
+        let app = full_app(settings, pool).await;
+        // upload while the IP is still clean: once suspect, uploads need PoW too
+        let slug = upload_and_get_slug(&app, "test.txt").await;
+
+        let miss = |i: usize| {
+            let app = &app;
+            async move {
+                test::call_service(
+                    app,
+                    peer(test::TestRequest::get())
+                        .uri(&format!("/no-such-{i}"))
+                        .to_request(),
+                )
                 .await
-                .unwrap();
-            if count >= 1 {
-                break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        };
+        assert_eq!(miss(1).await.status(), 404);
+        assert_eq!(miss(2).await.status(), 404);
 
-        let (ip, slug): (Option<Vec<u8>>, String) =
-            sqlx::query_as("SELECT ip, slug FROM misses LIMIT 1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(ip, Some(ip_bytes("127.0.0.1")));
-        assert_eq!(slug, "no-such-slug");
+        // threshold crossed: the IP now faces the PoW challenge everywhere
+        let resp = test::call_service(
+            &app,
+            peer(test::TestRequest::get())
+                .uri(&format!("/{slug}"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 428);
     }
 
     #[sqlx::test]
@@ -1046,13 +1062,6 @@ mod tests {
             Some("image/x-icon")
         );
         assert!(!test::read_body(resp).await.is_empty());
-
-        // it stays out of the slug namespace: no miss row for it
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM misses")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count, 0);
     }
 
     #[sqlx::test]
@@ -1081,22 +1090,6 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), 404);
-
-        for _ in 0..100 {
-            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM misses")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-            if count >= 1 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        let slug_logged: String = sqlx::query_scalar("SELECT slug FROM misses LIMIT 1")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(slug_logged, "no-such-slug");
     }
 
     #[sqlx::test]

@@ -46,6 +46,9 @@ pub(crate) struct Settings {
     #[env_settings(default = 1)]
     pub xff_hops: usize, //trusted proxies between us and the client, counting the socket peer
 
+    #[env_settings(default = 30)]
+    pub max_misses_per_minute: usize, //slug misses (404s) per IP per minute before it gets PoW-challenged; 0 disables
+
     #[env_settings(default = "admin@example.com")]
     pub admin_email: String,
     pub admin_token: Option<String>, //bearer token for /admin API; unset disables it
