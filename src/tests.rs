@@ -13,6 +13,7 @@ mod tests {
     use crate::admin;
     use crate::ban_cache::BanCache;
     use crate::challenge::ChallengeCache;
+    use crate::db;
     use crate::db_pool;
     use crate::handlers;
     use crate::pow::PowSecret;
@@ -1009,6 +1010,37 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), 404);
+    }
+
+    #[sqlx::test]
+    async fn banned_user_agent_cannot_download(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool.clone()).await;
+        let slug = upload_and_get_slug(&app, "test.txt").await;
+
+        db::insert_banned_user_agent(&to_db_pool(&pool), "python-requests", Some("scraper"))
+            .await
+            .unwrap();
+
+        let resp = test::call_service(
+            &app,
+            peer(test::TestRequest::get())
+                .uri(&format!("/{slug}"))
+                .insert_header(("User-Agent", "python-requests/2.31.0"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(resp.status(), 403);
+
+        // an unbanned client is unaffected
+        let resp = test::call_service(
+            &app,
+            peer(test::TestRequest::get())
+                .uri(&format!("/{slug}"))
+                .insert_header(("User-Agent", "Mozilla/5.0 (X11; Linux x86_64)"))
+                .to_request(),
+        )
+        .await;
+        assert!(resp.status().is_success());
     }
 
     #[sqlx::test]

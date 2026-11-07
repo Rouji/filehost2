@@ -786,12 +786,28 @@ pub(crate) async fn get_file(
         ));
     };
 
+    let user_agent = req
+        .headers()
+        .get("User-Agent")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
     if ban_cache
         .is_ip_banned(db.get_ref(), ip, BanType::Full)
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?
     {
         return Ok(error_page(StatusCode::FORBIDDEN, "Your IP is banned."));
+    }
+
+    if let Some(ua) = user_agent.as_deref()
+        && ban_cache
+            .is_user_agent_banned(db.get_ref(), ua)
+            .await
+            .map_err(actix_web::error::ErrorInternalServerError)?
+    {
+        log::info!("download rejected: banned user agent (ip={ip})");
+        return Ok(error_page(StatusCode::FORBIDDEN, "Your client is banned."));
     }
 
     if challenge_cache
@@ -812,12 +828,6 @@ pub(crate) async fn get_file(
         }
         return Ok(challenge_required_response(&settings, "downloading", false));
     }
-
-    let user_agent = req
-        .headers()
-        .get("User-Agent")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
 
     let row = db::get_upload_by_slug(db.get_ref(), slug)
         .await
