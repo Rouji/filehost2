@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 
 use anyhow::Result;
 use futures_util::future::join_all;
@@ -8,6 +8,7 @@ use time::PrimitiveDateTime;
 use crate::db;
 use crate::db_pool;
 use crate::db_pool::DbPool;
+use crate::ip::Cidr;
 
 // TODO: ipv6
 static IP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
@@ -31,44 +32,17 @@ pub(crate) async fn fetch_ip_ranges(url: &str) -> Result<Vec<IpRangeEntry>> {
     Ok(parse_body(&body))
 }
 
-/// The first and last address of the `/prefix` CIDR block containing `addr`: host bits
-/// cleared for the first address, set for the last, so a non-aligned `addr` (e.g.
-/// `10.0.0.5/24`) is normalized down to its block's actual range. `prefix` must be 0..=32.
-fn cidr_range(addr: u32, prefix: u8) -> (u32, u32) {
-    match crate::ip::cidr_bounds(u128::from(addr), prefix, 32) {
-        Some((start, end)) => (start as u32, end as u32),
-        None => (addr, addr),
-    }
-}
-
 pub(crate) fn parse_body(body: &str) -> Vec<IpRangeEntry> {
-    let mut entries = Vec::new();
-    for cap in IP_RE.captures_iter(body) {
-        let addr: Ipv4Addr = match cap[1].parse() {
-            Ok(ip) => ip,
-            Err(_) => continue,
-        };
-        let addr_u32 = u32::from(addr);
-
-        let (start, end) = if let Some(prefix_str) = cap.get(2) {
-            let prefix: u8 = match prefix_str.as_str().parse() {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            if prefix > 32 {
-                continue;
-            }
-            cidr_range(addr_u32, prefix)
-        } else {
-            (addr_u32, addr_u32)
-        };
-
-        entries.push(IpRangeEntry {
-            start: IpAddr::V4(Ipv4Addr::from(start)),
-            end: IpAddr::V4(Ipv4Addr::from(end)),
-        });
-    }
-    entries
+    IP_RE
+        .captures_iter(body)
+        .filter_map(|cap| {
+            let cidr = Cidr::parse(cap.get(0)?.as_str())?;
+            Some(IpRangeEntry {
+                start: cidr.start,
+                end: cidr.end,
+            })
+        })
+        .collect()
 }
 
 pub(crate) async fn sync_blacklist(db: DbPool, blacklist_id: i32) -> Result<()> {

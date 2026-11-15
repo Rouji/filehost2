@@ -52,7 +52,7 @@ pub(crate) fn quota_range(ip: IpAddr) -> (IpAddr, IpAddr) {
 /// First and last address of the `/prefix` block containing `addr`, where `addr` is a
 /// `width`-bit address (32 for v4, 128 for v6) carried in the low bits of a u128.
 /// `None` if `prefix` is wider than the address family allows.
-pub(crate) fn cidr_bounds(addr: u128, prefix: u8, width: u8) -> Option<(u128, u128)> {
+fn cidr_bounds(addr: u128, prefix: u8, width: u8) -> Option<(u128, u128)> {
     if prefix > width {
         return None;
     }
@@ -69,8 +69,8 @@ pub(crate) fn cidr_bounds(addr: u128, prefix: u8, width: u8) -> Option<(u128, u1
 /// A CIDR block (`10.0.0.0/8`, `2001:db8::/32`) or a single address (`10.0.0.1`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Cidr {
-    start: IpAddr,
-    end: IpAddr,
+    pub(crate) start: IpAddr,
+    pub(crate) end: IpAddr,
 }
 
 impl Cidr {
