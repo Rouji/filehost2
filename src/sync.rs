@@ -59,18 +59,8 @@ pub(crate) async fn sync_blacklist(db: DbPool, blacklist_id: i32) -> Result<()> 
 
     let ban_type = bl_entry.type_;
     let count = entries.len();
-    for entry in entries {
-        db::insert_banned_ip(
-            &db,
-            entry.start,
-            entry.end,
-            None,
-            None,
-            Some(blacklist_id),
-            ban_type,
-        )
-        .await?;
-    }
+    let ranges: Vec<(IpAddr, IpAddr)> = entries.into_iter().map(|e| (e.start, e.end)).collect();
+    db::insert_banned_ip_batch(&db, &ranges, ban_type, blacklist_id).await?;
 
     // Update last_update timestamp.
     {

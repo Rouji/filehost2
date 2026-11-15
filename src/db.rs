@@ -606,6 +606,38 @@ pub(crate) async fn insert_banned_ip(
     Ok(result.last_insert_id() as i64)
 }
 
+/// Inserts blacklist ranges in one multi-row `INSERT` per chunk, so syncing a
+/// large blacklist costs a handful of round trips instead of one per range.
+pub(crate) async fn insert_banned_ip_batch(
+    db: &DbPool,
+    ranges: &[(IpAddr, IpAddr)],
+    ban_type: BanType,
+    blacklist_id: i32,
+) -> Result<usize, sqlx::Error> {
+    // One bind per column; 4 * 1000 stays well under `max_allowed_packet`.
+    const ROWS_PER_STATEMENT: usize = 1000;
+
+    let mut conn = db_pool::conn(db).await?;
+    let mut total = 0;
+    for chunk in ranges.chunks(ROWS_PER_STATEMENT) {
+        let values = std::iter::repeat_n("(?, ?, ?, ?)", chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO banned_ip_ranges (start_ip, end_ip, blacklist_id, type) VALUES {values}"
+        )));
+        for (start, end) in chunk {
+            q = q
+                .bind(ip::to_db_bytes(*start).to_vec())
+                .bind(ip::to_db_bytes(*end).to_vec())
+                .bind(blacklist_id)
+                .bind(ban_type as u32);
+        }
+        total += q.execute(&mut *conn).await?.rows_affected() as usize;
+    }
+    Ok(total)
+}
+
 pub(crate) async fn delete_banned_ips_by_blacklist(
     db: &DbPool,
     blacklist_id: i32,
