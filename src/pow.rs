@@ -1,5 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::util::{hex_decode, hex_encode};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
@@ -36,12 +37,12 @@ impl PowSecret {
 
         let mut token = signed;
         token.extend_from_slice(mac.as_bytes());
-        to_hex(&token)
+        hex_encode(&token)
     }
 
     /// Checks the token is genuine and unexpired, and that `nonce` solves it.
     pub(crate) fn verify(&self, token: &str, nonce: &str, difficulty: u32) -> bool {
-        let Some(buf) = from_hex(token) else {
+        let Some(buf) = hex_decode(token) else {
             return false;
         };
         if buf.len() != TOKEN_LEN {
@@ -81,20 +82,6 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn from_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) || !s.is_ascii() {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
 }
 
 #[cfg(test)]
