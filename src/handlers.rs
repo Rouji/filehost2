@@ -710,17 +710,29 @@ pub(crate) async fn upload(
     }
 
     let mut dev_payload = payload.into_inner();
-    let MultipartForm(form) =
-        match MultipartForm::<UploadForm>::from_request(&req, &mut dev_payload).await {
-            Ok(form) => form,
-            Err(e) => {
-                log::info!(
-                    "upload rejected: malformed request ({e}) (ip={})",
-                    format_ip(Some(uploader_ip))
-                );
-                return HttpResponse::from_error(e);
-            }
-        };
+    let MultipartForm(form) = match actix_web::rt::time::timeout(
+        std::time::Duration::from_secs(settings.upload_timeout as u64),
+        MultipartForm::<UploadForm>::from_request(&req, &mut dev_payload),
+    )
+    .await
+    {
+        Ok(Ok(form)) => form,
+        Ok(Err(e)) => {
+            log::info!(
+                "upload rejected: malformed request ({e}) (ip={})",
+                format_ip(Some(uploader_ip))
+            );
+            return HttpResponse::from_error(e);
+        }
+        Err(_elapsed) => {
+            log::info!(
+                "upload rejected: upload timed out after {}s (ip={})",
+                settings.upload_timeout,
+                format_ip(Some(uploader_ip))
+            );
+            return HttpResponse::RequestTimeout().finish();
+        }
+    };
 
     let id_len = if let Some(ref t) = form.id_length {
         t.0.clamp(settings.min_id_length, settings.max_id_length)

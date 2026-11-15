@@ -256,6 +256,31 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn upload_body_timeout_returns_408(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.upload_timeout = 1;
+        let app = full_app(settings, pool).await;
+
+        let (head, _) = upload_req(&multipart_body("f.txt", "hello"), &[]).into_parts();
+        let stalled: std::pin::Pin<
+            Box<
+                dyn futures_util::Stream<
+                        Item = Result<actix_web::web::Bytes, actix_http::error::PayloadError>,
+                    >,
+            >,
+        > = Box::pin(futures_util::stream::once(async {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            Ok::<_, actix_http::error::PayloadError>(actix_web::web::Bytes::new())
+        }));
+        let req = Request::from(head)
+            .replace_payload(actix_http::Payload::Stream { payload: stalled })
+            .0;
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 408);
+    }
+
+    #[sqlx::test]
     async fn upload_and_retrieve(pool: MySqlPool) {
         let app = full_app(test_settings(), pool).await;
 
