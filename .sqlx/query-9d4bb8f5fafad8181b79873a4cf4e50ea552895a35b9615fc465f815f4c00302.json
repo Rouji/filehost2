@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT u.id AS `dup_id: Uuid`, c.canonical_id AS `canonical_id!: Uuid`\n           FROM uploads u\n           JOIN (\n               SELECT hash, id AS canonical_id,\n                      ROW_NUMBER() OVER (PARTITION BY hash ORDER BY upload_timestamp DESC, id DESC) AS rn\n               FROM uploads\n               WHERE deleted_timestamp IS NULL AND hash IS NOT NULL\n           ) c ON c.hash = u.hash AND c.rn = 1\n           WHERE u.deleted_timestamp IS NULL AND u.hash IS NOT NULL AND u.id <> c.canonical_id",
+  "query": "SELECT u.id AS `dup_id: Uuid`, c.canonical_id AS `canonical_id!: Uuid`\n           FROM uploads u\n           JOIN (\n               SELECT hash, id AS canonical_id,\n                      ROW_NUMBER() OVER (PARTITION BY hash ORDER BY upload_timestamp DESC, id DESC) AS rn\n               FROM uploads\n               WHERE hash IS NOT NULL\n           ) c ON c.hash = u.hash AND c.rn = 1\n           WHERE u.hash IS NOT NULL AND u.id <> c.canonical_id",
   "describe": {
     "columns": [
       {
@@ -44,5 +44,5 @@
       true
     ]
   },
-  "hash": "dce652ad9605144a8b34a2e3a23808f13aa32ddd0621f5630239a9b247842ca9"
+  "hash": "9d4bb8f5fafad8181b79873a4cf4e50ea552895a35b9615fc465f815f4c00302"
 }

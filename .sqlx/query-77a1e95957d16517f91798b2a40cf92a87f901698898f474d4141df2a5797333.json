@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT id AS `id: Uuid` FROM uploads WHERE hash IS NULL AND deleted_timestamp IS NULL",
+  "query": "SELECT id AS `id: Uuid` FROM uploads WHERE hash IS NULL",
   "describe": {
     "columns": [
       {
@@ -27,5 +27,5 @@
       false
     ]
   },
-  "hash": "82498725eda6121ea9ce1cff2d0b397f7fdaaaed7fa09a0f9def71a3f866cd68"
+  "hash": "77a1e95957d16517f91798b2a40cf92a87f901698898f474d4141df2a5797333"
 }

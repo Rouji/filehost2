@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT 1 AS found FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+  "query": "SELECT 1 AS found FROM uploads WHERE slug = ?",
   "describe": {
     "columns": [
       {
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "79d69319bc8e28aefb89f33a9b46ae35afeb56a67f6129b117ae3d4accee7789"
+  "hash": "7d8b68b5e08c7db6eb086ef3f42bc69b39c7016c82e1518fc467abb0d1bdc4b1"
 }

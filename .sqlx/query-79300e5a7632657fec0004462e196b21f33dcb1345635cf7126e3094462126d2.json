@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT id AS `id: Uuid`, slug FROM uploads WHERE hash = ? AND deleted_timestamp IS NULL ORDER BY upload_timestamp DESC LIMIT 1",
+  "query": "SELECT id AS `id: Uuid`, slug FROM uploads WHERE hash = ? ORDER BY upload_timestamp DESC LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -44,5 +44,5 @@
       false
     ]
   },
-  "hash": "5470099f6bf175bbe2e663615b257e3140a759aedadbd7035e9797c2923c3dba"
+  "hash": "79300e5a7632657fec0004462e196b21f33dcb1345635cf7126e3094462126d2"
 }

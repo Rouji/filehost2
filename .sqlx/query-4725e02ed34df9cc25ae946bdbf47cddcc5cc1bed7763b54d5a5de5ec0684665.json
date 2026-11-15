@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT id AS `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash AS `hash: Vec<u8>`, uploader_ip, content_type, user_agent, nsfw_score FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+  "query": "SELECT id AS `id: Uuid`, upload_timestamp, expiry_timestamp, CAST(NULL AS DATETIME) AS deleted_timestamp, original_name, slug, file_size, hash AS `hash: Vec<u8>`, uploader_ip, content_type, user_agent, nsfw_score FROM uploads WHERE slug = ?",
   "describe": {
     "columns": [
       {
@@ -24,7 +24,7 @@
         "name": "upload_timestamp",
         "type_info": {
           "type": "Datetime",
-          "flags": "NOT_NULL | BINARY",
+          "flags": "NOT_NULL | MULTIPLE_KEY | BINARY",
           "collation": 63,
           "max_size": 19
         },
@@ -56,16 +56,11 @@
         "name": "deleted_timestamp",
         "type_info": {
           "type": "Datetime",
-          "flags": "MULTIPLE_KEY | BINARY",
+          "flags": "BINARY",
           "collation": 63,
           "max_size": 19
         },
-        "origin": {
-          "Table": {
-            "table": "filehost.uploads",
-            "name": "deleted_timestamp"
-          }
-        }
+        "origin": "Expression"
       },
       {
         "ordinal": 4,
@@ -214,5 +209,5 @@
       true
     ]
   },
-  "hash": "3521e82349aa8e024ce30299b7aae4d56d7cd3b829964273924cf28adf572a7f"
+  "hash": "4725e02ed34df9cc25ae946bdbf47cddcc5cc1bed7763b54d5a5de5ec0684665"
 }

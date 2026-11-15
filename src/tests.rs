@@ -1507,9 +1507,18 @@ mod tests {
         let resp = admin_delete(&app, &format!("/admin/uploads/{}", upload.id)).await;
         assert!(resp.status().is_success());
 
-        // Deleted uploads are excluded from the default listing.
+        // Deleted uploads are excluded from the default listing...
         let uploads: Vec<UploadResponse> = admin_list(&app, "/admin/uploads").await;
         assert!(!uploads.iter().any(|u| u.slug == slug));
+
+        // ...but included by the archive query, with the deleted flag set.
+        let uploads: Vec<UploadResponse> =
+            admin_list(&app, "/admin/uploads?include_deleted=true").await;
+        let deleted = uploads
+            .iter()
+            .find(|u| u.slug == slug)
+            .expect("deleted upload should be listed with include_deleted");
+        assert!(deleted.deleted);
 
         // And the file is no longer servable.
         let resp = test::call_service(
@@ -1920,7 +1929,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn dedup_ignores_soft_deleted_upload(pool: MySqlPool) {
+    async fn dedup_ignores_deleted_upload(pool: MySqlPool) {
         let mut settings = test_settings();
         settings.dedup = true;
         settings.admin_token = Some("secret".to_string());
@@ -1935,13 +1944,45 @@ mod tests {
         // Upload the same content again — should get a new slug, not reuse the deleted one.
         let slug2 = upload_and_get_slug(&app, "file.txt").await;
 
-        assert_ne!(slug2, slug1, "dedup should not reuse a soft-deleted upload");
+        assert_ne!(slug2, slug1, "dedup should not reuse a deleted upload");
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads")
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(count, 2, "both rows should exist (one soft-deleted)");
+        assert_eq!(count, 1, "only the new row should exist in uploads");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM deleted_uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "the deleted row should be archived");
+    }
+
+    #[sqlx::test]
+    async fn deleting_upload_purges_its_accesses(pool: MySqlPool) {
+        let mut settings = test_settings();
+        settings.admin_token = Some("secret".to_string());
+        let app = full_app(settings, pool.clone()).await;
+
+        let slug = upload_and_get_slug(&app, "test.txt").await;
+        let resp = test::call_service(
+            &app,
+            peer(test::TestRequest::get())
+                .uri(&format!("/{slug}"))
+                .to_request(),
+        )
+        .await;
+        assert!(resp.status().is_success());
+        wait_for_accesses_count(&pool, 1).await;
+
+        let _resp = admin_delete(&app, &format!("/admin/uploads/slug/{slug}")).await;
+        assert!(_resp.status().is_success());
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accesses")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "the download log should be cascade-deleted");
     }
 }
 

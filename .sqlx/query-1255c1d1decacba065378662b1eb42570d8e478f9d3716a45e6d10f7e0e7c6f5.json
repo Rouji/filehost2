@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT content_type AS \"mime!: String\", CAST(COUNT(*) AS SIGNED) AS \"count!: i64\"\n           FROM uploads\n           WHERE uploader_ip = ? AND deleted_timestamp IS NULL AND content_type IS NOT NULL\n           GROUP BY content_type\n           ORDER BY 2 DESC\n           LIMIT ?",
+  "query": "SELECT content_type AS \"mime!: String\", CAST(COUNT(*) AS SIGNED) AS \"count!: i64\"\n           FROM uploads\n           WHERE uploader_ip = ? AND content_type IS NOT NULL\n           GROUP BY content_type\n           ORDER BY 2 DESC\n           LIMIT ?",
   "describe": {
     "columns": [
       {
@@ -39,5 +39,5 @@
       false
     ]
   },
-  "hash": "0272115c1d5484ad5fa71b2e0123ad10a26e13bdfccdc42b71a9d616f370cbc0"
+  "hash": "1255c1d1decacba065378662b1eb42570d8e478f9d3716a45e6d10f7e0e7c6f5"
 }

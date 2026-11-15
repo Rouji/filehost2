@@ -2,7 +2,7 @@ use std::net::IpAddr;
 use std::path::Path;
 
 use anyhow::Result;
-use sqlx::Row;
+use sqlx::{Acquire, Row};
 use time::PrimitiveDateTime;
 use uuid::Uuid;
 
@@ -23,13 +23,12 @@ pub(crate) async fn run_migrations(db: &DbPool) -> Result<(), sqlx::migrate::Mig
 
 pub(crate) async fn is_slug_taken(db: &DbPool, slug: &str) -> Result<bool, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
-    Ok(sqlx::query!(
-        "SELECT 1 AS found FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
-        slug
+    Ok(
+        sqlx::query!("SELECT 1 AS found FROM uploads WHERE slug = ?", slug)
+            .fetch_optional(&mut *conn)
+            .await?
+            .is_some(),
     )
-    .fetch_optional(&mut *conn)
-    .await?
-    .is_some())
 }
 
 pub(crate) async fn is_ip_banned(
@@ -90,7 +89,7 @@ pub(crate) async fn find_active_upload_by_hash(
 ) -> Result<Option<(uuid::Uuid, String)>, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     Ok(sqlx::query!(
-        r#"SELECT id AS `id: Uuid`, slug FROM uploads WHERE hash = ? AND deleted_timestamp IS NULL ORDER BY upload_timestamp DESC LIMIT 1"#,
+        r#"SELECT id AS `id: Uuid`, slug FROM uploads WHERE hash = ? ORDER BY upload_timestamp DESC LIMIT 1"#,
         hash
     )
     .fetch_optional(&mut *conn)
@@ -100,11 +99,9 @@ pub(crate) async fn find_active_upload_by_hash(
 
 pub(crate) async fn uploads_missing_hash(db: &DbPool) -> Result<Vec<Uuid>, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
-    let rows = sqlx::query!(
-        r#"SELECT id AS `id: Uuid` FROM uploads WHERE hash IS NULL AND deleted_timestamp IS NULL"#
-    )
-    .fetch_all(&mut *conn)
-    .await?;
+    let rows = sqlx::query!(r#"SELECT id AS `id: Uuid` FROM uploads WHERE hash IS NULL"#)
+        .fetch_all(&mut *conn)
+        .await?;
     Ok(rows.into_iter().map(|r| r.id).collect())
 }
 
@@ -113,9 +110,7 @@ pub(crate) async fn uploads_for_nsfw_scan(
     all: bool,
 ) -> Result<Vec<Uuid>, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
-    let mut sql = String::from(
-        "SELECT id FROM uploads WHERE deleted_timestamp IS NULL AND content_type LIKE 'image/%'",
-    );
+    let mut sql = String::from("SELECT id FROM uploads WHERE content_type LIKE 'image/%'");
     if !all {
         sql.push_str(" AND nsfw_score IS NULL");
     }
@@ -166,9 +161,9 @@ pub(crate) async fn find_dedup_pairs(db: &DbPool) -> Result<Vec<DedupPair>, sqlx
                SELECT hash, id AS canonical_id,
                       ROW_NUMBER() OVER (PARTITION BY hash ORDER BY upload_timestamp DESC, id DESC) AS rn
                FROM uploads
-               WHERE deleted_timestamp IS NULL AND hash IS NOT NULL
+               WHERE hash IS NOT NULL
            ) c ON c.hash = u.hash AND c.rn = 1
-           WHERE u.deleted_timestamp IS NULL AND u.hash IS NOT NULL AND u.id <> c.canonical_id"#
+           WHERE u.hash IS NOT NULL AND u.id <> c.canonical_id"#
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -181,8 +176,8 @@ pub(crate) async fn find_dedup_pairs(db: &DbPool) -> Result<Vec<DedupPair>, sqlx
         .collect())
 }
 
-/// Soft-deletes every upload matching a `WHERE` clause appended to the base
-/// select below, via `bind`. Shared by all the `delete_by_*`/`delete_expired`
+/// Deletes every upload matching a `WHERE` clause appended to the base select
+/// below, via `bind`. Shared by all the `delete_by_*`/`delete_expired`
 /// variants, which differ only in which rows they select. The clause is built
 /// at runtime, so this can't use the compile-time-checked query macros.
 async fn delete_matching(
@@ -193,9 +188,7 @@ async fn delete_matching(
         sqlx::query::Query<'_, sqlx::MySql, sqlx::mysql::MySqlArguments>,
     ) -> sqlx::query::Query<'_, sqlx::MySql, sqlx::mysql::MySqlArguments>,
 ) -> Result<usize> {
-    let sql = format!(
-        "SELECT id, slug, original_name FROM uploads WHERE {where_clause} AND deleted_timestamp IS NULL"
-    );
+    let sql = format!("SELECT id, slug, original_name FROM uploads WHERE {where_clause}");
     let rows = {
         let mut conn = db_pool::conn(db).await?;
         bind(sqlx::query(sqlx::AssertSqlSafe(sql)))
@@ -360,12 +353,14 @@ pub(crate) struct GlobalStats {
 
 pub(crate) async fn global_stats(db: &DbPool) -> Result<GlobalStats, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
+    // `uploads` only holds active rows now; the deleted count lives in the
+    // archive table.
     sqlx::query_as!(
         GlobalStats,
         "SELECT \
-           CAST(COALESCE(SUM(CASE WHEN deleted_timestamp IS NULL THEN 1 ELSE 0 END), 0) AS SIGNED) AS active_uploads, \
-           CAST(COALESCE(SUM(CASE WHEN deleted_timestamp IS NULL THEN file_size ELSE 0 END), 0) AS SIGNED) AS active_bytes, \
-           CAST(COALESCE(SUM(CASE WHEN deleted_timestamp IS NOT NULL THEN 1 ELSE 0 END), 0) AS SIGNED) AS deleted_uploads, \
+           CAST(COUNT(*) AS SIGNED) AS `active_uploads!`, \
+           CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS active_bytes, \
+           CAST((SELECT COUNT(*) FROM deleted_uploads) AS SIGNED) AS `deleted_uploads!`, \
            CAST(COALESCE(SUM(CASE WHEN upload_timestamp > NOW() - INTERVAL 1 DAY THEN 1 ELSE 0 END), 0) AS SIGNED) AS uploads_last_24h, \
            CAST(COALESCE(SUM(CASE WHEN upload_timestamp > NOW() - INTERVAL 1 DAY THEN file_size ELSE 0 END), 0) AS SIGNED) AS bytes_last_24h \
          FROM uploads"
@@ -389,7 +384,7 @@ pub(crate) async fn top_uploader_ips(
         TopUploader,
         r#"SELECT uploader_ip AS "ip!: Vec<u8>", CAST(COUNT(*) AS SIGNED) AS "count!: i64", CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS "bytes!: i64"
            FROM uploads
-           WHERE deleted_timestamp IS NULL AND uploader_ip IS NOT NULL
+           WHERE uploader_ip IS NOT NULL
            GROUP BY uploader_ip
            ORDER BY 2 DESC
            LIMIT ?"#,
@@ -415,7 +410,7 @@ pub(crate) async fn top_nsfw_uploader_ips(
         TopNsfwUploader,
         r#"SELECT uploader_ip AS "ip!: Vec<u8>", CAST(COUNT(*) AS SIGNED) AS "count!: i64", CAST(AVG(nsfw_score) AS DOUBLE) AS "avg_score!: f64"
            FROM uploads
-           WHERE deleted_timestamp IS NULL AND uploader_ip IS NOT NULL AND nsfw_score >= ?
+           WHERE uploader_ip IS NOT NULL AND nsfw_score >= ?
            GROUP BY uploader_ip
            ORDER BY 2 DESC
            LIMIT ?"#,
@@ -441,7 +436,7 @@ pub(crate) async fn uploads_hourly_counts(
     let rows = sqlx::query!(
         r#"SELECT DATE_FORMAT(upload_timestamp, '%Y-%m-%dT%H:00:00') AS "bucket!: String", CAST(COUNT(*) AS SIGNED) AS "count!: i64"
            FROM uploads
-           WHERE uploader_ip = ? AND deleted_timestamp IS NULL AND upload_timestamp > NOW() - INTERVAL ? HOUR
+           WHERE uploader_ip = ? AND upload_timestamp > NOW() - INTERVAL ? HOUR
            GROUP BY 1"#,
         ip,
         hours
@@ -485,7 +480,7 @@ pub(crate) async fn uploads_top_mimes(
         MimeUploadCount,
         r#"SELECT content_type AS "mime!: String", CAST(COUNT(*) AS SIGNED) AS "count!: i64"
            FROM uploads
-           WHERE uploader_ip = ? AND deleted_timestamp IS NULL AND content_type IS NOT NULL
+           WHERE uploader_ip = ? AND content_type IS NOT NULL
            GROUP BY content_type
            ORDER BY 2 DESC
            LIMIT ?"#,
@@ -499,7 +494,6 @@ pub(crate) async fn uploads_top_mimes(
 enum ListUploadsParam<'a> {
     Bytes(Vec<u8>),
     Str(&'a str),
-    I64(i64),
     F32(f32),
 }
 
@@ -512,41 +506,56 @@ pub(crate) async fn list_uploads(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<Upload>, sqlx::Error> {
-    let mut sql = String::from(
-        "SELECT id, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, \
-         slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score \
-         FROM uploads WHERE 1=1",
-    );
+    let mut filters = String::new();
     let mut params = Vec::new();
 
-    if !include_deleted {
-        sql.push_str(" AND deleted_timestamp IS NULL");
-    }
     if let Some(min_score) = min_nsfw_score {
-        sql.push_str(" AND nsfw_score >= ?");
+        filters.push_str(" AND nsfw_score >= ?");
         params.push(ListUploadsParam::F32(min_score));
     }
     if let Some(ip) = ip {
-        sql.push_str(" AND uploader_ip = ?");
+        filters.push_str(" AND uploader_ip = ?");
         params.push(ListUploadsParam::Bytes(ip::to_db_bytes(ip).to_vec()));
     }
     if let Some(slug) = slug {
-        sql.push_str(" AND slug = ?");
+        filters.push_str(" AND slug = ?");
         params.push(ListUploadsParam::Str(slug));
     }
+
+    // `uploads` no longer carries a deleted_timestamp column (all its rows are
+    // active), so the live branch synthesizes a NULL for the shared `Upload`
+    // row shape and the archive branch supplies the real value. With
+    // `include_deleted` the same filters are applied to both branches, which
+    // means every bound parameter appears twice.
+    let mut sql = String::from(
+        "SELECT id, upload_timestamp, expiry_timestamp, NULL AS deleted_timestamp, \
+         original_name, slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score \
+         FROM uploads WHERE 1=1",
+    );
+    sql.push_str(&filters);
+    if include_deleted {
+        sql.push_str(
+            " UNION ALL SELECT id, upload_timestamp, expiry_timestamp, deleted_timestamp, \
+             original_name, slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score \
+             FROM deleted_uploads WHERE 1=1",
+        );
+        sql.push_str(&filters);
+    }
     sql.push_str(" ORDER BY upload_timestamp DESC LIMIT ? OFFSET ?");
-    params.push(ListUploadsParam::I64(limit));
-    params.push(ListUploadsParam::I64(offset));
 
     let mut q = sqlx::query_as::<_, Upload>(sqlx::AssertSqlSafe(sql));
-    for param in params {
-        q = match param {
-            ListUploadsParam::Bytes(v) => q.bind(v),
-            ListUploadsParam::Str(v) => q.bind(v),
-            ListUploadsParam::I64(v) => q.bind(v),
-            ListUploadsParam::F32(v) => q.bind(v),
-        };
+    let branches = if include_deleted { 2 } else { 1 };
+    // The filter parameters bind once per union branch; limit/offset bind last.
+    for _ in 0..branches {
+        for param in &params {
+            q = match param {
+                ListUploadsParam::Bytes(v) => q.bind(v.clone()),
+                ListUploadsParam::Str(v) => q.bind(v.to_owned()),
+                ListUploadsParam::F32(v) => q.bind(*v),
+            };
+        }
     }
+    q = q.bind(limit).bind(offset);
 
     let mut conn = db_pool::conn(db).await?;
     q.fetch_all(&mut *conn).await
@@ -559,9 +568,9 @@ pub(crate) async fn get_upload_by_slug(
     let mut conn = db_pool::conn(db).await?;
     sqlx::query_as!(
         Upload,
-        "SELECT id AS `id: Uuid`, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, \
+        "SELECT id AS `id: Uuid`, upload_timestamp, expiry_timestamp, CAST(NULL AS DATETIME) AS deleted_timestamp, original_name, \
          slug, file_size, hash AS `hash: Vec<u8>`, uploader_ip, content_type, user_agent, nsfw_score \
-         FROM uploads WHERE slug = ? AND deleted_timestamp IS NULL",
+         FROM uploads WHERE slug = ?",
         slug
     )
     .fetch_optional(&mut *conn)
@@ -829,12 +838,21 @@ async fn delete_one(
         log::warn!("Failed to delete file {}: {e}", path.display());
     }
     let mut conn = db_pool::conn(db).await?;
+    let mut tx = conn.begin().await?;
+    // Archive the row, then drop it; the accesses FK (ON DELETE CASCADE)
+    // purges the download log with it.
     sqlx::query!(
-        "UPDATE uploads SET deleted_timestamp = NOW() WHERE id = ?",
+        "INSERT INTO deleted_uploads (id, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score) \
+         SELECT id, upload_timestamp, expiry_timestamp, NOW(), original_name, slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score \
+         FROM uploads WHERE id = ?",
         id,
     )
-    .execute(&mut *conn)
+    .execute(&mut *tx)
     .await?;
+    sqlx::query!("DELETE FROM uploads WHERE id = ?", id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     log::info!("Deleted file: {id} {slug} {original_name}");
     Ok(())
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT uploader_ip AS \"ip!: Vec<u8>\", CAST(COUNT(*) AS SIGNED) AS \"count!: i64\", CAST(AVG(nsfw_score) AS DOUBLE) AS \"avg_score!: f64\"\n           FROM uploads\n           WHERE deleted_timestamp IS NULL AND uploader_ip IS NOT NULL AND nsfw_score >= ?\n           GROUP BY uploader_ip\n           ORDER BY 2 DESC\n           LIMIT ?",
+  "query": "SELECT uploader_ip AS \"ip!: Vec<u8>\", CAST(COUNT(*) AS SIGNED) AS \"count!: i64\", CAST(AVG(nsfw_score) AS DOUBLE) AS \"avg_score!: f64\"\n           FROM uploads\n           WHERE uploader_ip IS NOT NULL AND nsfw_score >= ?\n           GROUP BY uploader_ip\n           ORDER BY 2 DESC\n           LIMIT ?",
   "describe": {
     "columns": [
       {
@@ -51,5 +51,5 @@
       true
     ]
   },
-  "hash": "b32dfa1415910234776a368b2781a93847136dd1ff423cec42b4278c841a561a"
+  "hash": "feb90d922e087330708d42ebec6aae32c6219e94241682e6eae8d3aee45c0056"
 }
