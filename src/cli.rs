@@ -419,13 +419,14 @@ async fn ban_mime(db: &DbPool, command: BanMimeCommand) -> Result<()> {
             Ok(())
         }
         BanMimeCommand::Add { mime } => {
+            let mime = mime.to_lowercase();
             db::insert_banned_mime(db, &mime).await?;
             log::info!("ban: banned mime {mime}");
             println!("Banned mime {mime}.");
             Ok(())
         }
         BanMimeCommand::Remove { mime } => removal_result(
-            db::delete_banned_mime(db, &mime).await?,
+            db::delete_banned_mime(db, &mime.to_lowercase()).await?,
             RemovalMessages {
                 log: format!("ban: removed banned mime {mime}"),
                 ok: format!("Removed ban on mime {mime}."),

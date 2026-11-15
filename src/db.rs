@@ -631,23 +631,18 @@ pub(crate) async fn delete_banned_ips_by_blacklist(
 }
 
 /// The `sqlx` query macros need string literals, so each query is passed in whole
-/// rather than assembled from the table/column names.
+/// rather than assembled from the table/column names. `with_reason` adds an
+/// `Option<&str>` insert parameter for ban sets that carry a reason column.
 macro_rules! ban_set_crud {
     (
-        $list_fn:ident, $insert_fn:ident, $delete_fn:ident, $struct:ty, $key_ty:ty,
-        list = $list_sql:literal, insert = $insert_sql:literal, delete = $delete_sql:literal $(,)?
+        @list_and_delete $list_fn:ident, $delete_fn:ident, $struct:ty,
+        $list_sql:literal, $delete_sql:literal, $key_ty:ty
     ) => {
         pub(crate) async fn $list_fn(db: &DbPool) -> Result<Vec<$struct>, sqlx::Error> {
             let mut conn = db_pool::conn(db).await?;
             sqlx::query_as!($struct, $list_sql)
                 .fetch_all(&mut *conn)
                 .await
-        }
-
-        pub(crate) async fn $insert_fn(db: &DbPool, key: $key_ty) -> Result<(), sqlx::Error> {
-            let mut conn = db_pool::conn(db).await?;
-            sqlx::query!($insert_sql, key).execute(&mut *conn).await?;
-            Ok(())
         }
 
         pub(crate) async fn $delete_fn(db: &DbPool, key: $key_ty) -> Result<bool, sqlx::Error> {
@@ -656,20 +651,24 @@ macro_rules! ban_set_crud {
             Ok(result.rows_affected() > 0)
         }
     };
-}
-
-/// Same as `ban_set_crud`, plus an `Option<&str> reason` column.
-macro_rules! ban_set_crud_with_reason {
     (
         $list_fn:ident, $insert_fn:ident, $delete_fn:ident, $struct:ty, $key_ty:ty,
         list = $list_sql:literal, insert = $insert_sql:literal, delete = $delete_sql:literal $(,)?
     ) => {
-        pub(crate) async fn $list_fn(db: &DbPool) -> Result<Vec<$struct>, sqlx::Error> {
+        ban_set_crud!(@list_and_delete $list_fn, $delete_fn, $struct, $list_sql, $delete_sql, $key_ty);
+
+        pub(crate) async fn $insert_fn(db: &DbPool, key: $key_ty) -> Result<(), sqlx::Error> {
             let mut conn = db_pool::conn(db).await?;
-            sqlx::query_as!($struct, $list_sql)
-                .fetch_all(&mut *conn)
-                .await
+            sqlx::query!($insert_sql, key).execute(&mut *conn).await?;
+            Ok(())
         }
+    };
+    (
+        $list_fn:ident, $insert_fn:ident, $delete_fn:ident, $struct:ty, $key_ty:ty,
+        list = $list_sql:literal, insert = $insert_sql:literal, delete = $delete_sql:literal,
+        with_reason $(,)?
+    ) => {
+        ban_set_crud!(@list_and_delete $list_fn, $delete_fn, $struct, $list_sql, $delete_sql, $key_ty);
 
         pub(crate) async fn $insert_fn(
             db: &DbPool,
@@ -681,12 +680,6 @@ macro_rules! ban_set_crud_with_reason {
                 .execute(&mut *conn)
                 .await?;
             Ok(())
-        }
-
-        pub(crate) async fn $delete_fn(db: &DbPool, key: $key_ty) -> Result<bool, sqlx::Error> {
-            let mut conn = db_pool::conn(db).await?;
-            let result = sqlx::query!($delete_sql, key).execute(&mut *conn).await?;
-            Ok(result.rows_affected() > 0)
         }
     };
 }
@@ -707,7 +700,7 @@ delete_by_id_bool!(
     "DELETE FROM banned_ip_ranges WHERE id = ?"
 );
 
-ban_set_crud_with_reason!(
+ban_set_crud!(
     list_banned_filenames,
     insert_banned_filename,
     delete_banned_filename,
@@ -716,6 +709,7 @@ ban_set_crud_with_reason!(
     list = "SELECT pattern, reason FROM banned_filenames ORDER BY pattern",
     insert = "INSERT IGNORE INTO banned_filenames (pattern, reason) VALUES (?, ?)",
     delete = "DELETE FROM banned_filenames WHERE pattern = ?",
+    with_reason,
 );
 
 ban_set_crud!(
@@ -725,11 +719,11 @@ ban_set_crud!(
     BannedFileMime,
     &str,
     list = "SELECT mime FROM banned_file_mimes ORDER BY mime",
-    insert = "INSERT IGNORE INTO banned_file_mimes (mime) VALUES (LOWER(?))",
-    delete = "DELETE FROM banned_file_mimes WHERE mime = LOWER(?)",
+    insert = "INSERT IGNORE INTO banned_file_mimes (mime) VALUES (?)",
+    delete = "DELETE FROM banned_file_mimes WHERE mime = ?",
 );
 
-ban_set_crud_with_reason!(
+ban_set_crud!(
     list_banned_hashes,
     insert_banned_hash,
     delete_banned_hash,
@@ -738,9 +732,10 @@ ban_set_crud_with_reason!(
     list = "SELECT hash, reason FROM banned_file_hashes ORDER BY hash",
     insert = "INSERT IGNORE INTO banned_file_hashes (hash, reason) VALUES (?, ?)",
     delete = "DELETE FROM banned_file_hashes WHERE hash = ?",
+    with_reason,
 );
 
-ban_set_crud_with_reason!(
+ban_set_crud!(
     list_banned_user_agents,
     insert_banned_user_agent,
     delete_banned_user_agent,
@@ -749,6 +744,7 @@ ban_set_crud_with_reason!(
     list = "SELECT pattern, reason FROM banned_user_agents ORDER BY pattern",
     insert = "INSERT IGNORE INTO banned_user_agents (pattern, reason) VALUES (?, ?)",
     delete = "DELETE FROM banned_user_agents WHERE pattern = ?",
+    with_reason,
 );
 
 pub(crate) async fn list_blacklist(db: &DbPool) -> Result<Vec<Blacklist>, sqlx::Error> {
