@@ -2,15 +2,6 @@ use sqlx::types::time::PrimitiveDateTime;
 use uuid::Uuid;
 
 #[derive(Debug, sqlx::FromRow)]
-#[allow(dead_code)]
-pub(crate) struct Access {
-    pub upload_id: Uuid,
-    pub timestamp: PrimitiveDateTime,
-    pub ip: Option<Vec<u8>>,
-    pub user_agent: Option<String>,
-}
-
-#[derive(Debug, sqlx::FromRow)]
 pub(crate) struct Upload {
     pub id: Uuid,
     pub upload_timestamp: PrimitiveDateTime,
