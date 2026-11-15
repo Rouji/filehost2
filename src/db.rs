@@ -275,23 +275,6 @@ pub(crate) async fn insert_upload_row(
     Ok(())
 }
 
-pub(crate) async fn uploads_count_last_day(db: &DbPool, ip: IpAddr) -> Result<i64, sqlx::Error> {
-    let mut conn = db_pool::conn(db).await?;
-    let (start, end) = ip::quota_range(ip);
-    let start = ip::to_db_bytes(start).to_vec();
-    let end = ip::to_db_bytes(end).to_vec();
-    let count = sqlx::query_scalar!(
-        "SELECT COUNT(*) FROM uploads \
-         WHERE uploader_ip BETWEEN ? AND ? \
-         AND upload_timestamp > NOW() - INTERVAL 1 DAY",
-        start,
-        end
-    )
-    .fetch_one(&mut *conn)
-    .await?;
-    Ok(count)
-}
-
 pub(crate) async fn has_nsfw_upload_last_week(
     db: &DbPool,
     ip: IpAddr,
@@ -315,21 +298,28 @@ pub(crate) async fn has_nsfw_upload_last_week(
     Ok(found != 0)
 }
 
-pub(crate) async fn uploads_bytes_last_day(db: &DbPool, ip: IpAddr) -> Result<i64, sqlx::Error> {
+/// Count and total bytes of the uploader's uploads in the last day, for the
+/// per-day rate limits. One query covers both limits.
+pub(crate) async fn upload_stats_last_day(
+    db: &DbPool,
+    ip: IpAddr,
+) -> Result<(i64, i64), sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let (start, end) = ip::quota_range(ip);
     let start = ip::to_db_bytes(start).to_vec();
     let end = ip::to_db_bytes(end).to_vec();
-    let bytes = sqlx::query_scalar!(
-        r#"SELECT CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS `bytes: i64` FROM uploads
-         WHERE uploader_ip BETWEEN ? AND ?
-         AND upload_timestamp > NOW() - INTERVAL 1 DAY"#,
+    let row = sqlx::query!(
+        r#"SELECT CAST(COUNT(*) AS SIGNED) AS `count!: i64`,
+                  CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS `bytes!: i64`
+           FROM uploads
+           WHERE uploader_ip BETWEEN ? AND ?
+           AND upload_timestamp > NOW() - INTERVAL 1 DAY"#,
         start,
         end
     )
     .fetch_one(&mut *conn)
     .await?;
-    Ok(bytes)
+    Ok((row.count, row.bytes))
 }
 
 pub(crate) async fn log_access(

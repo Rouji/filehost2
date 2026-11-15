@@ -1,0 +1,38 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT CAST(COUNT(*) AS SIGNED) AS `count!: i64`,\n                  CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS `bytes!: i64`\n           FROM uploads\n           WHERE uploader_ip BETWEEN ? AND ?\n           AND upload_timestamp > NOW() - INTERVAL 1 DAY",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!: i64",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 21
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "bytes!: i64",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 21
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "6095c7c88a9d7fa0ed021a5a51882fb8aa95f2bfe4debaa887350ada53e2bc3b"
+}

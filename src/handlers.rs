@@ -85,21 +85,6 @@ async fn check_not_banned(
     })
 }
 
-async fn check_under_limit(
-    limit: Option<i64>,
-    check: impl std::future::Future<Output = Result<i64, sqlx::Error>>,
-    ip: Option<std::net::IpAddr>,
-    check_name: &str,
-    too_many_message: &str,
-) -> Result<(), HttpResponse> {
-    let Some(limit) = limit else {
-        return Ok(());
-    };
-    respond_to_check(check.await.map(|n| n >= limit), ip, check_name, || {
-        error_page(StatusCode::TOO_MANY_REQUESTS, too_many_message)
-    })
-}
-
 /// get content_type from the file
 /// or guess from file name, if it's octet-stream or not set at all
 fn determine_content_type(file: &HashedTempFile, original_name: &str) -> (String, Option<String>) {
@@ -580,23 +565,36 @@ async fn enforce_upload_gates(
         .await?;
     }
 
-    if let Some(ip) = uploader_ip {
-        check_under_limit(
-            settings.max_uploads_per_day.map(|n| n as i64),
-            db::uploads_count_last_day(db, ip),
+    if let Some(ip) = uploader_ip
+        && (settings.max_uploads_per_day.is_some() || settings.max_bytes_per_day.is_some())
+    {
+        // one query for both per-day limits
+        let (count, bytes) = match db::upload_stats_last_day(db, ip).await {
+            Ok(stats) => stats,
+            Err(e) => {
+                log::error!("upload rate limit check failed: {e}");
+                return Err(error_page(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Something went wrong.",
+                ));
+            }
+        };
+        respond_to_check(
+            Ok(settings
+                .max_uploads_per_day
+                .is_some_and(|limit| count >= limit as i64)),
             uploader_ip,
             "upload count rate limit",
-            "Upload limit reached.",
-        )
-        .await?;
-        check_under_limit(
-            settings.max_bytes_per_day.map(|n| n as i64),
-            db::uploads_bytes_last_day(db, ip),
+            || error_page(StatusCode::TOO_MANY_REQUESTS, "Upload limit reached."),
+        )?;
+        respond_to_check(
+            Ok(settings
+                .max_bytes_per_day
+                .is_some_and(|limit| bytes >= limit as i64)),
             uploader_ip,
             "byte quota rate limit",
-            "Daily byte quota reached.",
-        )
-        .await?;
+            || error_page(StatusCode::TOO_MANY_REQUESTS, "Daily byte quota reached."),
+        )?;
     }
 
     if let Some(ip) = uploader_ip {
