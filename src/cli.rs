@@ -174,11 +174,7 @@ pub(crate) enum DeleteTarget {
 }
 
 fn parse_ban_type(type_: u32) -> Result<BanType> {
-    match type_ {
-        1 => Ok(BanType::ReadOnly),
-        2 => Ok(BanType::Full),
-        _ => anyhow::bail!("type must be 1 (readonly) or 2 (full)"),
-    }
+    BanType::try_from(type_).map_err(|_| anyhow::anyhow!("type must be 1 (readonly) or 2 (full)"))
 }
 
 fn print_list_or_empty<T>(entries: &[T], empty_msg: &str, print_one: impl Fn(&T)) {

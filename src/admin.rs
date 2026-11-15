@@ -465,8 +465,8 @@ pub(crate) struct BannedIpRangeCreate {
     reason: Option<String>,
     expires_timestamp: Option<String>,
     blacklist_id: Option<i32>,
-    #[serde(default)]
-    type_: u32,
+    /// Defaults to ReadOnly when omitted.
+    type_: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -517,10 +517,8 @@ pub(crate) async fn add_banned_ip(
         },
         None => None,
     };
-    let ban_type = match body.type_ {
-        0 | 1 => BanType::ReadOnly,
-        2 => BanType::Full,
-        _ => return json_error(StatusCode::BAD_REQUEST, "Invalid type (expected 1 or 2)"),
+    let Ok(ban_type) = BanType::try_from(body.type_.unwrap_or(BanType::ReadOnly as u32)) else {
+        return json_error(StatusCode::BAD_REQUEST, "Invalid type (expected 1 or 2)");
     };
 
     match db::insert_banned_ip(

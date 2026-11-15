@@ -25,6 +25,18 @@ pub enum BanType {
     Full = 2,
 }
 
+impl TryFrom<u32> for BanType {
+    type Error = u32;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(BanType::ReadOnly),
+            2 => Ok(BanType::Full),
+            other => Err(other),
+        }
+    }
+}
+
 impl std::fmt::Display for BanType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
