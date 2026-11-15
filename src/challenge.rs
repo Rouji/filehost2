@@ -18,11 +18,7 @@ impl ChallengeCache {
         }
     }
 
-    pub(crate) async fn is_ip_verified(
-        &self,
-        db: &DbPool,
-        ip: IpAddr,
-    ) -> Result<bool, sqlx::Error> {
+    async fn is_ip_verified(&self, db: &DbPool, ip: IpAddr) -> Result<bool, sqlx::Error> {
         self.verified_ips
             .get_or_refresh(ip, || db::is_ip_challenge_verified(db, ip))
             .await

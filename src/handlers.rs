@@ -1,4 +1,3 @@
-use core::iter::IntoIterator;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -21,14 +20,14 @@ use crate::challenge::ChallengeCache;
 use crate::clamd;
 use crate::db;
 use crate::db_pool::DbPool;
-use crate::ip::XffTrust;
+use crate::ip::{XffTrust, extract_ip};
 use crate::model::BanType;
 use crate::nsfw::NsfwModel;
 use crate::pow::PowSecret;
 use crate::rate_limit;
 use crate::settings::Settings;
 use crate::templates::RenderedTemplates;
-use crate::upload::{HashedTempFile, build_slug, calculate_expiry, extract_ip, uuid_to_path};
+use crate::upload::{HashedTempFile, build_slug, calculate_expiry, uuid_to_path};
 
 /// Characters that don't need percent-encoding in a URL path segment,
 /// on top of what `NON_ALPHANUMERIC` already leaves alone.

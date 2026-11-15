@@ -10,7 +10,7 @@ use rand::distr::{Alphanumeric, SampleString};
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 use tokio::io::AsyncWriteExt as _;
 
-use crate::ip::XffTrust;
+use crate::ip::{XffTrust, extract_ip};
 use crate::rate_limit::UploadThrottle;
 use crate::settings::Settings;
 
@@ -24,18 +24,6 @@ pub(crate) fn random_string(len: usize) -> String {
 pub(crate) fn uuid_to_path(root: &Path, uuid: &Uuid) -> PathBuf {
     let name = uuid.to_string();
     root.join(&name[0..2]).join(&name[2..4]).join(name)
-}
-
-/// Resolves the client's IP address (v4 or v6) for a request, so every consumer (ban
-/// checks, quotas, throttling, access logs) agrees on the same notion of "client IP".
-pub(crate) fn extract_ip(req: &HttpRequest, xff_trust: &XffTrust) -> Option<std::net::IpAddr> {
-    crate::ip::client_ip(
-        req.headers()
-            .get("X-Forwarded-For")
-            .and_then(|v| v.to_str().ok()),
-        req.peer_addr().map(|addr| addr.ip()),
-        xff_trust,
-    )
 }
 
 /// A multipart field reader that writes the upload to a temp file and

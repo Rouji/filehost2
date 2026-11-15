@@ -249,8 +249,6 @@ pub(crate) async fn delete_by_ip_range(
 /// the import feature): this one carries the content hash and lets the DB default
 /// `upload_timestamp`, matching what `handlers::process_file` needs right after saving
 /// the file to disk.
-/// carries the content hash and lets the DB default `upload_timestamp`, matching
-/// what `handlers::process_file` needs right after saving the file to disk.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn insert_upload_row(
     db: &DbPool,

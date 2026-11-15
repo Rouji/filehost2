@@ -27,7 +27,7 @@ pub(crate) struct IpRangeEntry {
 
 /// fetches a blacklist URL and parses IP ranges from the response body.
 /// Works on plain text, JSON, RSS — uses regex to extract IP patterns.
-pub(crate) async fn fetch_ip_ranges(url: &str) -> Result<Vec<IpRangeEntry>> {
+async fn fetch_ip_ranges(url: &str) -> Result<Vec<IpRangeEntry>> {
     let body = reqwest::get(url).await?.text().await?;
     Ok(parse_body(&body))
 }

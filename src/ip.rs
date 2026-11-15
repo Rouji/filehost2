@@ -160,6 +160,18 @@ impl XffTrust {
     }
 }
 
+/// Resolves the client's IP address (v4 or v6) for a request, so every consumer (ban
+/// checks, quotas, throttling, access logs) agrees on the same notion of "client IP".
+pub(crate) fn extract_ip(req: &actix_web::HttpRequest, xff_trust: &XffTrust) -> Option<IpAddr> {
+    client_ip(
+        req.headers()
+            .get("X-Forwarded-For")
+            .and_then(|v| v.to_str().ok()),
+        req.peer_addr().map(|addr| addr.ip()),
+        xff_trust,
+    )
+}
+
 pub(crate) fn client_ip(
     xff: Option<&str>,
     peer: Option<IpAddr>,
