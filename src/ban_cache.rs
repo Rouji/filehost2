@@ -22,9 +22,9 @@ fn compile_filename_pattern(pattern: &str) -> Option<Regex> {
         .ok()
 }
 
-/// `KeyedTtlCache` with `K = ()`; the `Arc` means a cache hit clones a pointer rather
+/// A single cached set/list; the `Arc` means a hit clones a pointer rather
 /// than the whole `HashSet`/`Vec`.
-type TtlCell<T> = KeyedTtlCache<(), Arc<T>>;
+type TtlCell<T> = crate::ttl_cache::TtlCell<Arc<T>>;
 
 /// `is_user_agent_banned` needs substring matching, not exact lookup, so it doesn't go
 /// through here.
@@ -40,7 +40,7 @@ where
     Fut: Future<Output = Result<HashSet<T>, sqlx::Error>>,
 {
     let set = cell
-        .get_or_refresh((), || async { Ok(Arc::new(fetch().await?)) })
+        .get_or_refresh(|| async { Ok(Arc::new(fetch().await?)) })
         .await?;
     Ok(set.contains(needle))
 }
@@ -82,7 +82,7 @@ impl BanCache {
     ) -> Result<bool, sqlx::Error> {
         let patterns = self
             .filename_patterns
-            .get_or_refresh((), || async {
+            .get_or_refresh(|| async {
                 let filenames = db::list_banned_filenames(db).await?;
                 let compiled = filenames
                     .iter()
@@ -140,7 +140,7 @@ impl BanCache {
     ) -> Result<bool, sqlx::Error> {
         let patterns = self
             .user_agent_patterns
-            .get_or_refresh((), || async {
+            .get_or_refresh(|| async {
                 Ok(Arc::new(
                     db::list_banned_user_agents(db)
                         .await?
