@@ -99,10 +99,6 @@ impl<T: Clone> TtlCell<T> {
         Ok(fresh)
     }
 
-    pub(crate) async fn set(&self, value: T) {
-        *self.slot.write().await = Some((Instant::now(), value));
-    }
-
     pub(crate) async fn invalidate(&self) {
         *self.slot.write().await = None;
     }

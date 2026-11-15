@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
 use crate::db;
-use crate::db_pool::{self, DbPool};
+use crate::db_pool::DbPool;
 use crate::dedup;
 use crate::ip;
 use crate::model::BanType;
@@ -204,8 +204,7 @@ fn removal_result(removed: bool, messages: RemovalMessages) -> Result<()> {
 }
 
 pub(crate) async fn migrate(db: &DbPool) -> Result<()> {
-    let mut conn = db_pool::conn(db).await?;
-    sqlx::migrate!().run(&mut *conn).await?;
+    db::run_migrations(db).await?;
     println!("Migrations applied.");
     Ok(())
 }

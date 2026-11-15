@@ -15,6 +15,12 @@ use crate::model::{
 use crate::settings::Settings;
 use crate::upload::uuid_to_path;
 
+/// Applies pending migrations. Used by server startup and the `migrate` subcommand.
+pub(crate) async fn run_migrations(db: &DbPool) -> Result<(), sqlx::migrate::MigrateError> {
+    let mut conn = db_pool::conn(db).await?;
+    sqlx::migrate!().run(&mut *conn).await
+}
+
 pub(crate) async fn is_slug_taken(db: &DbPool, slug: &str) -> Result<bool, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     Ok(sqlx::query!(
