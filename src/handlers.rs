@@ -54,13 +54,12 @@ fn respond_to_check(
     condition: Result<bool, sqlx::Error>,
     ip: Option<std::net::IpAddr>,
     check_name: &str,
-    fail_status: StatusCode,
-    fail_message: &str,
+    build_fail: impl FnOnce() -> HttpResponse,
 ) -> Result<(), HttpResponse> {
     match condition {
         Ok(true) => {
             log::info!("upload rejected: {check_name} (ip={})", format_ip(ip));
-            Err(error_page(fail_status, fail_message))
+            Err(build_fail())
         }
         Ok(false) => Ok(()),
         Err(e) => {
@@ -81,13 +80,9 @@ async fn check_not_banned(
     check_name: &str,
     forbidden_message: &str,
 ) -> Result<(), HttpResponse> {
-    respond_to_check(
-        check.await,
-        ip,
-        check_name,
-        StatusCode::FORBIDDEN,
-        forbidden_message,
-    )
+    respond_to_check(check.await, ip, check_name, || {
+        error_page(StatusCode::FORBIDDEN, forbidden_message)
+    })
 }
 
 async fn check_under_limit(
@@ -100,13 +95,9 @@ async fn check_under_limit(
     let Some(limit) = limit else {
         return Ok(());
     };
-    respond_to_check(
-        check.await.map(|n| n >= limit),
-        ip,
-        check_name,
-        StatusCode::TOO_MANY_REQUESTS,
-        too_many_message,
-    )
+    respond_to_check(check.await.map(|n| n >= limit), ip, check_name, || {
+        error_page(StatusCode::TOO_MANY_REQUESTS, too_many_message)
+    })
 }
 
 /// get content_type from the file
@@ -609,30 +600,14 @@ async fn enforce_upload_gates(
     }
 
     if let Some(ip) = uploader_ip {
-        match challenge_cache
-            .needs_challenge(db, ip, settings.nsfw_threshold)
-            .await
-        {
-            Ok(true) => {
-                log::info!(
-                    "upload rejected: challenge required (ip={})",
-                    format_ip(uploader_ip)
-                );
-                return Err(challenge_required_response(
-                    settings,
-                    "uploading",
-                    formatted,
-                ));
-            }
-            Ok(false) => {}
-            Err(e) => {
-                log::error!("challenge required check failed: {e}");
-                return Err(error_page(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Something went wrong.",
-                ));
-            }
-        }
+        respond_to_check(
+            challenge_cache
+                .needs_challenge(db, ip, settings.nsfw_threshold)
+                .await,
+            uploader_ip,
+            "challenge required",
+            || challenge_required_response(settings, "uploading", formatted),
+        )?;
     }
 
     Ok(())
