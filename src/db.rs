@@ -176,20 +176,16 @@ pub(crate) async fn find_dedup_pairs(db: &DbPool) -> Result<Vec<DedupPair>, sqlx
         .collect())
 }
 
-/// Deletes every upload matching a `WHERE` clause appended to the base select
-/// below, via `bind`. Shared by all the `delete_by_*`/`delete_expired`
-/// variants, which differ only in which rows they select. The clause is built
-/// at runtime, so this can't use the compile-time-checked query macros.
 async fn delete_matching(
     db: &DbPool,
     settings: &Settings,
     where_clause: &'static str,
-    bind: impl FnOnce(
+    bind: impl Fn(
         sqlx::query::Query<'_, sqlx::MySql, sqlx::mysql::MySqlArguments>,
     ) -> sqlx::query::Query<'_, sqlx::MySql, sqlx::mysql::MySqlArguments>,
 ) -> Result<usize> {
-    let sql = format!("SELECT id, slug, original_name FROM uploads WHERE {where_clause}");
     let rows = {
+        let sql = format!("SELECT id, slug, original_name FROM uploads WHERE {where_clause}");
         let mut conn = db_pool::conn(db).await?;
         bind(sqlx::query(sqlx::AssertSqlSafe(sql)))
             .try_map(|row: sqlx::mysql::MySqlRow| {
@@ -203,9 +199,37 @@ async fn delete_matching(
             .await?
     };
     let count = rows.len();
-    for (id, slug, original_name) in rows {
-        delete_one(db, settings, id, &slug, &original_name).await?;
+    if count == 0 {
+        return Ok(0);
     }
+
+    for (id, slug, original_name) in &rows {
+        let path = uuid_to_path(Path::new(&settings.store_path), id);
+        if let Err(e) = std::fs::remove_file(&path) {
+            log::warn!("Failed to delete file {}: {e}", path.display());
+        }
+        log::info!("Deleted file: {id} {slug} {original_name}");
+    }
+
+    // Archive the rows, then drop them; the accesses FK (ON DELETE CASCADE)
+    // purges the download logs with them.
+    let mut conn = db_pool::conn(db).await?;
+    let mut tx = conn.begin().await?;
+    let insert_sql = format!(
+        "INSERT INTO deleted_uploads (id, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score) \
+         SELECT id, upload_timestamp, expiry_timestamp, NOW(), original_name, slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score \
+         FROM uploads WHERE {where_clause}"
+    );
+    bind(sqlx::query(sqlx::AssertSqlSafe(insert_sql)))
+        .execute(&mut *tx)
+        .await?;
+    let delete_sql = format!("DELETE FROM uploads WHERE {where_clause}");
+    let deleted = bind(sqlx::query(sqlx::AssertSqlSafe(delete_sql)))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    debug_assert_eq!(deleted as usize, count);
     Ok(count)
 }
 
@@ -223,7 +247,7 @@ pub(crate) async fn delete_by_slug(db: &DbPool, settings: &Settings, slug: &str)
 
 pub(crate) async fn delete_by_ip(db: &DbPool, settings: &Settings, ip: IpAddr) -> Result<usize> {
     let ip = ip::to_db_bytes(ip).to_vec();
-    delete_matching(db, settings, "uploader_ip = ?", |q| q.bind(ip)).await
+    delete_matching(db, settings, "uploader_ip = ?", |q| q.bind(ip.clone())).await
 }
 
 pub(crate) async fn delete_by_ip_range(
@@ -239,7 +263,7 @@ pub(crate) async fn delete_by_ip_range(
     let start = ip::to_db_bytes(start).to_vec();
     let end = ip::to_db_bytes(end).to_vec();
     delete_matching(db, settings, "uploader_ip BETWEEN ? AND ?", |q| {
-        q.bind(start).bind(end)
+        q.bind(start.clone()).bind(end.clone())
     })
     .await
 }
@@ -825,34 +849,3 @@ pub(crate) async fn insert_blacklist(
 }
 
 delete_by_id_bool!(delete_blacklist, i32, "DELETE FROM blacklist WHERE id = ?");
-
-async fn delete_one(
-    db: &DbPool,
-    settings: &Settings,
-    id: Uuid,
-    slug: &str,
-    original_name: &str,
-) -> Result<()> {
-    let path = uuid_to_path(Path::new(&settings.store_path), &id);
-    if let Err(e) = std::fs::remove_file(&path) {
-        log::warn!("Failed to delete file {}: {e}", path.display());
-    }
-    let mut conn = db_pool::conn(db).await?;
-    let mut tx = conn.begin().await?;
-    // Archive the row, then drop it; the accesses FK (ON DELETE CASCADE)
-    // purges the download log with it.
-    sqlx::query!(
-        "INSERT INTO deleted_uploads (id, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score) \
-         SELECT id, upload_timestamp, expiry_timestamp, NOW(), original_name, slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score \
-         FROM uploads WHERE id = ?",
-        id,
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query!("DELETE FROM uploads WHERE id = ?", id)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    log::info!("Deleted file: {id} {slug} {original_name}");
-    Ok(())
-}
