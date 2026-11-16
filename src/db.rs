@@ -2,6 +2,7 @@ use std::net::IpAddr;
 use std::path::Path;
 
 use anyhow::Result;
+use futures_util::StreamExt;
 use sqlx::{Acquire, Row};
 use time::PrimitiveDateTime;
 use uuid::Uuid;
@@ -14,6 +15,9 @@ use crate::model::{
 };
 use crate::settings::Settings;
 use crate::upload::uuid_to_path;
+
+/// how many physical-file unlinks to keep in flight during batch deletion
+const UNLINK_CONCURRENCY: usize = 32;
 
 /// Applies pending migrations. Used by server startup and the `migrate` subcommand.
 pub(crate) async fn run_migrations(db: &DbPool) -> Result<(), sqlx::migrate::MigrateError> {
@@ -203,13 +207,21 @@ async fn delete_matching(
         return Ok(0);
     }
 
-    for (id, slug, original_name) in &rows {
-        let path = uuid_to_path(Path::new(&settings.store_path), id);
-        if let Err(e) = std::fs::remove_file(&path) {
-            log::warn!("Failed to delete file {}: {e}", path.display());
-        }
-        log::info!("Deleted file: {id} {slug} {original_name}");
-    }
+    // unlink the physical files concurrently
+    let unlinks: Vec<_> = rows
+        .iter()
+        .map(|(id, slug, original_name)| {
+            let path = uuid_to_path(Path::new(&settings.store_path), id);
+            async move {
+                if let Err(e) = tokio::fs::remove_file(&path).await {
+                    log::warn!("Failed to delete file {}: {e}", path.display());
+                }
+                log::info!("Deleted file: {id} {slug} {original_name}");
+            }
+        })
+        .collect();
+    let mut unlinks = futures_util::stream::iter(unlinks).buffer_unordered(UNLINK_CONCURRENCY);
+    while unlinks.next().await.is_some() {}
 
     // Archive the rows, then drop them; the accesses FK (ON DELETE CASCADE)
     // purges the download logs with them.
