@@ -46,7 +46,39 @@ jobs:
           SQLX_OFFLINE: true
           DATABASE_URL: mysql://root@127.0.0.1:3306/filehost
 
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: filehost2-linux-amd64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            artifact: filehost2-linux-arm64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          SQLX_OFFLINE: true
+      - name: Rename binary for the image context
+        run: cp target/${{ matrix.target }}/release/filehost2 ${{ matrix.artifact }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
   docker:
+    needs: build
     runs-on: ubuntu-latest
 
     permissions:
@@ -55,6 +87,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      # merge-multiple flattens the per-artifact directories so both binaries
+      # sit directly in the build context, as ci.Dockerfile expects.
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
       - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
         if: github.event_name == 'push'
@@ -75,10 +113,9 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: dist
+          file: ci.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
