@@ -187,20 +187,34 @@ fn print_list_or_empty<T>(entries: &[T], empty_msg: &str, print_one: impl Fn(&T)
     }
 }
 
-struct RemovalMessages {
-    log: String,
-    ok: String,
-    err: String,
-}
-
-fn removal_result(removed: bool, messages: RemovalMessages) -> Result<()> {
+/// Uniform output for `ban ... remove`; `what` names the ban, e.g.
+/// `filename pattern "\\.exe$"` or `ip range id=3`.
+fn removal_result(removed: bool, what: &str) -> Result<()> {
     if removed {
-        log::info!("{}", messages.log);
-        println!("{}", messages.ok);
+        log::info!("ban: removed {what}");
+        println!("Removed ban on {what}.");
         Ok(())
     } else {
-        anyhow::bail!("{}", messages.err)
+        anyhow::bail!("No ban on {what}.")
     }
+}
+
+/// Uniform output for `ban ... add`; `noun` is the ban kind, `key` its
+/// display form.
+fn print_added(noun: &str, key: &str) {
+    log::info!("ban: banned {noun} {key}");
+    println!("Banned {noun} {key}.");
+}
+
+/// Decodes and validates a hex-encoded BLAKE3 hash argument.
+fn parse_hash(s: &str) -> Result<Vec<u8>> {
+    let bytes =
+        hex_decode(s).ok_or_else(|| anyhow::anyhow!("Invalid hash (expected lowercase hex)"))?;
+    anyhow::ensure!(
+        bytes.len() == 32,
+        "Invalid hash length (expected 32-byte BLAKE3)"
+    );
+    Ok(bytes)
 }
 
 pub(crate) async fn migrate(db: &DbPool) -> Result<()> {
@@ -282,14 +296,13 @@ async fn add_blacklist(db: &DbPool, url: String, type_: u32, interval: u64) -> R
 }
 
 async fn remove_blacklist(db: &DbPool, id: i32) -> Result<()> {
-    removal_result(
-        db::delete_blacklist(db, id).await?,
-        RemovalMessages {
-            log: format!("blacklist: removed entry id={id}"),
-            ok: format!("Removed entry {id}."),
-            err: format!("No entry with id {id}."),
-        },
-    )
+    if db::delete_blacklist(db, id).await? {
+        log::info!("blacklist: removed entry id={id}");
+        println!("Removed entry {id}.");
+        Ok(())
+    } else {
+        anyhow::bail!("No entry with id {id}.")
+    }
 }
 
 pub(crate) async fn ban(db: &DbPool, target: BanTarget) -> Result<()> {
@@ -361,11 +374,7 @@ async fn ban_ip(db: &DbPool, command: BanIpCommand) -> Result<()> {
         }
         BanIpCommand::Remove { id } => removal_result(
             db::delete_banned_ip(db, id).await?,
-            RemovalMessages {
-                log: format!("ban: removed banned ip range id={id}"),
-                ok: format!("Removed ban {id}."),
-                err: format!("No banned IP range with id {id}."),
-            },
+            &format!("ip range id={id}"),
         ),
     }
 }
@@ -385,17 +394,12 @@ async fn ban_filename(db: &DbPool, command: BanFilenameCommand) -> Result<()> {
                 anyhow::bail!("invalid regex {pattern:?}: {e}");
             }
             db::insert_banned_filename(db, &pattern, reason.as_deref()).await?;
-            log::info!("ban: banned filename pattern {pattern:?}");
-            println!("Banned filename pattern {pattern:?}.");
+            print_added("filename pattern", &format!("{pattern:?}"));
             Ok(())
         }
         BanFilenameCommand::Remove { pattern } => removal_result(
             db::delete_banned_filename(db, &pattern).await?,
-            RemovalMessages {
-                log: format!("ban: removed banned filename pattern {pattern:?}"),
-                ok: format!("Removed ban on filename pattern {pattern:?}."),
-                err: format!("No ban on filename pattern {pattern:?}."),
-            },
+            &format!("filename pattern {pattern:?}"),
         ),
     }
 }
@@ -412,18 +416,16 @@ async fn ban_mime(db: &DbPool, command: BanMimeCommand) -> Result<()> {
         BanMimeCommand::Add { mime } => {
             let mime = mime.to_lowercase();
             db::insert_banned_mime(db, &mime).await?;
-            log::info!("ban: banned mime {mime}");
-            println!("Banned mime {mime}.");
+            print_added("mime", &mime);
             Ok(())
         }
-        BanMimeCommand::Remove { mime } => removal_result(
-            db::delete_banned_mime(db, &mime.to_lowercase()).await?,
-            RemovalMessages {
-                log: format!("ban: removed banned mime {mime}"),
-                ok: format!("Removed ban on mime {mime}."),
-                err: format!("No ban on mime {mime}."),
-            },
-        ),
+        BanMimeCommand::Remove { mime } => {
+            let mime = mime.to_lowercase();
+            removal_result(
+                db::delete_banned_mime(db, &mime).await?,
+                &format!("mime {mime}"),
+            )
+        }
     }
 }
 
@@ -438,28 +440,15 @@ async fn ban_hash(db: &DbPool, command: BanHashCommand) -> Result<()> {
             Ok(())
         }
         BanHashCommand::Add { hash, reason } => {
-            let bytes = hex_decode(&hash)
-                .ok_or_else(|| anyhow::anyhow!("Invalid hash (expected lowercase hex)"))?;
-            if bytes.len() != 32 {
-                anyhow::bail!("Invalid hash length (expected 32-byte BLAKE3)");
-            }
+            let bytes = parse_hash(&hash)?;
             db::insert_banned_hash(db, &bytes, reason.as_deref()).await?;
-            log::info!("ban: banned hash {hash}");
-            println!("Banned hash {hash}.");
+            print_added("hash", &hash);
             Ok(())
         }
-        BanHashCommand::Remove { hash } => {
-            let bytes = hex_decode(&hash)
-                .ok_or_else(|| anyhow::anyhow!("Invalid hash (expected lowercase hex)"))?;
-            removal_result(
-                db::delete_banned_hash(db, &bytes).await?,
-                RemovalMessages {
-                    log: format!("ban: removed banned hash {hash}"),
-                    ok: format!("Removed ban on hash {hash}."),
-                    err: format!("No ban on hash {hash}."),
-                },
-            )
-        }
+        BanHashCommand::Remove { hash } => removal_result(
+            db::delete_banned_hash(db, &parse_hash(&hash)?).await?,
+            &format!("hash {hash}"),
+        ),
     }
 }
 
@@ -475,17 +464,12 @@ async fn ban_user_agent(db: &DbPool, command: BanUserAgentCommand) -> Result<()>
         }
         BanUserAgentCommand::Add { pattern, reason } => {
             db::insert_banned_user_agent(db, &pattern, reason.as_deref()).await?;
-            log::info!("ban: banned user agent pattern {pattern:?}");
-            println!("Banned user agent pattern {pattern:?}.");
+            print_added("user agent pattern", &format!("{pattern:?}"));
             Ok(())
         }
         BanUserAgentCommand::Remove { pattern } => removal_result(
             db::delete_banned_user_agent(db, &pattern).await?,
-            RemovalMessages {
-                log: format!("ban: removed banned user agent pattern {pattern:?}"),
-                ok: format!("Removed ban on user agent pattern {pattern:?}."),
-                err: format!("No ban on user agent pattern {pattern:?}."),
-            },
+            &format!("user agent pattern {pattern:?}"),
         ),
     }
 }
