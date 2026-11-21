@@ -19,6 +19,14 @@ use crate::upload::uuid_to_path;
 /// how many physical-file unlinks to keep in flight during batch deletion
 const UNLINK_CONCURRENCY: usize = 32;
 
+/// True when `e` is a UNIQUE constraint violation (MySQL/MariaDB errcode 1062).
+pub(crate) fn is_unique_violation(e: &sqlx::Error) -> bool {
+    matches!(
+        e,
+        sqlx::Error::Database(db) if db.kind() == sqlx::error::ErrorKind::UniqueViolation
+    )
+}
+
 /// Applies pending migrations. Used by server startup and the `migrate` subcommand.
 pub(crate) async fn run_migrations(db: &DbPool) -> Result<(), sqlx::migrate::MigrateError> {
     let mut conn = db_pool::conn(db).await?;

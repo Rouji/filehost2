@@ -296,16 +296,6 @@ async fn process_file(
     }
 
     let uuid = Uuid::new_v4();
-
-    let slug = allocate_unique_slug(
-        db,
-        &original_name,
-        ct_subtype.as_deref(),
-        settings,
-        keep_name,
-        id_len,
-    )
-    .await?;
     let expiry = calculate_expiry(file_size, settings);
     let save_path = uuid_to_path(Path::new(&settings.store_path), &uuid);
 
@@ -317,23 +307,47 @@ async fn process_file(
     let content_type_for_db =
         reconcile_content_type_for_db(file.detected_content_type.as_ref(), content_type_str);
 
-    if let Err(e) = db::insert_upload_row(
-        db,
-        uuid,
-        &original_name,
-        expiry,
-        &slug,
-        file_size as i64,
-        hash.as_slice(),
-        uploader_ip,
-        &content_type_for_db,
-        user_agent,
-    )
-    .await
-    {
-        log::error!("insert failed: {e}");
-        return Err(internal_error());
-    }
+    // The pre-check in `allocate_unique_slug` narrows the window, but two
+    // concurrent uploads can still claim the same slug before either inserts.
+    // `uploads.slug` is UNIQUE, so the insert is the arbiter and the loser
+    // retries with a longer id. The saved file is unaffected: its path is
+    // named by the uuid, not the slug.
+    let mut id_len = id_len;
+    let slug = loop {
+        let candidate = allocate_unique_slug(
+            db,
+            &original_name,
+            ct_subtype.as_deref(),
+            settings,
+            keep_name,
+            id_len,
+        )
+        .await?;
+        match db::insert_upload_row(
+            db,
+            uuid,
+            &original_name,
+            expiry,
+            &candidate,
+            file_size as i64,
+            hash.as_slice(),
+            uploader_ip,
+            &content_type_for_db,
+            user_agent,
+        )
+        .await
+        {
+            Ok(()) => break candidate,
+            Err(e) if db::is_unique_violation(&e) => {
+                log::info!("lost slug race for {candidate:?}, retrying with a longer id");
+                id_len += 1;
+            }
+            Err(e) => {
+                log::error!("insert failed: {e}");
+                return Err(internal_error());
+            }
+        }
+    };
 
     spawn_clamd_scan(state.clone(), uuid, slug.clone(), hash, save_path.clone());
 

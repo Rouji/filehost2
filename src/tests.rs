@@ -301,6 +301,57 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn duplicate_slug_insert_is_a_unique_violation(pool: MySqlPool) {
+        // uploads.slug is UNIQUE (20261121000000). The upload handler relies on
+        // this: a lost check-then-insert race surfaces as a unique violation,
+        // which its retry loop answers with a longer id.
+        let db = to_db_pool(&pool);
+        let settings = Settings::test_defaults();
+        let name = "row.txt";
+        let expiry = crate::upload::calculate_expiry(1, &settings);
+        let slug = "the-same-slug";
+        let size = 1i64;
+        let hash: &[u8] = &[0u8; 32];
+        let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let ct = "text/plain";
+        let ua = None;
+
+        db::insert_upload_row(
+            &db,
+            uuid::Uuid::new_v4(),
+            name,
+            expiry,
+            slug,
+            size,
+            hash,
+            ip,
+            ct,
+            ua,
+        )
+        .await
+        .unwrap();
+
+        let err = db::insert_upload_row(
+            &db,
+            uuid::Uuid::new_v4(),
+            name,
+            expiry,
+            slug,
+            size,
+            hash,
+            ip,
+            ct,
+            ua,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            db::is_unique_violation(&err),
+            "expected a unique violation, got: {err}"
+        );
+    }
+
+    #[sqlx::test]
     async fn unrecognised_binary_keeps_extension_guess(pool: MySqlPool) {
         // Binary bytes (contain control chars) that match no magic-byte signature make the
         // sniffer fall back to application/octet-stream. That default must not clobber a valid
