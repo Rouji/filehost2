@@ -100,7 +100,10 @@ mod tests {
     fn rejects_tampered_token() {
         let secret = PowSecret::generate();
         let mut token = secret.issue(60);
-        token.replace_range(0..2, "ff");
+        // flip the first hex digit to something guaranteed different, so the
+        // tamper always changes the token (a random one may already start "ff")
+        let replacement = if token.starts_with('f') { "0" } else { "f" };
+        token.replace_range(0..1, replacement);
         assert!(!secret.verify(&token, "anything", 0));
     }
 
