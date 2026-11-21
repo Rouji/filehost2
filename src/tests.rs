@@ -2001,6 +2001,7 @@ mod sync_tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    use crate::asn;
     use crate::db_pool;
     use crate::model::BanType;
     use crate::sync;
@@ -2201,5 +2202,60 @@ mod sync_tests {
     async fn sync_nonexistent_blacklist_fails(pool: MySqlPool) {
         let result = sync::sync_blacklist(db(&pool), 99999).await;
         assert!(result.is_err());
+    }
+
+    #[sqlx::test]
+    async fn asn_sync_replaces_table(pool: MySqlPool) {
+        let db = db(&pool);
+        let ranges = asn::parse_body(
+            b"1.0.0.0\t1.0.0.255\t13335\tUS\tCloudflare\n\
+              1.0.1.0\t1.0.3.255\t0\tNone\tNot routed\n",
+        )
+        .unwrap();
+        assert_eq!(crate::db::replace_ip_asn(&db, &ranges).await.unwrap(), 2);
+
+        // Point lookup: greatest start_ip <= target, then containment check.
+        let row: (u32, String, String) = sqlx::query_as(
+            "SELECT asn, country, org FROM ip_asn \
+             WHERE start_ip <= ? AND end_ip >= ? ORDER BY start_ip DESC LIMIT 1",
+        )
+        .bind(crate::ip::to_db_vec("1.0.0.42".parse().unwrap()))
+        .bind(crate::ip::to_db_vec("1.0.0.42".parse().unwrap()))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row, (13335, "US".to_string(), "Cloudflare".to_string()));
+
+        // Re-running replaces, not appends.
+        let ranges2 = asn::parse_body(
+            b"1.0.0.0\t1.0.0.255\t13335\tUS\tCloudflare\n\
+              1.0.1.0\t1.0.3.255\t0\tNone\tNot routed\n\
+              1.0.4.0\t1.0.7.255\t38803\tAU\tGtelecom\n",
+        )
+        .unwrap();
+        assert_eq!(crate::db::replace_ip_asn(&db, &ranges2).await.unwrap(), 3);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ip_asn")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[sqlx::test]
+    async fn asn_sync_via_cli_downloads_and_stores(pool: MySqlPool) {
+        // Full path through sync_asn with a gzipped local file.
+        let gz = asn::gz_compress(b"1.0.0.0\t1.0.0.255\t13335\tUS\tCloudflare\n");
+        let path = std::env::temp_dir().join("filehost2-asn-test.tsv.gz");
+        std::fs::write(&path, &gz).unwrap();
+        let count = asn::sync_asn(&db(&pool), Some(path.to_str().unwrap()))
+            .await
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(count, 1);
+        let asn_col: u32 = sqlx::query_scalar("SELECT asn FROM ip_asn LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(asn_col, 13335);
     }
 }

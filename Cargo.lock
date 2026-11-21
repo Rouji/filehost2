@@ -1412,6 +1412,7 @@ dependencies = [
  "env-settings-utils",
  "env_logger",
  "file_type",
+ "flate2",
  "futures-util",
  "image",
  "log",

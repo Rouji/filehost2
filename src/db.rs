@@ -7,6 +7,7 @@ use sqlx::{Acquire, Row};
 use time::PrimitiveDateTime;
 use uuid::Uuid;
 
+use crate::asn::AsnRange;
 use crate::db_pool::{self, DbPool};
 use crate::ip;
 use crate::model::{
@@ -748,6 +749,35 @@ pub(crate) async fn insert_banned_ip_batch(
         }
         total += q.execute(&mut *conn).await?.rows_affected() as usize;
     }
+    Ok(total)
+}
+
+/// Atomically replaces the `ip_asn` table contents (DELETE + INSERT in one
+/// transaction), so point lookups never observe a partially loaded or empty
+/// table. Mirrors `insert_banned_ip_batch`'s chunked multi-row INSERT.
+pub(crate) async fn replace_ip_asn(db: &DbPool, ranges: &[AsnRange]) -> Result<usize, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let mut tx = conn.begin().await?;
+    sqlx::query!("DELETE FROM ip_asn").execute(&mut *tx).await?;
+    let mut total = 0;
+    for chunk in ranges.chunks(crate::asn::ROWS_PER_STATEMENT) {
+        let values = std::iter::repeat_n("(?, ?, ?, ?, ?)", chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO ip_asn (start_ip, end_ip, asn, country, org) VALUES {values}"
+        )));
+        for r in chunk {
+            q = q
+                .bind(r.start.as_slice())
+                .bind(r.end.as_slice())
+                .bind(r.asn)
+                .bind(&r.country)
+                .bind(&r.org);
+        }
+        total += q.execute(&mut *tx).await?.rows_affected() as usize;
+    }
+    tx.commit().await?;
     Ok(total)
 }
 

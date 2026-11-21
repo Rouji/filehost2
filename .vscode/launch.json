@@ -1,0 +1,32 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug executable 'filehost2'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=filehost2"
+                ]
+            },
+            "args": [],
+            "env": {"DATABASE_URL": "mysql://root@localhost/filehost"}
+        },
+        {
+            "name": "Debug unit tests in executable 'filehost2'",
+            "type": "lldb",
+            "request": "launch",
+            "env": {"DATABASE_URL": "mysql://root@localhost/filehost"},
+            "cargo": {
+                "args": [
+                    "test"
+                ]
+            }
+        }
+    ]
+}

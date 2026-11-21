@@ -24,6 +24,7 @@ log = "0.4"
 blake3 = "1"
 file_type = "0.9"
 futures-util = "0.3"
+flate2 = "1"
 mime = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "rt", "sync", "time"] }
 rustls-acme = "0.15"

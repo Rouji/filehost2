@@ -1,5 +1,6 @@
 mod admin;
 mod app;
+mod asn;
 mod ban_cache;
 mod challenge;
 mod clamd;
@@ -62,6 +63,7 @@ async fn main() -> std::io::Result<()> {
                 cli::rensfw(&db, &settings, all, dry_run).await
             }
             cli::Command::Blacklist { command } => cli::blacklist(&db, command).await,
+            cli::Command::AsnSync { path } => cli::asn_sync(&db, path.as_deref()).await,
             cli::Command::Ban { target } => cli::ban(&db, target).await,
         };
         if let Err(e) = result {

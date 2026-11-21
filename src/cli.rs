@@ -48,6 +48,12 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: BlacklistCommand,
     },
+    /// download iptoasn.com data and replace the ip_asn table (per-ASN abuse queries)
+    AsnSync {
+        /// path to a local ip2asn-combined.tsv(.gz), overriding the download
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// manage individual bans (IPs, filenames, mimes, hashes, user agents)
     Ban {
         #[command(subcommand)]
@@ -270,6 +276,12 @@ pub(crate) async fn blacklist(db: &DbPool, command: BlacklistCommand) -> Result<
         BlacklistCommand::Remove { id } => remove_blacklist(db, id).await,
         BlacklistCommand::Sync => crate::sync::sync_all(db).await,
     }
+}
+
+pub(crate) async fn asn_sync(db: &DbPool, path: Option<&str>) -> Result<()> {
+    let count = crate::asn::sync_asn(db, path).await?;
+    println!("Replaced ip_asn with {count} ranges.");
+    Ok(())
 }
 
 async fn list_blacklist(db: &DbPool) -> Result<()> {
