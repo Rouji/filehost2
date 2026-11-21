@@ -285,7 +285,7 @@ async fn process_file(
     {
         log::info!("dedup: {existing_id} ({existing_slug}) already exists");
         let encoded = utf8_percent_encode(&existing_slug, PATH_SEGMENT).to_string();
-        return Ok(format!("{}{encoded}", settings.base_url.as_ref().unwrap()));
+        return Ok(format!("{}{encoded}", settings.base_url()));
     }
 
     let uuid = Uuid::new_v4();
@@ -340,7 +340,7 @@ async fn process_file(
     }
 
     let encoded_slug = utf8_percent_encode(&slug, PATH_SEGMENT).to_string();
-    let base_url = settings.base_url.as_ref().unwrap();
+    let base_url = settings.base_url();
     Ok(format!("{base_url}{encoded_slug}"))
 }
 
@@ -468,8 +468,7 @@ fn escape_html(s: &str) -> String {
 }
 
 fn captcha_url(settings: &Settings) -> String {
-    let base = settings.base_url.as_deref().unwrap_or("/");
-    format!("{base}captcha")
+    format!("{}captcha", settings.base_url())
 }
 
 /// `action` completes "Please verify you're not a script before ...".

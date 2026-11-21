@@ -84,6 +84,12 @@ pub(crate) struct Settings {
 }
 
 impl Settings {
+    /// The public base URL (trailing slash included), resolved at startup;
+    /// falls back to "/" so links stay relative if it is somehow unset.
+    pub(crate) fn base_url(&self) -> &str {
+        self.base_url.as_deref().unwrap_or("/")
+    }
+
     /// get model path, but only if present on disk
     pub(crate) fn nsfw_model_path(&self) -> Option<&std::path::Path> {
         let path = std::path::Path::new(self.nsfw_model_path.as_deref()?);

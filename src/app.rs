@@ -33,8 +33,34 @@ pub(crate) struct AppState {
     pub request_tracker: RequestTracker,
 }
 
+/// Parses the comma-separated ACME domain list; `None` when unset or empty
+/// (i.e. TLS disabled).
+pub(crate) fn parse_acme_domains(raw: Option<&str>) -> Option<Vec<String>> {
+    let domains: Vec<String> = raw?
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    (!domains.is_empty()).then_some(domains)
+}
+
 impl AppState {
-    pub(crate) fn new(db: DbPool, settings: Settings) -> Self {
+    pub(crate) fn new(db: DbPool, mut settings: Settings) -> Self {
+        // resolve the public base URL once, before anything renders or
+        // serves links with it
+        if settings.base_url.is_none() {
+            let scheme = if parse_acme_domains(settings.acme_domains.as_deref()).is_some() {
+                "https"
+            } else {
+                "http"
+            };
+            settings.base_url = Some(format!(
+                "{scheme}://{}:{}/",
+                settings.listen_addr, settings.listen_port
+            ));
+        }
+
         let ttl = Duration::from_secs(settings.ban_cache_ttl_seconds);
 
         let (xff_trust, invalid_proxies) = settings.xff_trust();
@@ -125,4 +151,64 @@ pub(crate) fn configure(cfg: &mut web::ServiceConfig, state: web::Data<AppState>
                 .total_limit(state.settings.max_filesize * 1024 * 1024)
                 .error_handler(handle_multipart_error),
         );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acme_domains_parsing() {
+        assert_eq!(parse_acme_domains(None), None);
+        assert_eq!(parse_acme_domains(Some("")), None);
+        assert_eq!(parse_acme_domains(Some(" , ")), None);
+        assert_eq!(
+            parse_acme_domains(Some("a.example, b.example ,")),
+            Some(vec!["a.example".to_string(), "b.example".to_string()])
+        );
+    }
+
+    fn state_with(settings: Settings) -> AppState {
+        // lazy pool: AppState::new never connects
+        let pool = crate::db_pool::build_pool("mysql://root@localhost/unused".parse().unwrap(), 1)
+            .unwrap();
+        AppState::new(pool, settings)
+    }
+
+    #[test]
+    fn base_url_defaults_to_http_listen_address() {
+        let settings = Settings {
+            base_url: None,
+            ..Settings::test_defaults()
+        };
+        assert_eq!(
+            state_with(settings).settings.base_url(),
+            "http://127.0.0.1:8080/"
+        );
+    }
+
+    #[test]
+    fn base_url_defaults_to_https_with_acme() {
+        let settings = Settings {
+            base_url: None,
+            acme_domains: Some("files.example.com".to_string()),
+            ..Settings::test_defaults()
+        };
+        assert_eq!(
+            state_with(settings).settings.base_url(),
+            "https://127.0.0.1:8080/"
+        );
+    }
+
+    #[test]
+    fn explicit_base_url_is_kept() {
+        let settings = Settings {
+            base_url: Some("https://cdn.example.com/".to_string()),
+            ..Settings::test_defaults()
+        };
+        assert_eq!(
+            state_with(settings).settings.base_url(),
+            "https://cdn.example.com/"
+        );
+    }
 }

@@ -41,7 +41,7 @@ async fn main() -> std::io::Result<()> {
 
     let cli = cli::Cli::parse();
 
-    let mut settings =
+    let settings =
         Settings::from_env().expect("Failed to load settings from environment variables");
 
     let db_connect_options: sqlx::mysql::MySqlConnectOptions = settings
@@ -76,30 +76,7 @@ async fn main() -> std::io::Result<()> {
         return Err(std::io::Error::other("migration failure"));
     }
 
-    let acme_domains: Option<Vec<String>> = settings
-        .acme_domains
-        .as_deref()
-        .map(|domains| {
-            domains
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .filter(|domains: &Vec<String>| !domains.is_empty());
-
-    if settings.base_url.is_none() {
-        let scheme = if acme_domains.is_some() {
-            "https"
-        } else {
-            "http"
-        };
-        settings.base_url = Some(format!(
-            "{scheme}://{}:{}/",
-            settings.listen_addr, settings.listen_port
-        ));
-    }
+    let acme_domains = app::parse_acme_domains(settings.acme_domains.as_deref());
 
     let state = web::Data::new(app::AppState::new(db.clone(), settings.clone()));
     let xff_credible = state.xff_trust.proxy_count() > 0;
@@ -110,23 +87,7 @@ async fn main() -> std::io::Result<()> {
         "%a %t \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T"
     };
 
-    let acme = acme_domains.map(|domains| {
-        let cache_dir = settings
-            .acme_cache_dir
-            .clone()
-            .unwrap_or_else(|| "acme-cache".to_string());
-        let mut config = AcmeConfig::new(domains.iter())
-            .contact_push(format!("mailto:{}", settings.admin_email))
-            .cache(DirCache::new(cache_dir));
-        config = match settings.acme_directory_url.as_deref() {
-            Some(url) => config.directory(url),
-            _ => config.directory_lets_encrypt(true),
-        };
-        let state = config.state();
-        let challenge_rustls_config = Arc::into_inner(state.challenge_rustls_config())
-            .expect("acme: challenge rustls config");
-        (state, challenge_rustls_config)
-    });
+    let tls_config = acme_domains.map(|domains| setup_acme(&settings, domains));
 
     let http_server = HttpServer::new(move || {
         App::new()
@@ -134,58 +95,74 @@ async fn main() -> std::io::Result<()> {
             .wrap(rate_limit::RequestRateLimiter)
             .wrap(Logger::new(log_format))
     });
-    let server = match acme {
-        Some((mut state, challenge_rustls_config)) => {
-            tokio::spawn(async move {
-                loop {
-                    match state.next().await {
-                        Some(Ok(event)) => log::info!("acme: {event:?}"),
-                        Some(Err(err)) => log::error!("acme: {err:?}"),
-                        _ => break,
-                    }
-                }
-            });
-
-            // plain HTTP on port 80 is only used to redirect to HTTPS,
-            // except when the TLS listener itself is on port 80
-            // (TLS-ALPN-01 needs 443 anyway, so this would be a misconfiguration)
-            if settings.listen_port != 80 {
-                match HttpServer::new(|| {
-                    App::new().default_service(web::to(|req: HttpRequest| async move {
-                        let host = req.connection_info().host().to_string();
-                        Ok::<HttpResponse, Error>(
-                            HttpResponse::PermanentRedirect()
-                                .insert_header((
-                                    header::LOCATION,
-                                    format!("https://{host}{}", req.uri()),
-                                ))
-                                .finish(),
-                        )
-                    }))
-                })
-                .bind((settings.listen_addr.clone(), 80))
-                {
-                    Ok(srv) => {
-                        log::info!("listening on port 80 to redirect to https");
-                        let srv_run = srv.run();
-                        tokio::spawn(async move {
-                            if let Err(err) = srv_run.await {
-                                log::error!("http redirect server error: {err}");
-                            }
-                        });
-                    }
-                    Err(err) => {
-                        log::error!("failed to bind http redirect listener on port 80: {err}")
-                    }
-                }
-            }
-
-            http_server.bind_rustls_0_23(
-                (settings.listen_addr.clone(), settings.listen_port),
-                challenge_rustls_config,
-            )?
-        }
-        _ => http_server.bind_auto_h2c((settings.listen_addr, settings.listen_port))?,
+    let server = match tls_config {
+        Some(config) => http_server
+            .bind_rustls_0_23((settings.listen_addr.clone(), settings.listen_port), config)?,
+        None => http_server.bind_auto_h2c((settings.listen_addr, settings.listen_port))?,
     };
     server.run().await
+}
+
+/// Builds the ACME state, spawns its event loop and the port-80 redirect
+/// listener, and returns the rustls config for the TLS listener.
+fn setup_acme(settings: &Settings, domains: Vec<String>) -> rustls_acme::rustls::ServerConfig {
+    let cache_dir = settings
+        .acme_cache_dir
+        .clone()
+        .unwrap_or_else(|| "acme-cache".to_string());
+    let mut config = AcmeConfig::new(domains.iter())
+        .contact_push(format!("mailto:{}", settings.admin_email))
+        .cache(DirCache::new(cache_dir));
+    config = match settings.acme_directory_url.as_deref() {
+        Some(url) => config.directory(url),
+        _ => config.directory_lets_encrypt(true),
+    };
+    let mut state = config.state();
+    let challenge_rustls_config =
+        Arc::into_inner(state.challenge_rustls_config()).expect("acme: challenge rustls config");
+
+    tokio::spawn(async move {
+        loop {
+            match state.next().await {
+                Some(Ok(event)) => log::info!("acme: {event:?}"),
+                Some(Err(err)) => log::error!("acme: {err:?}"),
+                _ => break,
+            }
+        }
+    });
+
+    spawn_http_redirect(&settings.listen_addr, settings.listen_port);
+    challenge_rustls_config
+}
+
+/// Plain HTTP on port 80 only redirects to HTTPS — unless the TLS listener
+/// itself is on port 80 (TLS-ALPN-01 needs 443 anyway, so that would be a
+/// misconfiguration).
+fn spawn_http_redirect(listen_addr: &str, tls_port: u16) {
+    if tls_port == 80 {
+        return;
+    }
+    match HttpServer::new(|| {
+        App::new().default_service(web::to(|req: HttpRequest| async move {
+            let host = req.connection_info().host().to_string();
+            Ok::<HttpResponse, Error>(
+                HttpResponse::PermanentRedirect()
+                    .insert_header((header::LOCATION, format!("https://{host}{}", req.uri())))
+                    .finish(),
+            )
+        }))
+    })
+    .bind((listen_addr.to_string(), 80))
+    {
+        Ok(srv) => {
+            log::info!("listening on port 80 to redirect to https");
+            let srv_run = srv.run();
+            tokio::spawn(async move {
+                if let Err(err) = srv_run.await {
+                    log::error!("http redirect server error: {err}");
+                }
+            });
+        }
+        Err(err) => log::error!("failed to bind http redirect listener on port 80: {err}"),
+    }
 }
