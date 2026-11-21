@@ -6,7 +6,6 @@ use regex::Regex;
 use time::PrimitiveDateTime;
 
 use crate::db;
-use crate::db_pool;
 use crate::db_pool::DbPool;
 use crate::ip::Cidr;
 
@@ -63,15 +62,7 @@ pub(crate) async fn sync_blacklist(db: DbPool, blacklist_id: i32) -> Result<()> 
     db::insert_banned_ip_batch(&db, &ranges, ban_type, blacklist_id).await?;
 
     // Update last_update timestamp.
-    {
-        let mut conn = db_pool::conn(&db).await?;
-        sqlx::query!(
-            "UPDATE blacklist SET last_update = NOW() WHERE id = ?",
-            blacklist_id
-        )
-        .execute(&mut *conn)
-        .await?;
-    }
+    db::touch_blacklist(&db, blacklist_id).await?;
 
     log::info!(
         "blacklist: synced {} range(s) for id={} url={}",

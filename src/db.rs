@@ -909,3 +909,12 @@ pub(crate) async fn insert_blacklist(
 }
 
 delete_by_id_bool!(delete_blacklist, i32, "DELETE FROM blacklist WHERE id = ?");
+
+/// Records a successful blacklist sync.
+pub(crate) async fn touch_blacklist(db: &DbPool, id: i32) -> Result<(), sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    sqlx::query!("UPDATE blacklist SET last_update = NOW() WHERE id = ?", id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
