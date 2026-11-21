@@ -457,6 +457,7 @@ pub(crate) async fn top_nsfw_uploader_ips(
     .await
 }
 
+#[derive(serde::Serialize)]
 pub(crate) struct HourlyUploadCount {
     pub hour: String,
     pub count: i64,
@@ -500,6 +501,7 @@ pub(crate) async fn uploads_hourly_counts(
         .collect())
 }
 
+#[derive(serde::Serialize)]
 pub(crate) struct MimeUploadCount {
     pub mime: String,
     pub count: i64,

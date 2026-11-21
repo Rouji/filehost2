@@ -75,7 +75,7 @@ pub(crate) struct BannedFileHash {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
 pub(crate) struct BannedFilename {
     pub pattern: String,
     pub reason: Option<String>,
@@ -86,7 +86,7 @@ pub(crate) struct BannedFileMime {
     pub mime: String,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
 pub(crate) struct BannedUserAgent {
     pub pattern: String,
     pub reason: Option<String>,

@@ -12,9 +12,7 @@ use uuid::Uuid;
 use crate::app::AppState;
 use crate::db;
 use crate::ip;
-use crate::model::{
-    BanType, BannedFileHash, BannedFileMime, BannedFilename, BannedIpRange, BannedUserAgent, Upload,
-};
+use crate::model::{BanType, BannedFileHash, BannedFileMime, BannedIpRange, Upload};
 use crate::util::{format_ts, hex_decode, hex_encode, parse_rfc3339};
 
 /// Registers every `/admin/*` route. Shared by the real app (main.rs) and the test
@@ -213,11 +211,8 @@ struct TopNsfwUploaderDto {
 
 #[derive(Serialize)]
 struct StatsDto {
-    active_uploads: i64,
-    active_bytes: i64,
-    deleted_uploads: i64,
-    uploads_last_24h: i64,
-    bytes_last_24h: i64,
+    #[serde(flatten)]
+    global: db::GlobalStats,
     top_uploaders: Vec<TopUploaderDto>,
     top_nsfw_uploaders: Vec<TopNsfwUploaderDto>,
 }
@@ -244,11 +239,7 @@ pub(crate) async fn stats(_auth: AdminAuth, state: web::Data<AppState>) -> impl 
     };
 
     HttpResponse::Ok().json(StatsDto {
-        active_uploads: stats.active_uploads,
-        active_bytes: stats.active_bytes,
-        deleted_uploads: stats.deleted_uploads,
-        uploads_last_24h: stats.uploads_last_24h,
-        bytes_last_24h: stats.bytes_last_24h,
+        global: stats,
         top_uploaders: top_uploaders
             .into_iter()
             .map(|u| TopUploaderDto {
@@ -361,21 +352,9 @@ pub(crate) async fn delete_upload_by_ip(
 }
 
 #[derive(Serialize)]
-struct HourlyCountDto {
-    hour: String,
-    count: i64,
-}
-
-#[derive(Serialize)]
-struct MimeCountDto {
-    mime: String,
-    count: i64,
-}
-
-#[derive(Serialize)]
 struct IpStatsDto {
-    hourly: Vec<HourlyCountDto>,
-    top_mimes: Vec<MimeCountDto>,
+    hourly: Vec<db::HourlyUploadCount>,
+    top_mimes: Vec<db::MimeUploadCount>,
 }
 
 const IP_STATS_HOURS: i64 = 24 * 7;
@@ -399,22 +378,7 @@ pub(crate) async fn ip_stats(
         Err(e) => return internal_err(e, "uploads_top_mimes"),
     };
 
-    HttpResponse::Ok().json(IpStatsDto {
-        hourly: hourly
-            .into_iter()
-            .map(|h| HourlyCountDto {
-                hour: h.hour,
-                count: h.count,
-            })
-            .collect(),
-        top_mimes: top_mimes
-            .into_iter()
-            .map(|m| MimeCountDto {
-                mime: m.mime,
-                count: m.count,
-            })
-            .collect(),
-    })
+    HttpResponse::Ok().json(IpStatsDto { hourly, top_mimes })
 }
 
 #[derive(Serialize)]
@@ -542,21 +506,6 @@ pub(crate) async fn remove_banned_ip(
     .await
 }
 
-#[derive(Serialize)]
-struct BannedFilenameDto {
-    pattern: String,
-    reason: Option<String>,
-}
-
-impl From<BannedFilename> for BannedFilenameDto {
-    fn from(b: BannedFilename) -> Self {
-        BannedFilenameDto {
-            pattern: b.pattern,
-            reason: b.reason,
-        }
-    }
-}
-
 #[derive(Deserialize)]
 pub(crate) struct FilenameCreate {
     pattern: String,
@@ -570,7 +519,7 @@ pub(crate) async fn list_banned_filenames(
 ) -> impl Responder {
     respond_list(
         db::list_banned_filenames(&state.db).await,
-        BannedFilenameDto::from,
+        std::convert::identity,
         "list_banned_filenames",
     )
 }
@@ -742,21 +691,6 @@ pub(crate) async fn remove_banned_hash(
     .await
 }
 
-#[derive(Serialize)]
-struct BannedUserAgentDto {
-    pattern: String,
-    reason: Option<String>,
-}
-
-impl From<BannedUserAgent> for BannedUserAgentDto {
-    fn from(b: BannedUserAgent) -> Self {
-        BannedUserAgentDto {
-            pattern: b.pattern,
-            reason: b.reason,
-        }
-    }
-}
-
 #[derive(Deserialize)]
 pub(crate) struct UserAgentCreate {
     pattern: String,
@@ -770,7 +704,7 @@ pub(crate) async fn list_banned_user_agents(
 ) -> impl Responder {
     respond_list(
         db::list_banned_user_agents(&state.db).await,
-        BannedUserAgentDto::from,
+        std::convert::identity,
         "list_banned_user_agents",
     )
 }
