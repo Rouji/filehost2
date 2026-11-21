@@ -252,9 +252,7 @@ pub(crate) async fn stats(_auth: AdminAuth, state: web::Data<AppState>) -> impl 
         top_uploaders: top_uploaders
             .into_iter()
             .map(|u| TopUploaderDto {
-                ip: ip::from_db_bytes(&u.ip)
-                    .map(|ip| ip.to_string())
-                    .unwrap_or_default(),
+                ip: ip::display_db_bytes(&u.ip),
                 count: u.count,
                 bytes: u.bytes,
             })
@@ -262,9 +260,7 @@ pub(crate) async fn stats(_auth: AdminAuth, state: web::Data<AppState>) -> impl 
         top_nsfw_uploaders: top_nsfw_uploaders
             .into_iter()
             .map(|u| TopNsfwUploaderDto {
-                ip: ip::from_db_bytes(&u.ip)
-                    .map(|ip| ip.to_string())
-                    .unwrap_or_default(),
+                ip: ip::display_db_bytes(&u.ip),
                 count: u.count,
                 avg_score: u.avg_score,
             })
@@ -437,12 +433,8 @@ impl From<BannedIpRange> for BannedIpRangeDto {
     fn from(b: BannedIpRange) -> Self {
         BannedIpRangeDto {
             id: b.id,
-            start_ip: ip::from_db_bytes(&b.start_ip)
-                .map(|ip| ip.to_string())
-                .unwrap_or_default(),
-            end_ip: ip::from_db_bytes(&b.end_ip)
-                .map(|ip| ip.to_string())
-                .unwrap_or_default(),
+            start_ip: ip::display_db_bytes(&b.start_ip),
+            end_ip: ip::display_db_bytes(&b.end_ip),
             reason: b.reason,
             banned_timestamp: format_ts(b.banned_timestamp),
             expires_timestamp: b.expires_timestamp.map(format_ts),

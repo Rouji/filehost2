@@ -154,7 +154,7 @@ mod tests {
     }
 
     fn ip_bytes(s: &str) -> Vec<u8> {
-        crate::ip::to_db_bytes(s.parse().unwrap()).to_vec()
+        crate::ip::to_db_vec(s.parse().unwrap())
     }
 
     #[sqlx::test]
@@ -408,7 +408,7 @@ mod tests {
     }
 
     async fn ban_ip(pool: &MySqlPool, ip: std::net::IpAddr, ban_type: u32) {
-        let ip_bytes = crate::ip::to_db_bytes(ip).to_vec();
+        let ip_bytes = crate::ip::to_db_vec(ip);
         sqlx::query(
             "INSERT INTO banned_ip_ranges (start_ip, end_ip, banned_timestamp, type) VALUES (?, ?, NOW(), ?)",
         )
@@ -1941,7 +1941,7 @@ mod sync_tests {
     }
 
     fn ip(s: &str) -> Vec<u8> {
-        crate::ip::to_db_bytes(s.parse().unwrap()).to_vec()
+        crate::ip::to_db_vec(s.parse().unwrap())
     }
 
     macro_rules! bl_mock {

@@ -17,6 +17,18 @@ pub(crate) fn from_db_bytes(bytes: &[u8]) -> Option<IpAddr> {
     })
 }
 
+/// [`to_db_bytes`] as an owned `Vec`, ready to bind to a sqlx query.
+pub(crate) fn to_db_vec(ip: IpAddr) -> Vec<u8> {
+    to_db_bytes(ip).to_vec()
+}
+
+/// Display form of an IP stored in DB bytes; empty string if unparsable.
+pub(crate) fn display_db_bytes(bytes: &[u8]) -> String {
+    from_db_bytes(bytes)
+        .map(|ip| ip.to_string())
+        .unwrap_or_default()
+}
+
 pub(crate) fn same_family(a: IpAddr, b: IpAddr) -> bool {
     matches!(
         (a, b),
@@ -230,6 +242,21 @@ mod tests {
     #[test]
     fn from_db_bytes_rejects_wrong_length() {
         assert_eq!(from_db_bytes(&[1, 2, 3, 4]), None);
+    }
+
+    #[test]
+    fn to_db_vec_matches_to_db_bytes() {
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        assert_eq!(to_db_vec(ip), to_db_bytes(ip).to_vec());
+    }
+
+    #[test]
+    fn display_db_bytes_formats_or_empties() {
+        assert_eq!(
+            display_db_bytes(&to_db_bytes("1.2.3.4".parse().unwrap())),
+            "1.2.3.4"
+        );
+        assert_eq!(display_db_bytes(&[1, 2, 3]), "");
     }
 
     #[test]

@@ -41,7 +41,7 @@ pub(crate) async fn is_ip_banned(
     ban_type: BanType,
 ) -> Result<bool, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
-    let ip = ip::to_db_bytes(ip).to_vec();
+    let ip = ip::to_db_vec(ip);
     Ok(sqlx::query!(
         "SELECT 1 AS found FROM banned_ip_ranges \
          WHERE ? BETWEEN start_ip AND end_ip \
@@ -57,7 +57,7 @@ pub(crate) async fn is_ip_banned(
 
 pub(crate) async fn is_ip_challenge_verified(db: &DbPool, ip: IpAddr) -> Result<bool, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
-    let ip = ip::to_db_bytes(ip).to_vec();
+    let ip = ip::to_db_vec(ip);
     Ok(sqlx::query!(
         "SELECT 1 AS found FROM challenge_verified_ips WHERE ip = ? AND expires_timestamp > NOW()",
         ip
@@ -73,7 +73,7 @@ pub(crate) async fn upsert_challenge_verified_ip(
     ttl_seconds: u64,
 ) -> Result<(), sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
-    let ip = ip::to_db_bytes(ip).to_vec();
+    let ip = ip::to_db_vec(ip);
     sqlx::query!(
         "INSERT INTO challenge_verified_ips (ip, verified_timestamp, expires_timestamp) \
          VALUES (?, NOW(), NOW() + INTERVAL ? SECOND) \
@@ -258,7 +258,7 @@ pub(crate) async fn delete_by_slug(db: &DbPool, settings: &Settings, slug: &str)
 }
 
 pub(crate) async fn delete_by_ip(db: &DbPool, settings: &Settings, ip: IpAddr) -> Result<usize> {
-    let ip = ip::to_db_bytes(ip).to_vec();
+    let ip = ip::to_db_vec(ip);
     delete_matching(db, settings, "uploader_ip = ?", |q| q.bind(ip.clone())).await
 }
 
@@ -272,8 +272,8 @@ pub(crate) async fn delete_by_ip_range(
         ip::same_family(start, end),
         "start and end must be the same IP version"
     );
-    let start = ip::to_db_bytes(start).to_vec();
-    let end = ip::to_db_bytes(end).to_vec();
+    let start = ip::to_db_vec(start);
+    let end = ip::to_db_vec(end);
     delete_matching(db, settings, "uploader_ip BETWEEN ? AND ?", |q| {
         q.bind(start.clone()).bind(end.clone())
     })
@@ -298,7 +298,7 @@ pub(crate) async fn insert_upload_row(
     user_agent: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
-    let uploader_ip = ip::to_db_bytes(uploader_ip).to_vec();
+    let uploader_ip = ip::to_db_vec(uploader_ip);
     sqlx::query!(
         "INSERT INTO uploads (id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         id, original_name, expiry_timestamp, slug, file_size, hash, uploader_ip, content_type, user_agent,
@@ -315,8 +315,8 @@ pub(crate) async fn has_nsfw_upload_last_week(
 ) -> Result<bool, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let (start, end) = ip::quota_range(ip);
-    let start = ip::to_db_bytes(start).to_vec();
-    let end = ip::to_db_bytes(end).to_vec();
+    let start = ip::to_db_vec(start);
+    let end = ip::to_db_vec(end);
     let found = sqlx::query_scalar!(
         "SELECT EXISTS(SELECT 1 FROM uploads \
          WHERE uploader_ip BETWEEN ? AND ? \
@@ -339,8 +339,8 @@ pub(crate) async fn upload_stats_last_day(
 ) -> Result<(i64, i64), sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
     let (start, end) = ip::quota_range(ip);
-    let start = ip::to_db_bytes(start).to_vec();
-    let end = ip::to_db_bytes(end).to_vec();
+    let start = ip::to_db_vec(start);
+    let end = ip::to_db_vec(end);
     let row = sqlx::query!(
         r#"SELECT CAST(COUNT(*) AS SIGNED) AS `count!: i64`,
                   CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS `bytes!: i64`
@@ -364,7 +364,7 @@ pub(crate) async fn log_access(
     status: u16,
 ) -> Result<(), sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
-    let ip = ip.map(|ip| ip::to_db_bytes(ip).to_vec());
+    let ip = ip.map(ip::to_db_vec);
     sqlx::query!(
         "INSERT INTO accesses (upload_id, ip, user_agent, bytes, status) VALUES (?, ?, ?, ?, ?)",
         upload_id,
@@ -468,7 +468,7 @@ pub(crate) async fn uploads_hourly_counts(
     hours: i64,
 ) -> Result<Vec<HourlyUploadCount>, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
-    let ip = ip::to_db_bytes(ip).to_vec();
+    let ip = ip::to_db_vec(ip);
     let rows = sqlx::query!(
         r#"SELECT DATE_FORMAT(upload_timestamp, '%Y-%m-%dT%H:00:00') AS "bucket!: String", CAST(COUNT(*) AS SIGNED) AS "count!: i64"
            FROM uploads
@@ -511,7 +511,7 @@ pub(crate) async fn uploads_top_mimes(
     limit: i64,
 ) -> Result<Vec<MimeUploadCount>, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
-    let ip = ip::to_db_bytes(ip).to_vec();
+    let ip = ip::to_db_vec(ip);
     sqlx::query_as!(
         MimeUploadCount,
         r#"SELECT content_type AS "mime!: String", CAST(COUNT(*) AS SIGNED) AS "count!: i64"
@@ -551,7 +551,7 @@ pub(crate) async fn list_uploads(
     }
     if let Some(ip) = ip {
         filters.push_str(" AND uploader_ip = ?");
-        params.push(ListUploadsParam::Bytes(ip::to_db_bytes(ip).to_vec()));
+        params.push(ListUploadsParam::Bytes(ip::to_db_vec(ip)));
     }
     if let Some(slug) = slug {
         filters.push_str(" AND slug = ?");
@@ -639,8 +639,8 @@ pub(crate) async fn insert_banned_ip(
     ban_type: BanType,
 ) -> Result<i64, sqlx::Error> {
     let mut conn = db_pool::conn(db).await?;
-    let start_ip = ip::to_db_bytes(start_ip).to_vec();
-    let end_ip = ip::to_db_bytes(end_ip).to_vec();
+    let start_ip = ip::to_db_vec(start_ip);
+    let end_ip = ip::to_db_vec(end_ip);
     let result = sqlx::query!(
         "INSERT INTO banned_ip_ranges (start_ip, end_ip, reason, expires_timestamp, blacklist_id, type) VALUES (?, ?, ?, ?, ?, ?)",
         start_ip,
@@ -677,8 +677,8 @@ pub(crate) async fn insert_banned_ip_batch(
         )));
         for (start, end) in chunk {
             q = q
-                .bind(ip::to_db_bytes(*start).to_vec())
-                .bind(ip::to_db_bytes(*end).to_vec())
+                .bind(ip::to_db_vec(*start))
+                .bind(ip::to_db_vec(*end))
                 .bind(blacklist_id)
                 .bind(ban_type as u32);
         }

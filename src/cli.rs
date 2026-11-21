@@ -312,12 +312,8 @@ async fn ban_ip(db: &DbPool, command: BanIpCommand) -> Result<()> {
                     .expires_timestamp
                     .map(format_ts)
                     .unwrap_or_else(|| "never".to_string());
-                let start = ip::from_db_bytes(&entry.start_ip)
-                    .map(|ip| ip.to_string())
-                    .unwrap_or_default();
-                let end = ip::from_db_bytes(&entry.end_ip)
-                    .map(|ip| ip.to_string())
-                    .unwrap_or_default();
+                let start = ip::display_db_bytes(&entry.start_ip);
+                let end = ip::display_db_bytes(&entry.end_ip);
                 println!(
                     "{:>6}  {:<15}-{:<15}  type={:<8}  reason={:<20}  expires={}",
                     entry.id,
