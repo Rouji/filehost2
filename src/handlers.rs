@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use actix_files::NamedFile;
 use actix_multipart::form::{MultipartForm, text::Text};
@@ -94,14 +94,21 @@ fn determine_content_type(file: &HashedTempFile, original_name: &str) -> (String
     )
 }
 
-fn save_file(tmp: tempfile::NamedTempFile, dest: &Path) -> std::io::Result<()> {
-    match tmp.persist(dest) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            std::fs::copy(e.file.path(), dest)?;
-            Ok(())
+async fn save_file(tmp: tempfile::NamedTempFile, dest: PathBuf) -> std::io::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-    }
+        match tmp.persist(&dest) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                std::fs::copy(e.file.path(), &dest)?;
+                Ok(())
+            }
+        }
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 /// Slug space grows exponentially with `id_len`, so bumping it after a few collisions
@@ -302,12 +309,7 @@ async fn process_file(
     let expiry = calculate_expiry(file_size, settings);
     let save_path = uuid_to_path(Path::new(&settings.store_path), &uuid);
 
-    if let Err(e) = std::fs::create_dir_all(save_path.parent().unwrap()) {
-        log::error!("Failed to create directory: {e}");
-        return Err(internal_error());
-    }
-
-    if let Err(e) = save_file(file.file, &save_path) {
+    if let Err(e) = save_file(file.file, save_path.clone()).await {
         log::error!("Failed to save file: {e}");
         return Err(internal_error());
     }
@@ -887,5 +889,56 @@ mod tests {
             assert_eq!(mime, ct);
             assert!(matches!(disposition, DispositionType::Attachment), "{ct}");
         }
+    }
+
+    /// A `NamedTempFile` with `content` in it, to hand to `save_file`.
+    fn temp_with(content: &[u8]) -> (std::path::PathBuf, tempfile::NamedTempFile) {
+        use std::io::Write as _;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(content).unwrap();
+        (f.path().to_path_buf(), f)
+    }
+
+    #[tokio::test]
+    async fn save_file_persists_content() {
+        let (tmp_path, tmp) = temp_with(b"hello upload");
+        let dest_dir = tempfile::tempdir().unwrap();
+        let dest = dest_dir.path().join("sub").join("file.bin");
+
+        save_file(tmp, dest.clone()).await.unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"hello upload");
+        // the rename moved the temp file away
+        assert!(!tmp_path.exists());
+    }
+
+    /// `persist` is noclobber, so an existing `dest` forces the `fs::copy`
+    /// fallback branch — exercisable without a second filesystem.
+    #[tokio::test]
+    async fn save_file_copy_fallback_overwrites_existing_dest() {
+        let (_tmp_path, tmp) = temp_with(b"new content");
+        let dest_dir = tempfile::tempdir().unwrap();
+        let dest = dest_dir.path().join("file.bin");
+        std::fs::write(&dest, b"stale").unwrap();
+
+        save_file(tmp, dest.clone()).await.unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new content");
+    }
+
+    #[tokio::test]
+    async fn save_file_fails_when_parent_is_a_file() {
+        let (tmp_path, tmp) = temp_with(b"x");
+        let base = tempfile::tempdir().unwrap();
+        // `create_dir_all` cannot make a directory "beneath" a regular file
+        let dest = base.path().join("not-a-dir").join("file.bin");
+        std::fs::write(base.path().join("not-a-dir"), b"").unwrap();
+
+        let err = save_file(tmp, dest).await.unwrap_err();
+
+        // mkdir on the file-named parent fails with EEXIST
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        // the temp file was dropped without persisting, so it was cleaned up
+        assert!(!tmp_path.exists());
     }
 }
