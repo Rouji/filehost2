@@ -39,29 +39,25 @@ fn error_page(status: StatusCode, message: &str) -> HttpResponse {
         .body(body)
 }
 
-fn format_ip(ip: Option<std::net::IpAddr>) -> String {
-    ip.map(|ip| ip.to_string())
-        .unwrap_or_else(|| "unknown".to_string())
+fn internal_error() -> HttpResponse {
+    error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.")
 }
 
 fn respond_to_check(
     condition: Result<bool, sqlx::Error>,
-    ip: Option<std::net::IpAddr>,
+    ip: std::net::IpAddr,
     check_name: &str,
     build_fail: impl FnOnce() -> HttpResponse,
 ) -> Result<(), HttpResponse> {
     match condition {
         Ok(true) => {
-            log::info!("upload rejected: {check_name} (ip={})", format_ip(ip));
+            log::info!("upload rejected: {check_name} (ip={ip})");
             Err(build_fail())
         }
         Ok(false) => Ok(()),
         Err(e) => {
             log::error!("{check_name} check failed: {e}");
-            Err(error_page(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Something went wrong.",
-            ))
+            Err(internal_error())
         }
     }
 }
@@ -70,7 +66,7 @@ fn respond_to_check(
 /// banned, a logged 500 if the check itself failed, otherwise `Ok(())`.
 async fn check_not_banned(
     check: impl std::future::Future<Output = Result<bool, sqlx::Error>>,
-    ip: Option<std::net::IpAddr>,
+    ip: std::net::IpAddr,
     check_name: &str,
     forbidden_message: &str,
 ) -> Result<(), HttpResponse> {
@@ -134,10 +130,7 @@ async fn allocate_unique_slug(
                 Ok(false) => return Ok(candidate),
                 Err(e) => {
                     log::error!("failed to check slug availability: {e}");
-                    return Err(error_page(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Something went wrong.",
-                    ));
+                    return Err(internal_error());
                 }
             }
         }
@@ -208,7 +201,7 @@ fn spawn_clamd_scan(
 
 fn spawn_nsfw_scan(
     state: web::Data<AppState>,
-    uploader_ip: Option<std::net::IpAddr>,
+    uploader_ip: std::net::IpAddr,
     uuid: Uuid,
     slug: String,
     save_path: std::path::PathBuf,
@@ -224,10 +217,8 @@ fn spawn_nsfw_scan(
                 if let Err(e) = db::update_nsfw_score(&state.db, uuid, c.score).await {
                     log::error!("nsfw: failed to update score for {uuid}: {e}");
                 }
-                if c.score >= nsfw_threshold
-                    && let Some(ip) = uploader_ip
-                {
-                    state.challenge_cache.mark_ip_suspect(ip).await;
+                if c.score >= nsfw_threshold {
+                    state.challenge_cache.mark_ip_suspect(uploader_ip).await;
                 }
             }
             Ok(Err(e)) => log::error!("nsfw: classification failed for {uuid} ({slug}): {e:#}"),
@@ -250,11 +241,9 @@ async fn process_file(
     let original_name = file.file_name.as_deref().unwrap_or("unknown").to_string();
     let file_size = file.size;
 
-    let internal_err = || error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
-
     check_not_banned(
         ban_cache.is_filename_banned(db, &original_name),
-        Some(uploader_ip),
+        uploader_ip,
         "banned filename",
         "File type not allowed.",
     )
@@ -268,7 +257,7 @@ async fn process_file(
     {
         check_not_banned(
             ban_cache.is_mime_banned(db, ct.as_ref()),
-            Some(uploader_ip),
+            uploader_ip,
             "banned mime",
             "Your upload was rejected.",
         )
@@ -279,7 +268,7 @@ async fn process_file(
 
     check_not_banned(
         ban_cache.is_hash_banned(db, hash.as_slice()),
-        Some(uploader_ip),
+        uploader_ip,
         "banned hash",
         "Your upload was rejected.",
     )
@@ -291,7 +280,7 @@ async fn process_file(
                 .await
                 .map_err(|e| {
                     log::error!("failed to check dedup: {e}");
-                    internal_err()
+                    internal_error()
                 })?
     {
         log::info!("dedup: {existing_id} ({existing_slug}) already exists");
@@ -315,12 +304,12 @@ async fn process_file(
 
     if let Err(e) = std::fs::create_dir_all(save_path.parent().unwrap()) {
         log::error!("Failed to create directory: {e}");
-        return Err(internal_err());
+        return Err(internal_error());
     }
 
     if let Err(e) = save_file(file.file, &save_path) {
         log::error!("Failed to save file: {e}");
-        return Err(internal_err());
+        return Err(internal_error());
     }
 
     let content_type_for_db =
@@ -341,19 +330,13 @@ async fn process_file(
     .await
     {
         log::error!("insert failed: {e}");
-        return Err(internal_err());
+        return Err(internal_error());
     }
 
     spawn_clamd_scan(state.clone(), uuid, slug.clone(), hash, save_path.clone());
 
     if content_type_for_db.starts_with("image/") {
-        spawn_nsfw_scan(
-            state.clone(),
-            Some(uploader_ip),
-            uuid,
-            slug.clone(),
-            save_path,
-        );
+        spawn_nsfw_scan(state.clone(), uploader_ip, uuid, slug.clone(), save_path);
     }
 
     let encoded_slug = utf8_percent_encode(&slug, PATH_SEGMENT).to_string();
@@ -459,11 +442,8 @@ pub(crate) async fn captcha_verify(
         .mark_ip_verified(&state.db, ip, settings.challenge_verified_ttl_seconds)
         .await
     {
-        log::error!(
-            "failed to record challenge-verified IP {}: {e}",
-            format_ip(Some(ip))
-        );
-        return error_page(StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong.");
+        log::error!("failed to record challenge-verified IP {ip}: {e}");
+        return internal_error();
     }
 
     HttpResponse::Ok()
@@ -514,7 +494,7 @@ fn challenge_required_response(settings: &Settings, action: &str, formatted: boo
 /// Run before the multipart body is even read.
 async fn enforce_upload_gates(
     state: &AppState,
-    uploader_ip: Option<std::net::IpAddr>,
+    uploader_ip: std::net::IpAddr,
     user_agent: Option<&str>,
     formatted: bool,
 ) -> Result<(), HttpResponse> {
@@ -522,15 +502,13 @@ async fn enforce_upload_gates(
     let ban_cache = &state.ban_cache;
     let challenge_cache = &state.challenge_cache;
     let settings = &state.settings;
-    if let Some(ip) = uploader_ip {
-        check_not_banned(
-            ban_cache.is_ip_banned(db, ip, BanType::ReadOnly),
-            uploader_ip,
-            "banned IP",
-            "Your IP is banned from uploading.",
-        )
-        .await?;
-    }
+    check_not_banned(
+        ban_cache.is_ip_banned(db, uploader_ip, BanType::ReadOnly),
+        uploader_ip,
+        "banned IP",
+        "Your IP is banned from uploading.",
+    )
+    .await?;
 
     if let Some(ua) = user_agent {
         check_not_banned(
@@ -542,18 +520,13 @@ async fn enforce_upload_gates(
         .await?;
     }
 
-    if let Some(ip) = uploader_ip
-        && (settings.max_uploads_per_day.is_some() || settings.max_bytes_per_day.is_some())
-    {
+    if settings.max_uploads_per_day.is_some() || settings.max_bytes_per_day.is_some() {
         // one query for both per-day limits
-        let (count, bytes) = match db::upload_stats_last_day(db, ip).await {
+        let (count, bytes) = match db::upload_stats_last_day(db, uploader_ip).await {
             Ok(stats) => stats,
             Err(e) => {
                 log::error!("upload rate limit check failed: {e}");
-                return Err(error_page(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Something went wrong.",
-                ));
+                return Err(internal_error());
             }
         };
         respond_to_check(
@@ -574,16 +547,14 @@ async fn enforce_upload_gates(
         )?;
     }
 
-    if let Some(ip) = uploader_ip {
-        respond_to_check(
-            challenge_cache
-                .needs_challenge(db, ip, settings.nsfw_threshold)
-                .await,
-            uploader_ip,
-            "challenge required",
-            || challenge_required_response(settings, "uploading", formatted),
-        )?;
-    }
+    respond_to_check(
+        challenge_cache
+            .needs_challenge(db, uploader_ip, settings.nsfw_threshold)
+            .await,
+        uploader_ip,
+        "challenge required",
+        || challenge_required_response(settings, "uploading", formatted),
+    )?;
 
     Ok(())
 }
@@ -640,8 +611,7 @@ pub(crate) async fn upload(
     let formatted = wants_html(&req);
 
     // ban + rate-limit + challenge checks before the multipart body is read
-    if let Err(resp) = enforce_upload_gates(&state, Some(uploader_ip), user_agent, formatted).await
-    {
+    if let Err(resp) = enforce_upload_gates(&state, uploader_ip, user_agent, formatted).await {
         return resp;
     }
 
@@ -654,17 +624,13 @@ pub(crate) async fn upload(
     {
         Ok(Ok(form)) => form,
         Ok(Err(e)) => {
-            log::info!(
-                "upload rejected: malformed request ({e}) (ip={})",
-                format_ip(Some(uploader_ip))
-            );
+            log::info!("upload rejected: malformed request ({e}) (ip={uploader_ip})");
             return HttpResponse::from_error(e);
         }
         Err(_elapsed) => {
             log::info!(
-                "upload rejected: upload timed out after {}s (ip={})",
-                settings.upload_timeout,
-                format_ip(Some(uploader_ip))
+                "upload rejected: upload timed out after {}s (ip={uploader_ip})",
+                settings.upload_timeout
             );
             return HttpResponse::RequestTimeout().finish();
         }
@@ -695,6 +661,25 @@ pub(crate) async fn upload(
     }
 
     format_links(&links, formatted)
+}
+
+/// How a stored file is presented: browser-safe media types are shown
+/// inline, everything else downloads as an attachment. Non-plain text types
+/// (html, js, css, …) are served as text/plain so browsers don't execute them.
+fn presentation(mime: &mime::Mime) -> (mime::Mime, DispositionType) {
+    let disposition = match mime.type_().as_str() {
+        "image" | "video" | "audio" => DispositionType::Inline,
+        "text" if mime.subtype().as_str() == "plain" => DispositionType::Inline,
+        "application" if matches!(mime.subtype().as_str(), "json" | "pdf") => {
+            DispositionType::Inline
+        }
+        _ => DispositionType::Attachment,
+    };
+    let serve_mime = match mime.type_().as_str() {
+        "text" if mime.subtype().as_str() != "plain" => mime::TEXT_PLAIN,
+        _ => mime.clone(),
+    };
+    (serve_mime, disposition)
 }
 
 const FAVICON: &[u8] = include_bytes!("../assets/favicon.ico");
@@ -778,7 +763,7 @@ pub(crate) async fn get_file(
     let Some(row) = row else {
         // slug enumeration (D8) detection happens on this miss: count it per IP
         // in memory and challenge the IP once it crosses the threshold
-        log::info!("download miss: {slug} (ip={})", format_ip(Some(ip)));
+        log::info!("download miss: {slug} (ip={ip})");
         let misses = state.miss_tracker.register(ip);
         if settings.max_misses_per_minute > 0 && misses == settings.max_misses_per_minute as u32 {
             log::warn!("marking {ip} suspect: {misses} slug misses within a minute");
@@ -795,20 +780,7 @@ pub(crate) async fn get_file(
         .and_then(|s| s.parse::<mime_guess::Mime>().ok())
         .unwrap_or(mime_guess::mime::APPLICATION_OCTET_STREAM);
 
-    let disposition = match mime.type_().as_str() {
-        "image" | "video" | "audio" => DispositionType::Inline,
-        "text" if mime.subtype().as_str() == "plain" => DispositionType::Inline,
-        "application" if matches!(mime.subtype().as_str(), "json" | "pdf") => {
-            DispositionType::Inline
-        }
-        _ => DispositionType::Attachment,
-    };
-
-    // Serve non-plain text types (html, js, css, …) as text/plain so browsers don't execute them
-    let serve_mime = match mime.type_().as_str() {
-        "text" if mime.subtype().as_str() != "plain" => mime_guess::mime::TEXT_PLAIN,
-        _ => mime,
-    };
+    let (serve_mime, disposition) = presentation(&mime);
 
     let file_path = uuid_to_path(Path::new(&settings.store_path), &row.id);
     let mut res = NamedFile::open(file_path)?
@@ -871,4 +843,50 @@ pub(crate) async fn get_file(
     });
 
     Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn presentation_of(content_type: &str) -> (String, DispositionType) {
+        let (mime, disposition) = presentation(&content_type.parse().unwrap());
+        (mime.to_string(), disposition)
+    }
+
+    #[test]
+    fn media_types_are_inline_and_unchanged() {
+        for ct in ["image/png", "video/mp4", "audio/mpeg", "text/plain"] {
+            let (mime, disposition) = presentation_of(ct);
+            assert_eq!(mime, ct);
+            assert!(matches!(disposition, DispositionType::Inline), "{ct}");
+        }
+    }
+
+    #[test]
+    fn json_and_pdf_are_inline() {
+        for ct in ["application/json", "application/pdf"] {
+            let (mime, disposition) = presentation_of(ct);
+            assert_eq!(mime, ct);
+            assert!(matches!(disposition, DispositionType::Inline), "{ct}");
+        }
+    }
+
+    #[test]
+    fn executable_text_is_defanged_to_plain_attachment() {
+        for ct in ["text/html", "text/javascript", "text/css"] {
+            let (mime, disposition) = presentation_of(ct);
+            assert_eq!(mime, "text/plain", "{ct}");
+            assert!(matches!(disposition, DispositionType::Attachment), "{ct}");
+        }
+    }
+
+    #[test]
+    fn other_types_are_attachments() {
+        for ct in ["application/zip", "application/octet-stream"] {
+            let (mime, disposition) = presentation_of(ct);
+            assert_eq!(mime, ct);
+            assert!(matches!(disposition, DispositionType::Attachment), "{ct}");
+        }
+    }
 }
