@@ -1,12 +1,16 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::Mutex;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use actix_web::body::{BodySize, MessageBody};
+use actix_web::body::{BodySize, EitherBody, MessageBody};
+use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready};
 use actix_web::web::Bytes;
+use actix_web::{Error, HttpResponse, web};
+use futures_util::future::{Ready, ok};
 
 /// Per-IP token bucket over bytes. Shared by the upload direction (paced
 /// chunk-by-chunk while the multipart body streams in) and the download
@@ -93,6 +97,79 @@ impl MissTracker {
         }
         *count += 1;
         *count
+    }
+}
+
+/// Same sliding-minute window as [`MissTracker`], but counting every request
+/// from an IP; drives the [`RequestRateLimiter`] middleware.
+pub(crate) type RequestTracker = MissTracker;
+
+pub(crate) struct RequestRateLimiter;
+
+impl<S, B> Transform<S, ServiceRequest> for RequestRateLimiter
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: MessageBody + 'static,
+{
+    type Response = ServiceResponse<EitherBody<B>>;
+    type Error = Error;
+    type InitError = ();
+    type Transform = RequestRateLimit<S>;
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ok(RequestRateLimit { service })
+    }
+}
+
+pub(crate) struct RequestRateLimit<S> {
+    service: S,
+}
+
+impl<S, B> Service<ServiceRequest> for RequestRateLimit<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: MessageBody + 'static,
+{
+    type Response = ServiceResponse<EitherBody<B>>;
+    type Error = Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+
+    forward_ready!(service);
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        let limit = req
+            .app_data::<web::Data<crate::settings::Settings>>()
+            .map(|s| s.max_requests_per_minute)
+            .unwrap_or(0);
+
+        if limit == 0 {
+            let fut = self.service.call(req);
+            return Box::pin(async move { fut.await.map(|res| res.map_into_left_body()) });
+        }
+
+        let tracker = req
+            .app_data::<web::Data<RequestTracker>>()
+            .map(|t| t.get_ref());
+        let ip = req
+            .app_data::<web::Data<crate::ip::XffTrust>>()
+            .and_then(|trust| crate::ip::extract_ip(req.request(), trust));
+
+        if let (Some(tracker), Some(ip)) = (tracker, ip) {
+            let count = tracker.register(ip);
+            if count > limit as u32 {
+                if count == limit as u32 + 1 {
+                    log::warn!("rate limit hit: {count} requests within a minute (ip={ip})");
+                }
+                let res = req.into_response(
+                    HttpResponse::TooManyRequests().body("Too many requests, slow down."),
+                );
+                return Box::pin(async move { Ok(res.map_into_right_body()) });
+            }
+        }
+
+        let fut = self.service.call(req);
+        Box::pin(async move { fut.await.map(|res| res.map_into_left_body()) })
     }
 }
 

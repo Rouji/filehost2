@@ -56,6 +56,7 @@ mod tests {
             max_download_bytes_per_sec: None,
             max_download_burst_bytes: None,
             max_misses_per_minute: 30,
+            max_requests_per_minute: 0, // disabled: individual tests opt in below
             dedup: true,
             db_max_connections: 20,
             ban_cache_ttl_seconds: 300,
@@ -1066,6 +1067,34 @@ mod tests {
         )
         .await;
         assert!(resp.status().is_success());
+    }
+
+    #[actix_web::test]
+    async fn request_rate_limit_429s_after_threshold() {
+        let mut settings = test_settings();
+        settings.max_requests_per_minute = 2;
+        let tmpl = templates::render(&settings);
+        let app = test::init_service(
+            App::new()
+                .service(handlers::index)
+                .app_data(web::Data::new(settings))
+                .app_data(web::Data::new(tmpl))
+                .app_data(web::Data::new(crate::rate_limit::RequestTracker::new()))
+                .app_data(web::Data::new(crate::ip::XffTrust::untrusted()))
+                .wrap(crate::rate_limit::RequestRateLimiter),
+        )
+        .await;
+
+        for i in 1..=2 {
+            let resp =
+                test::call_service(&app, peer(test::TestRequest::get()).uri("/").to_request())
+                    .await;
+            assert!(resp.status().is_success(), "request {i} should pass");
+        }
+
+        let resp =
+            test::call_service(&app, peer(test::TestRequest::get()).uri("/").to_request()).await;
+        assert_eq!(resp.status(), 429);
     }
 
     #[sqlx::test]

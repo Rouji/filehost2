@@ -368,6 +368,7 @@ mod tests {
             max_download_bytes_per_sec: None,
             max_download_burst_bytes: None,
             max_misses_per_minute: 30,
+            max_requests_per_minute: 0,
             dedup: true,
             db_max_connections: 20,
             ban_cache_ttl_seconds: 300,
