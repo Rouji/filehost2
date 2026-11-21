@@ -180,34 +180,105 @@ pub(crate) async fn find_dedup_pairs(db: &DbPool) -> Result<Vec<DedupPair>, sqlx
         .collect())
 }
 
-async fn delete_matching(
-    db: &DbPool,
-    settings: &Settings,
-    where_clause: &'static str,
-    bind: impl Fn(
-        sqlx::query::Query<'_, sqlx::MySql, sqlx::mysql::MySqlArguments>,
-    ) -> sqlx::query::Query<'_, sqlx::MySql, sqlx::mysql::MySqlArguments>,
-) -> Result<usize> {
-    let rows = {
-        let sql = format!("SELECT id, slug, original_name FROM uploads WHERE {where_clause}");
-        let mut conn = db_pool::conn(db).await?;
-        bind(sqlx::query(sqlx::AssertSqlSafe(sql)))
-            .try_map(|row: sqlx::mysql::MySqlRow| {
-                Ok((
-                    row.try_get::<Uuid, _>("id")?,
-                    row.try_get::<String, _>("slug")?,
-                    row.try_get::<String, _>("original_name")?,
-                ))
-            })
-            .fetch_all(&mut *conn)
-            .await?
-    };
+/// Which uploads a batch delete should match.
+pub(crate) enum DeleteTarget {
+    Expired,
+    Id(Uuid),
+    Slug(String),
+    Ip(IpAddr),
+    IpRange(IpAddr, IpAddr),
+}
+
+impl DeleteTarget {
+    fn clause(&self) -> &'static str {
+        match self {
+            Self::Expired => "expiry_timestamp <= ?",
+            Self::Id(_) => "id = ?",
+            Self::Slug(_) => "slug = ?",
+            Self::Ip(_) => "uploader_ip = ?",
+            Self::IpRange(..) => "uploader_ip BETWEEN ? AND ?",
+        }
+    }
+
+    /// `now` is the frozen expiry cutoff, used only by `Expired`.
+    fn bind<'q>(
+        &self,
+        q: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
+        now: PrimitiveDateTime,
+    ) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
+        match self {
+            Self::Expired => q.bind(now),
+            Self::Id(id) => q.bind(*id),
+            Self::Slug(slug) => q.bind(slug.clone()),
+            Self::Ip(ip) => q.bind(ip::to_db_vec(*ip)),
+            Self::IpRange(start, end) => q.bind(ip::to_db_vec(*start)).bind(ip::to_db_vec(*end)),
+        }
+    }
+}
+
+async fn delete_matching(db: &DbPool, settings: &Settings, target: DeleteTarget) -> Result<usize> {
+    let where_clause = target.clause();
+    let mut conn = db_pool::conn(db).await?;
+    let mut tx = conn.begin().await?;
+
+    // Freeze the expiry cutoff so the select, archive and delete below all
+    // match the same rows even though NOW() advances between statements.
+    let now = sqlx::query_scalar!("SELECT CAST(NOW() AS DATETIME) AS `now!: PrimitiveDateTime`")
+        .fetch_one(&mut *tx)
+        .await?;
+
+    // Lock the matching rows, then archive and drop them in one transaction
+    // before touching the filesystem: an upload arriving mid-delete can't be
+    // dropped without its file being unlinked, and a failed archive/delete
+    // can't leave live rows pointing at unlinked files. The accesses FK
+    // (ON DELETE CASCADE) purges the download logs with the rows.
+    let rows = target
+        .bind(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "SELECT id, slug, original_name FROM uploads WHERE {where_clause} FOR UPDATE"
+            ))),
+            now,
+        )
+        .try_map(|row: sqlx::mysql::MySqlRow| {
+            Ok((
+                row.try_get::<Uuid, _>("id")?,
+                row.try_get::<String, _>("slug")?,
+                row.try_get::<String, _>("original_name")?,
+            ))
+        })
+        .fetch_all(&mut *tx)
+        .await?;
     let count = rows.len();
     if count == 0 {
         return Ok(0);
     }
 
-    // unlink the physical files concurrently
+    target
+        .bind(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO deleted_uploads (id, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score) \
+                 SELECT id, upload_timestamp, expiry_timestamp, NOW(), original_name, slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score \
+                 FROM uploads WHERE {where_clause}"
+            ))),
+            now,
+        )
+        .execute(&mut *tx)
+        .await?;
+    let deleted = target
+        .bind(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DELETE FROM uploads WHERE {where_clause}"
+            ))),
+            now,
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    debug_assert_eq!(deleted as usize, count);
+
+    // unlink the physical files concurrently; a failure only leaves an
+    // orphaned file (logged), the rows are already archived and gone
     let unlinks: Vec<_> = rows
         .iter()
         .map(|(id, slug, original_name)| {
@@ -223,43 +294,23 @@ async fn delete_matching(
     let mut unlinks = futures_util::stream::iter(unlinks).buffer_unordered(UNLINK_CONCURRENCY);
     while unlinks.next().await.is_some() {}
 
-    // Archive the rows, then drop them; the accesses FK (ON DELETE CASCADE)
-    // purges the download logs with them.
-    let mut conn = db_pool::conn(db).await?;
-    let mut tx = conn.begin().await?;
-    let insert_sql = format!(
-        "INSERT INTO deleted_uploads (id, upload_timestamp, expiry_timestamp, deleted_timestamp, original_name, slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score) \
-         SELECT id, upload_timestamp, expiry_timestamp, NOW(), original_name, slug, file_size, hash, uploader_ip, content_type, user_agent, nsfw_score \
-         FROM uploads WHERE {where_clause}"
-    );
-    bind(sqlx::query(sqlx::AssertSqlSafe(insert_sql)))
-        .execute(&mut *tx)
-        .await?;
-    let delete_sql = format!("DELETE FROM uploads WHERE {where_clause}");
-    let deleted = bind(sqlx::query(sqlx::AssertSqlSafe(delete_sql)))
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    tx.commit().await?;
-    debug_assert_eq!(deleted as usize, count);
     Ok(count)
 }
 
 pub(crate) async fn delete_expired(db: &DbPool, settings: &Settings) -> Result<usize> {
-    delete_matching(db, settings, "expiry_timestamp <= NOW()", |q| q).await
+    delete_matching(db, settings, DeleteTarget::Expired).await
 }
 
 pub(crate) async fn delete_by_id(db: &DbPool, settings: &Settings, id: Uuid) -> Result<usize> {
-    delete_matching(db, settings, "id = ?", |q| q.bind(id)).await
+    delete_matching(db, settings, DeleteTarget::Id(id)).await
 }
 
 pub(crate) async fn delete_by_slug(db: &DbPool, settings: &Settings, slug: &str) -> Result<usize> {
-    delete_matching(db, settings, "slug = ?", |q| q.bind(slug.to_owned())).await
+    delete_matching(db, settings, DeleteTarget::Slug(slug.to_owned())).await
 }
 
 pub(crate) async fn delete_by_ip(db: &DbPool, settings: &Settings, ip: IpAddr) -> Result<usize> {
-    let ip = ip::to_db_vec(ip);
-    delete_matching(db, settings, "uploader_ip = ?", |q| q.bind(ip.clone())).await
+    delete_matching(db, settings, DeleteTarget::Ip(ip)).await
 }
 
 pub(crate) async fn delete_by_ip_range(
@@ -272,12 +323,7 @@ pub(crate) async fn delete_by_ip_range(
         ip::same_family(start, end),
         "start and end must be the same IP version"
     );
-    let start = ip::to_db_vec(start);
-    let end = ip::to_db_vec(end);
-    delete_matching(db, settings, "uploader_ip BETWEEN ? AND ?", |q| {
-        q.bind(start.clone()).bind(end.clone())
-    })
-    .await
+    delete_matching(db, settings, DeleteTarget::IpRange(start, end)).await
 }
 
 /// Inserts a freshly-uploaded file's row. Distinct from the old `insert_upload` (removed with

@@ -1,0 +1,26 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT CAST(NOW() AS DATETIME) AS `now!: PrimitiveDateTime`",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "now!: PrimitiveDateTime",
+        "type_info": {
+          "type": "Datetime",
+          "flags": "BINARY",
+          "collation": 63,
+          "max_size": 19
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "368a87f959726aa2c1c3b709deb980ae6cc94d3140b733906bc8a85e6574c490"
+}
