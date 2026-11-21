@@ -1,4 +1,5 @@
 mod admin;
+mod app;
 mod ban_cache;
 mod challenge;
 mod clamd;
@@ -22,8 +23,6 @@ mod util;
 #[cfg(test)]
 mod tests;
 
-use actix_cors::Cors;
-use actix_multipart::{MultipartError, form::MultipartFormConfig};
 use actix_web::{
     App, Error, HttpRequest, HttpResponse, HttpServer, http::header, middleware::Logger, web,
 };
@@ -33,13 +32,6 @@ use rustls_acme::AcmeConfig;
 use rustls_acme::caches::DirCache;
 use settings::Settings;
 use std::sync::Arc;
-
-fn handle_multipart_error(err: MultipartError, _req: &HttpRequest) -> Error {
-    match err {
-        MultipartError::Payload(inner) => inner.into(),
-        _ => Error::from(err),
-    }
-}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -109,50 +101,8 @@ async fn main() -> std::io::Result<()> {
         ));
     }
 
-    let rendered_templates = templates::render(&settings);
-    let throttle = web::Data::new(rate_limit::UploadThrottle::new());
-    let download_throttle = web::Data::new(rate_limit::DownloadThrottle::new());
-    let miss_tracker = web::Data::new(rate_limit::MissTracker::new());
-    let request_tracker = web::Data::new(rate_limit::RequestTracker::new());
-    let ban_cache = web::Data::new(ban_cache::BanCache::new(std::time::Duration::from_secs(
-        settings.ban_cache_ttl_seconds,
-    )));
-    let challenge_cache = web::Data::new(challenge::ChallengeCache::new(
-        std::time::Duration::from_secs(settings.ban_cache_ttl_seconds),
-    ));
-    let pow_secret = web::Data::new(pow::PowSecret::generate());
-
-    let (policy, invalid_proxies) = settings.xff_trust();
-    for entry in &invalid_proxies {
-        log::error!("TRUSTED_PROXIES: ignoring unparsable entry {entry:?}");
-    }
-    let proxies = policy.proxy_count();
-    if proxies == 0 {
-        log::warn!("TRUSTED_PROXIES is unset or empty; X-Forwarded-For headers will be ignored");
-    } else {
-        log::info!(
-            "trusting X-Forwarded-For from {proxies} proxy range(s), \
-             taking the client from {hops} hop(s) back",
-            hops = settings.xff_hops,
-        );
-    }
-
-    let xff_credible = proxies > 0;
-    let xff_trust = web::Data::new(policy);
-
-    let nsfw_model = web::Data::new(match settings.nsfw_model_path() {
-        Some(path) => match nsfw::NsfwModel::load(path) {
-            Ok(model) => {
-                log::info!("nsfw: loaded model from {}", path.display());
-                Some(std::sync::Arc::new(model))
-            }
-            Err(e) => {
-                log::error!("nsfw: failed to load model from {}: {e:#}", path.display());
-                None
-            }
-        },
-        None => None,
-    });
+    let state = web::Data::new(app::AppState::new(db.clone(), settings.clone()));
+    let xff_credible = state.xff_trust.proxy_count() > 0;
 
     let log_format = if xff_credible {
         "%{r}a %t \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T"
@@ -160,7 +110,6 @@ async fn main() -> std::io::Result<()> {
         "%a %t \"%r\" %s %b \"%{Referer}i\" \"%{User-Agent}i\" %T"
     };
 
-    let s = settings.clone();
     let acme = acme_domains.map(|domains| {
         let cache_dir = settings
             .acme_cache_dir
@@ -181,47 +130,9 @@ async fn main() -> std::io::Result<()> {
 
     let http_server = HttpServer::new(move || {
         App::new()
-            .service(handlers::index)
-            .service(handlers::upload)
-            .service(handlers::captcha_page)
-            .service(handlers::captcha_js)
-            .service(handlers::captcha_challenge)
-            .service(handlers::captcha_verify)
-            .service(handlers::favicon)
-            .service(handlers::get_file)
-            .service(
-                web::scope("/admin")
-                    .wrap(
-                        Cors::default()
-                            .allow_any_origin()
-                            .allowed_methods([
-                                actix_web::http::Method::GET,
-                                actix_web::http::Method::POST,
-                                actix_web::http::Method::DELETE,
-                            ])
-                            .allowed_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
-                    )
-                    .configure(admin::configure),
-            )
+            .configure(|cfg| app::configure(cfg, state.clone()))
             .wrap(rate_limit::RequestRateLimiter)
             .wrap(Logger::new(log_format))
-            .app_data(web::Data::new(db.clone()))
-            .app_data(web::Data::new(s.clone()))
-            .app_data(web::Data::new(rendered_templates.clone()))
-            .app_data(throttle.clone())
-            .app_data(download_throttle.clone())
-            .app_data(miss_tracker.clone())
-            .app_data(request_tracker.clone())
-            .app_data(ban_cache.clone())
-            .app_data(challenge_cache.clone())
-            .app_data(pow_secret.clone())
-            .app_data(nsfw_model.clone())
-            .app_data(xff_trust.clone())
-            .app_data(
-                MultipartFormConfig::default()
-                    .total_limit(s.max_filesize * 1024 * 1024)
-                    .error_handler(handle_multipart_error),
-            )
     });
     let server = match acme {
         Some((mut state, challenge_rustls_config)) => {

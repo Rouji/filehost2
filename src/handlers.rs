@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::Arc;
 
 use actix_files::NamedFile;
 use actix_multipart::form::{MultipartForm, text::Text};
@@ -15,18 +14,14 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::ban_cache::BanCache;
-use crate::challenge::ChallengeCache;
+use crate::app::AppState;
 use crate::clamd;
 use crate::db;
 use crate::db_pool::DbPool;
-use crate::ip::{XffTrust, extract_ip};
+use crate::ip::extract_ip;
 use crate::model::BanType;
-use crate::nsfw::NsfwModel;
-use crate::pow::PowSecret;
 use crate::rate_limit;
 use crate::settings::Settings;
-use crate::templates::RenderedTemplates;
 use crate::upload::{HashedTempFile, build_slug, calculate_expiry, uuid_to_path};
 
 /// Characters that don't need percent-encoding in a URL path segment,
@@ -178,18 +173,15 @@ fn reconcile_content_type_for_db(
     content_type_str
 }
 
-/// Takes ownership of everything since it outlives `process_file`'s return.
-#[allow(clippy::too_many_arguments)]
+/// Clones the shared state since the scan outlives `process_file`'s return.
 fn spawn_clamd_scan(
-    db: DbPool,
-    ban_cache: web::Data<BanCache>,
-    settings: Settings,
+    state: web::Data<AppState>,
     uuid: Uuid,
     slug: String,
     hash: [u8; 32],
     save_path: std::path::PathBuf,
 ) {
-    let Some(addr) = settings.clamd_addr.clone() else {
+    let Some(addr) = state.settings.clamd_addr.clone() else {
         return;
     };
     tokio::spawn(async move {
@@ -198,12 +190,14 @@ fn spawn_clamd_scan(
             Ok(clamd::ScanResult::Infected(name)) => {
                 log::warn!("clamd: {uuid} ({slug}) infected with {name:?}, deleting");
                 let reason = format!("clamd: {name}");
-                if let Err(e) = db::insert_banned_hash(&db, hash.as_slice(), Some(&reason)).await {
+                if let Err(e) =
+                    db::insert_banned_hash(&state.db, hash.as_slice(), Some(&reason)).await
+                {
                     log::error!("clamd: failed to ban hash for infected file {uuid}: {e}");
                 } else {
-                    ban_cache.invalidate_hashes().await;
+                    state.ban_cache.invalidate_hashes().await;
                 }
-                if let Err(e) = db::delete_by_id(&db, &settings, uuid).await {
+                if let Err(e) = db::delete_by_id(&state.db, &state.settings, uuid).await {
                     log::error!("clamd: failed to delete infected file {uuid}: {e}");
                 }
             }
@@ -212,31 +206,28 @@ fn spawn_clamd_scan(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 fn spawn_nsfw_scan(
-    nsfw_model: Option<Arc<NsfwModel>>,
-    db: DbPool,
-    challenge_cache: web::Data<ChallengeCache>,
-    nsfw_threshold: f32,
+    state: web::Data<AppState>,
     uploader_ip: Option<std::net::IpAddr>,
     uuid: Uuid,
     slug: String,
     save_path: std::path::PathBuf,
 ) {
-    let Some(model) = nsfw_model else {
+    let Some(model) = state.nsfw_model.clone() else {
         return;
     };
+    let nsfw_threshold = state.settings.nsfw_threshold;
     tokio::spawn(async move {
         match tokio::task::spawn_blocking(move || model.classify(&save_path)).await {
             Ok(Ok(c)) => {
                 log::info!("nsfw: {uuid} ({slug}) score={:.3}", c.score);
-                if let Err(e) = db::update_nsfw_score(&db, uuid, c.score).await {
+                if let Err(e) = db::update_nsfw_score(&state.db, uuid, c.score).await {
                     log::error!("nsfw: failed to update score for {uuid}: {e}");
                 }
                 if c.score >= nsfw_threshold
                     && let Some(ip) = uploader_ip
                 {
-                    challenge_cache.mark_ip_suspect(ip).await;
+                    state.challenge_cache.mark_ip_suspect(ip).await;
                 }
             }
             Ok(Err(e)) => log::error!("nsfw: classification failed for {uuid} ({slug}): {e:#}"),
@@ -245,19 +236,17 @@ fn spawn_nsfw_scan(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn process_file(
-    db: &DbPool,
-    ban_cache: web::Data<BanCache>,
-    challenge_cache: web::Data<ChallengeCache>,
-    settings: &Settings,
-    nsfw_model: Option<Arc<NsfwModel>>,
+    state: web::Data<AppState>,
     file: HashedTempFile,
     uploader_ip: std::net::IpAddr,
     user_agent: Option<&str>,
     id_len: usize,
     keep_name: bool,
 ) -> Result<String, HttpResponse> {
+    let db = &state.db;
+    let settings = &state.settings;
+    let ban_cache = &state.ban_cache;
     let original_name = file.file_name.as_deref().unwrap_or("unknown").to_string();
     let file_size = file.size;
 
@@ -355,22 +344,11 @@ async fn process_file(
         return Err(internal_err());
     }
 
-    spawn_clamd_scan(
-        db.clone(),
-        ban_cache.clone(),
-        settings.clone(),
-        uuid,
-        slug.clone(),
-        hash,
-        save_path.clone(),
-    );
+    spawn_clamd_scan(state.clone(), uuid, slug.clone(), hash, save_path.clone());
 
     if content_type_for_db.starts_with("image/") {
         spawn_nsfw_scan(
-            nsfw_model,
-            db.clone(),
-            challenge_cache,
-            settings.nsfw_threshold,
+            state.clone(),
             Some(uploader_ip),
             uuid,
             slug.clone(),
@@ -397,10 +375,11 @@ struct IndexQuery {
 
 #[get("/")]
 pub(crate) async fn index(
-    rendered_templates: web::Data<RenderedTemplates>,
-    settings: web::Data<Settings>,
+    state: web::Data<AppState>,
     query: web::Query<IndexQuery>,
 ) -> impl Responder {
+    let settings = &state.settings;
+    let rendered_templates = &state.templates;
     match query.config {
         Some(Config::Hupl) => HttpResponse::Ok()
             .content_type(ContentType::json())
@@ -421,19 +400,17 @@ pub(crate) async fn index(
 }
 
 #[get("/captcha")]
-pub(crate) async fn captcha_page(
-    rendered_templates: web::Data<RenderedTemplates>,
-) -> impl Responder {
+pub(crate) async fn captcha_page(state: web::Data<AppState>) -> impl Responder {
     HttpResponse::Ok()
         .content_type(ContentType::html())
-        .body(rendered_templates.captcha.clone())
+        .body(state.templates.captcha.clone())
 }
 
 #[get("/captcha.js")]
-pub(crate) async fn captcha_js(rendered_templates: web::Data<RenderedTemplates>) -> impl Responder {
+pub(crate) async fn captcha_js(state: web::Data<AppState>) -> impl Responder {
     HttpResponse::Ok()
         .content_type(mime::TEXT_JAVASCRIPT)
-        .body(rendered_templates.captcha_js.clone())
+        .body(state.templates.captcha_js.clone())
 }
 
 #[derive(Serialize)]
@@ -443,13 +420,12 @@ struct ChallengeResponse {
 }
 
 #[get("/captcha/challenge")]
-pub(crate) async fn captcha_challenge(
-    pow: web::Data<PowSecret>,
-    settings: web::Data<Settings>,
-) -> impl Responder {
+pub(crate) async fn captcha_challenge(state: web::Data<AppState>) -> impl Responder {
     HttpResponse::Ok().json(ChallengeResponse {
-        token: pow.issue(settings.pow_challenge_ttl_seconds),
-        difficulty: settings.pow_difficulty,
+        token: state
+            .pow_secret
+            .issue(state.settings.pow_challenge_ttl_seconds),
+        difficulty: state.settings.pow_difficulty,
     })
 }
 
@@ -463,23 +439,24 @@ pub(crate) struct VerifyRequest {
 pub(crate) async fn captcha_verify(
     req: HttpRequest,
     body: web::Json<VerifyRequest>,
-    db: web::Data<DbPool>,
-    settings: web::Data<Settings>,
-    pow: web::Data<PowSecret>,
-    challenge_cache: web::Data<ChallengeCache>,
-    xff_trust: web::Data<XffTrust>,
+    state: web::Data<AppState>,
 ) -> impl Responder {
-    if !pow.verify(&body.token, &body.nonce, settings.pow_difficulty) {
+    let settings = &state.settings;
+    if !state
+        .pow_secret
+        .verify(&body.token, &body.nonce, settings.pow_difficulty)
+    {
         return error_page(StatusCode::FORBIDDEN, "Challenge not solved.");
     }
 
-    let Some(ip) = extract_ip(&req, &xff_trust) else {
+    let Some(ip) = extract_ip(&req, &state.xff_trust) else {
         log::error!("challenge verification rejected: no client address (peer_addr unavailable)");
         return error_page(StatusCode::BAD_REQUEST, "Could not determine your IP.");
     };
 
-    if let Err(e) = challenge_cache
-        .mark_ip_verified(db.get_ref(), ip, settings.challenge_verified_ttl_seconds)
+    if let Err(e) = state
+        .challenge_cache
+        .mark_ip_verified(&state.db, ip, settings.challenge_verified_ttl_seconds)
         .await
     {
         log::error!(
@@ -536,14 +513,15 @@ fn challenge_required_response(settings: &Settings, action: &str, formatted: boo
 
 /// Run before the multipart body is even read.
 async fn enforce_upload_gates(
-    db: &DbPool,
-    ban_cache: &BanCache,
-    challenge_cache: &ChallengeCache,
-    settings: &Settings,
+    state: &AppState,
     uploader_ip: Option<std::net::IpAddr>,
     user_agent: Option<&str>,
     formatted: bool,
 ) -> Result<(), HttpResponse> {
+    let db = &state.db;
+    let ban_cache = &state.ban_cache;
+    let challenge_cache = &state.challenge_cache;
+    let settings = &state.settings;
     if let Some(ip) = uploader_ip {
         check_not_banned(
             ban_cache.is_ip_banned(db, ip, BanType::ReadOnly),
@@ -642,18 +620,13 @@ fn wants_html(req: &HttpRequest) -> bool {
 }
 
 #[post("/")]
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn upload(
     req: HttpRequest,
     payload: web::Payload,
-    db: web::Data<DbPool>,
-    settings: web::Data<Settings>,
-    ban_cache: web::Data<BanCache>,
-    challenge_cache: web::Data<ChallengeCache>,
-    nsfw_model: web::Data<Option<Arc<NsfwModel>>>,
-    xff_trust: web::Data<XffTrust>,
+    state: web::Data<AppState>,
 ) -> impl Responder {
-    let Some(uploader_ip) = extract_ip(&req, &xff_trust) else {
+    let settings = &state.settings;
+    let Some(uploader_ip) = extract_ip(&req, &state.xff_trust) else {
         log::error!("upload rejected: could not determine client address (peer_addr unavailable)");
         return error_page(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -667,16 +640,7 @@ pub(crate) async fn upload(
     let formatted = wants_html(&req);
 
     // ban + rate-limit + challenge checks before the multipart body is read
-    if let Err(resp) = enforce_upload_gates(
-        db.get_ref(),
-        ban_cache.get_ref(),
-        challenge_cache.get_ref(),
-        &settings,
-        Some(uploader_ip),
-        user_agent,
-        formatted,
-    )
-    .await
+    if let Err(resp) = enforce_upload_gates(&state, Some(uploader_ip), user_agent, formatted).await
     {
         return resp;
     }
@@ -716,11 +680,7 @@ pub(crate) async fn upload(
     let mut links = Vec::new();
     for file in form.files {
         match process_file(
-            db.get_ref(),
-            ban_cache.clone(),
-            challenge_cache.clone(),
-            &settings,
-            nsfw_model.get_ref().clone(),
+            state.clone(),
             file,
             uploader_ip,
             user_agent,
@@ -748,21 +708,16 @@ pub(crate) async fn favicon() -> HttpResponse {
 }
 
 #[route("/{slug}", method = "GET", method = "HEAD")]
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn get_file(
     req: HttpRequest,
     path: web::Path<(String,)>,
-    db: web::Data<DbPool>,
-    settings: web::Data<Settings>,
-    ban_cache: web::Data<BanCache>,
-    challenge_cache: web::Data<ChallengeCache>,
-    xff_trust: web::Data<XffTrust>,
-    download_throttle: web::Data<rate_limit::DownloadThrottle>,
-    miss_tracker: web::Data<rate_limit::MissTracker>,
+    state: web::Data<AppState>,
 ) -> actix_web::Result<HttpResponse> {
+    let db = &state.db;
+    let settings = &state.settings;
     let slug = &path.0;
 
-    let Some(ip) = extract_ip(&req, &xff_trust) else {
+    let Some(ip) = extract_ip(&req, &state.xff_trust) else {
         log::error!("download rejected for slug {slug}: no client address (peer_addr unavailable)");
         return Ok(error_page(
             StatusCode::FORBIDDEN,
@@ -776,8 +731,9 @@ pub(crate) async fn get_file(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
 
-    if ban_cache
-        .is_ip_banned(db.get_ref(), ip, BanType::Full)
+    if state
+        .ban_cache
+        .is_ip_banned(db, ip, BanType::Full)
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?
     {
@@ -785,8 +741,9 @@ pub(crate) async fn get_file(
     }
 
     if let Some(ua) = user_agent.as_deref()
-        && ban_cache
-            .is_user_agent_banned(db.get_ref(), ua)
+        && state
+            .ban_cache
+            .is_user_agent_banned(db, ua)
             .await
             .map_err(actix_web::error::ErrorInternalServerError)?
     {
@@ -794,8 +751,9 @@ pub(crate) async fn get_file(
         return Ok(error_page(StatusCode::FORBIDDEN, "Your client is banned."));
     }
 
-    if challenge_cache
-        .needs_challenge(db.get_ref(), ip, settings.nsfw_threshold)
+    if state
+        .challenge_cache
+        .needs_challenge(db, ip, settings.nsfw_threshold)
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?
     {
@@ -806,14 +764,14 @@ pub(crate) async fn get_file(
             return Ok(HttpResponse::Found()
                 .insert_header((
                     actix_web::http::header::LOCATION,
-                    format!("{}?next={next}", captcha_url(&settings)),
+                    format!("{}?next={next}", captcha_url(settings)),
                 ))
                 .finish());
         }
-        return Ok(challenge_required_response(&settings, "downloading", false));
+        return Ok(challenge_required_response(settings, "downloading", false));
     }
 
-    let row = db::get_upload_by_slug(db.get_ref(), slug)
+    let row = db::get_upload_by_slug(db, slug)
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?;
 
@@ -821,10 +779,10 @@ pub(crate) async fn get_file(
         // slug enumeration (D8) detection happens on this miss: count it per IP
         // in memory and challenge the IP once it crosses the threshold
         log::info!("download miss: {slug} (ip={})", format_ip(Some(ip)));
-        let misses = miss_tracker.register(ip);
+        let misses = state.miss_tracker.register(ip);
         if settings.max_misses_per_minute > 0 && misses == settings.max_misses_per_minute as u32 {
             log::warn!("marking {ip} suspect: {misses} slug misses within a minute");
-            challenge_cache.mark_ip_suspect(ip).await;
+            state.challenge_cache.mark_ip_suspect(ip).await;
         }
         return Err(actix_web::error::ErrorNotFound("File not found"));
     };
@@ -879,7 +837,7 @@ pub(crate) async fn get_file(
         res = res.map_body(|_, body| {
             actix_web::body::BoxBody::new(rate_limit::ThrottledBody::new(
                 body,
-                download_throttle.clone().into_inner(),
+                state.download_throttle.clone(),
                 ip,
                 rate,
                 burst,
@@ -896,10 +854,10 @@ pub(crate) async fn get_file(
             _ => None,
         }
     };
-    let db_log = db.clone();
+    let log_state = state.clone();
     tokio::spawn(async move {
         if let Err(e) = db::log_access(
-            db_log.get_ref(),
+            &log_state.db,
             upload_id,
             Some(ip),
             user_agent.as_deref(),

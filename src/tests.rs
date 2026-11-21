@@ -4,21 +4,16 @@
 #[allow(clippy::module_inception)]
 mod tests {
     use actix_http::Request;
-    use actix_multipart::form::MultipartFormConfig;
     use actix_web::{App, Error, dev::ServiceResponse, test, web};
     use serde::de::DeserializeOwned;
     use serde::{Deserialize, Serialize};
     use sqlx::MySqlPool;
 
-    use crate::admin;
-    use crate::ban_cache::BanCache;
-    use crate::challenge::ChallengeCache;
+    use crate::app::{self, AppState};
     use crate::db;
     use crate::db_pool;
     use crate::handlers;
-    use crate::pow::PowSecret;
     use crate::settings::Settings;
-    use crate::templates;
 
     fn test_settings() -> Settings {
         Settings {
@@ -66,19 +61,6 @@ mod tests {
         }
     }
 
-    async fn index_app(
-        settings: Settings,
-    ) -> impl actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error> {
-        let tmpl = templates::render(&settings);
-        test::init_service(
-            App::new()
-                .service(handlers::index)
-                .app_data(web::Data::new(tmpl))
-                .app_data(web::Data::new(settings)),
-        )
-        .await
-    }
-
     // `#[sqlx::test]` only knows how to hand back a real `sqlx::MySqlPool` (it's what
     // creates/migrates/tears down the isolated per-test database), but application code
     // runs on a deadpool-backed pool in production — so point a deadpool pool at that same
@@ -100,56 +82,21 @@ mod tests {
         pool: MySqlPool,
     ) -> impl actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error> {
         std::fs::create_dir_all(&settings.store_path).unwrap();
-        let tmpl = templates::render(&settings);
-        let db_pool = to_db_pool(&pool);
-        let ban_cache = BanCache::new(std::time::Duration::from_secs(
-            settings.ban_cache_ttl_seconds,
-        ));
-        let challenge_cache = ChallengeCache::new(std::time::Duration::from_secs(
-            settings.ban_cache_ttl_seconds,
-        ));
-        let (xff_trust, _) = settings.xff_trust();
-        test::init_service(
-            App::new()
-                .service(handlers::index)
-                .service(handlers::upload)
-                .service(handlers::captcha_page)
-                .service(handlers::captcha_js)
-                .service(handlers::captcha_challenge)
-                .service(handlers::captcha_verify)
-                .service(handlers::favicon)
-                .service(handlers::get_file)
-                .service(web::scope("/admin").configure(admin::configure))
-                .app_data(web::Data::new(db_pool))
-                .app_data(web::Data::new(settings.clone()))
-                .app_data(web::Data::new(tmpl))
-                .app_data(web::Data::new(ban_cache))
-                .app_data(web::Data::new(challenge_cache))
-                .app_data(web::Data::new(xff_trust))
-                .app_data(web::Data::new(crate::rate_limit::DownloadThrottle::new()))
-                .app_data(web::Data::new(crate::rate_limit::MissTracker::new()))
-                .app_data(web::Data::new(PowSecret::generate()))
-                .app_data(web::Data::new(
-                    None::<std::sync::Arc<crate::nsfw::NsfwModel>>,
-                ))
-                .app_data(
-                    MultipartFormConfig::default().total_limit(settings.max_filesize * 1024 * 1024),
-                ),
-        )
-        .await
+        let state = web::Data::new(AppState::new(to_db_pool(&pool), settings));
+        test::init_service(App::new().configure(|cfg| app::configure(cfg, state.clone()))).await
     }
 
-    #[actix_web::test]
-    async fn index_returns_200() {
-        let app = index_app(test_settings()).await;
+    #[sqlx::test]
+    async fn index_returns_200(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool).await;
         let resp =
             test::call_service(&app, peer(test::TestRequest::get()).uri("/").to_request()).await;
         assert!(resp.status().is_success());
     }
 
-    #[actix_web::test]
-    async fn hupl_config_download() {
-        let app = index_app(test_settings()).await;
+    #[sqlx::test]
+    async fn hupl_config_download(pool: MySqlPool) {
+        let app = full_app(test_settings(), pool).await;
         let resp = test::call_service(
             &app,
             peer(test::TestRequest::get())
@@ -1069,18 +1016,15 @@ mod tests {
         assert!(resp.status().is_success());
     }
 
-    #[actix_web::test]
-    async fn request_rate_limit_429s_after_threshold() {
+    #[sqlx::test]
+    async fn request_rate_limit_429s_after_threshold(pool: MySqlPool) {
         let mut settings = test_settings();
         settings.max_requests_per_minute = 2;
-        let tmpl = templates::render(&settings);
+        let state = web::Data::new(AppState::new(to_db_pool(&pool), settings));
         let app = test::init_service(
             App::new()
                 .service(handlers::index)
-                .app_data(web::Data::new(settings))
-                .app_data(web::Data::new(tmpl))
-                .app_data(web::Data::new(crate::rate_limit::RequestTracker::new()))
-                .app_data(web::Data::new(crate::ip::XffTrust::untrusted()))
+                .app_data(state)
                 .wrap(crate::rate_limit::RequestRateLimiter),
         )
         .await;

@@ -123,13 +123,6 @@ pub(crate) struct XffTrust {
 }
 
 impl XffTrust {
-    pub(crate) fn untrusted() -> Self {
-        Self {
-            proxies: Vec::new(),
-            hops: 1,
-        }
-    }
-
     pub(crate) fn new(proxies: Option<&str>, hops: usize) -> (Self, Vec<String>) {
         let mut parsed = Vec::new();
         let mut invalid = Vec::new();

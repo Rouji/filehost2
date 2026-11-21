@@ -9,14 +9,12 @@ use futures_util::future::{Ready, ready};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::ban_cache::BanCache;
+use crate::app::AppState;
 use crate::db;
-use crate::db_pool::DbPool;
 use crate::ip;
 use crate::model::{
     BanType, BannedFileHash, BannedFileMime, BannedFilename, BannedIpRange, BannedUserAgent, Upload,
 };
-use crate::settings::Settings;
 use crate::util::{format_ts, hex_decode, hex_encode, parse_rfc3339};
 
 /// Registers every `/admin/*` route. Shared by the real app (main.rs) and the test
@@ -56,8 +54,8 @@ impl FromRequest for AdminAuth {
 
     fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
         let configured_token = req
-            .app_data::<web::Data<Settings>>()
-            .and_then(|s| s.admin_token.as_deref())
+            .app_data::<web::Data<AppState>>()
+            .and_then(|s| s.settings.admin_token.as_deref())
             .map(|t| t.to_string());
 
         let Some(configured_token) = configured_token else {
@@ -225,26 +223,25 @@ struct StatsDto {
 }
 
 #[get("/stats")]
-pub(crate) async fn stats(
-    _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    settings: web::Data<Settings>,
-) -> impl Responder {
-    let stats = match db::global_stats(db.get_ref()).await {
+pub(crate) async fn stats(_auth: AdminAuth, state: web::Data<AppState>) -> impl Responder {
+    let stats = match db::global_stats(&state.db).await {
         Ok(s) => s,
         Err(e) => return internal_err(e, "global_stats"),
     };
-    let top_uploaders = match db::top_uploader_ips(db.get_ref(), TOP_UPLOADERS_LIMIT).await {
+    let top_uploaders = match db::top_uploader_ips(&state.db, TOP_UPLOADERS_LIMIT).await {
         Ok(rows) => rows,
         Err(e) => return internal_err(e, "top_uploader_ips"),
     };
-    let top_nsfw_uploaders =
-        match db::top_nsfw_uploader_ips(db.get_ref(), settings.nsfw_threshold, TOP_UPLOADERS_LIMIT)
-            .await
-        {
-            Ok(rows) => rows,
-            Err(e) => return internal_err(e, "top_nsfw_uploader_ips"),
-        };
+    let top_nsfw_uploaders = match db::top_nsfw_uploader_ips(
+        &state.db,
+        state.settings.nsfw_threshold,
+        TOP_UPLOADERS_LIMIT,
+    )
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => return internal_err(e, "top_nsfw_uploader_ips"),
+    };
 
     HttpResponse::Ok().json(StatsDto {
         active_uploads: stats.active_uploads,
@@ -288,7 +285,7 @@ pub(crate) struct ListUploadsQuery {
 #[get("/uploads")]
 pub(crate) async fn list_uploads(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
+    state: web::Data<AppState>,
     query: web::Query<ListUploadsQuery>,
 ) -> impl Responder {
     let ip = match query.ip.as_deref().map(str::parse::<IpAddr>) {
@@ -301,7 +298,7 @@ pub(crate) async fn list_uploads(
 
     respond_list(
         db::list_uploads(
-            db.get_ref(),
+            &state.db,
             ip,
             query.slug.as_deref(),
             query.include_deleted.unwrap_or(false),
@@ -318,14 +315,13 @@ pub(crate) async fn list_uploads(
 #[delete("/uploads/{id}")]
 pub(crate) async fn delete_upload(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    settings: web::Data<Settings>,
+    state: web::Data<AppState>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let Ok(id) = Uuid::parse_str(&path.into_inner().0) else {
         return json_error(StatusCode::BAD_REQUEST, "Invalid id");
     };
-    match db::delete_by_id(db.get_ref(), &settings, id).await {
+    match db::delete_by_id(&state.db, &state.settings, id).await {
         Ok(deleted) => {
             log::info!("admin: deleted upload {id} ({deleted} row(s))");
             HttpResponse::Ok().json(DeleteResult { deleted })
@@ -337,12 +333,11 @@ pub(crate) async fn delete_upload(
 #[delete("/uploads/slug/{slug}")]
 pub(crate) async fn delete_upload_by_slug(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    settings: web::Data<Settings>,
+    state: web::Data<AppState>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let slug = path.into_inner().0;
-    match db::delete_by_slug(db.get_ref(), &settings, &slug).await {
+    match db::delete_by_slug(&state.db, &state.settings, &slug).await {
         Ok(deleted) => {
             log::info!("admin: deleted upload by slug {slug} ({deleted} row(s))");
             HttpResponse::Ok().json(DeleteResult { deleted })
@@ -354,14 +349,13 @@ pub(crate) async fn delete_upload_by_slug(
 #[delete("/uploads/ip/{ip}")]
 pub(crate) async fn delete_upload_by_ip(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    settings: web::Data<Settings>,
+    state: web::Data<AppState>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let Ok(ip) = path.into_inner().0.parse::<IpAddr>() else {
         return json_error(StatusCode::BAD_REQUEST, "Invalid ip");
     };
-    match db::delete_by_ip(db.get_ref(), &settings, ip).await {
+    match db::delete_by_ip(&state.db, &state.settings, ip).await {
         Ok(deleted) => {
             log::info!("admin: deleted uploads by ip {ip} ({deleted} row(s))");
             HttpResponse::Ok().json(DeleteResult { deleted })
@@ -393,18 +387,18 @@ const IP_STATS_HOURS: i64 = 24 * 7;
 #[get("/ip-stats/{ip}")]
 pub(crate) async fn ip_stats(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
+    state: web::Data<AppState>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let Ok(ip) = path.into_inner().0.parse::<IpAddr>() else {
         return json_error(StatusCode::BAD_REQUEST, "Invalid ip");
     };
 
-    let hourly = match db::uploads_hourly_counts(db.get_ref(), ip, IP_STATS_HOURS).await {
+    let hourly = match db::uploads_hourly_counts(&state.db, ip, IP_STATS_HOURS).await {
         Ok(rows) => rows,
         Err(e) => return internal_err(e, "uploads_hourly_counts"),
     };
-    let top_mimes = match db::uploads_top_mimes(db.get_ref(), ip, 5).await {
+    let top_mimes = match db::uploads_top_mimes(&state.db, ip, 5).await {
         Ok(rows) => rows,
         Err(e) => return internal_err(e, "uploads_top_mimes"),
     };
@@ -478,14 +472,14 @@ pub(crate) struct ListBannedIpsQuery {
 #[get("/bans/ips")]
 pub(crate) async fn list_banned_ips(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
+    state: web::Data<AppState>,
     query: web::Query<ListBannedIpsQuery>,
 ) -> impl Responder {
     let limit = query.limit.unwrap_or(100).clamp(1, 1000);
     let offset = query.offset.unwrap_or(0).max(0);
 
     respond_list(
-        db::list_banned_ips(db.get_ref(), limit, offset).await,
+        db::list_banned_ips(&state.db, limit, offset).await,
         BannedIpRangeDto::from,
         "list_banned_ips",
     )
@@ -494,8 +488,7 @@ pub(crate) async fn list_banned_ips(
 #[post("/bans/ips")]
 pub(crate) async fn add_banned_ip(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    ban_cache: web::Data<BanCache>,
+    state: web::Data<AppState>,
     body: web::Json<BannedIpRangeCreate>,
 ) -> impl Responder {
     let Ok(start_ip) = body.start_ip.parse::<IpAddr>() else {
@@ -522,7 +515,7 @@ pub(crate) async fn add_banned_ip(
     };
 
     match db::insert_banned_ip(
-        db.get_ref(),
+        &state.db,
         start_ip,
         end_ip,
         body.reason.as_deref(),
@@ -534,7 +527,7 @@ pub(crate) async fn add_banned_ip(
     {
         Ok(id) => {
             log::info!("admin: banned ip range {start_ip}-{end_ip} (id {id})");
-            ban_cache.invalidate_ip_ranges().await;
+            state.ban_cache.invalidate_ip_ranges().await;
             HttpResponse::Created().json(IdResult { id })
         }
         Err(e) => internal_err(e, "insert_banned_ip"),
@@ -544,14 +537,13 @@ pub(crate) async fn add_banned_ip(
 #[delete("/bans/ips/{id}")]
 pub(crate) async fn remove_banned_ip(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    ban_cache: web::Data<BanCache>,
+    state: web::Data<AppState>,
     path: web::Path<(i64,)>,
 ) -> impl Responder {
     let id = path.into_inner().0;
     respond_removed(
-        db::delete_banned_ip(db.get_ref(), id).await,
-        || ban_cache.invalidate_ip_ranges(),
+        db::delete_banned_ip(&state.db, id).await,
+        || state.ban_cache.invalidate_ip_ranges(),
         || format!("admin: removed banned ip range {id}"),
         "delete_banned_ip",
     )
@@ -582,10 +574,10 @@ pub(crate) struct FilenameCreate {
 #[get("/bans/filenames")]
 pub(crate) async fn list_banned_filenames(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
+    state: web::Data<AppState>,
 ) -> impl Responder {
     respond_list(
-        db::list_banned_filenames(db.get_ref()).await,
+        db::list_banned_filenames(&state.db).await,
         BannedFilenameDto::from,
         "list_banned_filenames",
     )
@@ -594,16 +586,15 @@ pub(crate) async fn list_banned_filenames(
 #[post("/bans/filenames")]
 pub(crate) async fn add_banned_filename(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    ban_cache: web::Data<BanCache>,
+    state: web::Data<AppState>,
     body: web::Json<FilenameCreate>,
 ) -> impl Responder {
     if let Err(e) = regex::Regex::new(&body.pattern) {
         return json_error(StatusCode::BAD_REQUEST, &format!("Invalid regex: {e}"));
     }
     respond_created(
-        db::insert_banned_filename(db.get_ref(), &body.pattern, body.reason.as_deref()).await,
-        || ban_cache.invalidate_filenames(),
+        db::insert_banned_filename(&state.db, &body.pattern, body.reason.as_deref()).await,
+        || state.ban_cache.invalidate_filenames(),
         || format!("admin: banned filename pattern {:?}", body.pattern),
         "insert_banned_filename",
     )
@@ -614,14 +605,13 @@ pub(crate) async fn add_banned_filename(
 #[delete("/bans/filenames/{pattern:.*}")]
 pub(crate) async fn remove_banned_filename(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    ban_cache: web::Data<BanCache>,
+    state: web::Data<AppState>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let pattern = path.into_inner().0;
     respond_removed(
-        db::delete_banned_filename(db.get_ref(), &pattern).await,
-        || ban_cache.invalidate_filenames(),
+        db::delete_banned_filename(&state.db, &pattern).await,
+        || state.ban_cache.invalidate_filenames(),
         || format!("admin: removed banned filename pattern {pattern:?}"),
         "delete_banned_filename",
     )
@@ -634,9 +624,12 @@ pub(crate) struct MimeCreate {
 }
 
 #[get("/bans/mimes")]
-pub(crate) async fn list_banned_mimes(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Responder {
+pub(crate) async fn list_banned_mimes(
+    _auth: AdminAuth,
+    state: web::Data<AppState>,
+) -> impl Responder {
     respond_list(
-        db::list_banned_mimes(db.get_ref()).await,
+        db::list_banned_mimes(&state.db).await,
         |r: BannedFileMime| r.mime,
         "list_banned_mimes",
     )
@@ -645,14 +638,13 @@ pub(crate) async fn list_banned_mimes(_auth: AdminAuth, db: web::Data<DbPool>) -
 #[post("/bans/mimes")]
 pub(crate) async fn add_banned_mime(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    ban_cache: web::Data<BanCache>,
+    state: web::Data<AppState>,
     body: web::Json<MimeCreate>,
 ) -> impl Responder {
     let mime = body.mime.to_lowercase();
     respond_created(
-        db::insert_banned_mime(db.get_ref(), &mime).await,
-        || ban_cache.invalidate_mimes(),
+        db::insert_banned_mime(&state.db, &mime).await,
+        || state.ban_cache.invalidate_mimes(),
         || format!("admin: banned mime {mime}"),
         "insert_banned_mime",
     )
@@ -663,14 +655,13 @@ pub(crate) async fn add_banned_mime(
 #[delete("/bans/mimes/{mime:.*}")]
 pub(crate) async fn remove_banned_mime(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    ban_cache: web::Data<BanCache>,
+    state: web::Data<AppState>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let mime = path.into_inner().0.to_lowercase();
     respond_removed(
-        db::delete_banned_mime(db.get_ref(), &mime).await,
-        || ban_cache.invalidate_mimes(),
+        db::delete_banned_mime(&state.db, &mime).await,
+        || state.ban_cache.invalidate_mimes(),
         || format!("admin: removed banned mime {mime}"),
         "delete_banned_mime",
     )
@@ -699,9 +690,12 @@ pub(crate) struct HashCreate {
 }
 
 #[get("/bans/hashes")]
-pub(crate) async fn list_banned_hashes(_auth: AdminAuth, db: web::Data<DbPool>) -> impl Responder {
+pub(crate) async fn list_banned_hashes(
+    _auth: AdminAuth,
+    state: web::Data<AppState>,
+) -> impl Responder {
     respond_list(
-        db::list_banned_hashes(db.get_ref()).await,
+        db::list_banned_hashes(&state.db).await,
         BannedHashDto::from,
         "list_banned_hashes",
     )
@@ -710,8 +704,7 @@ pub(crate) async fn list_banned_hashes(_auth: AdminAuth, db: web::Data<DbPool>) 
 #[post("/bans/hashes")]
 pub(crate) async fn add_banned_hash(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    ban_cache: web::Data<BanCache>,
+    state: web::Data<AppState>,
     body: web::Json<HashCreate>,
 ) -> impl Responder {
     let Some(hash) = hex_decode(&body.hash) else {
@@ -727,8 +720,8 @@ pub(crate) async fn add_banned_hash(
         );
     }
     respond_created(
-        db::insert_banned_hash(db.get_ref(), &hash, body.reason.as_deref()).await,
-        || ban_cache.invalidate_hashes(),
+        db::insert_banned_hash(&state.db, &hash, body.reason.as_deref()).await,
+        || state.ban_cache.invalidate_hashes(),
         || format!("admin: banned hash {}", body.hash),
         "insert_banned_hash",
     )
@@ -738,8 +731,7 @@ pub(crate) async fn add_banned_hash(
 #[delete("/bans/hashes/{hash}")]
 pub(crate) async fn remove_banned_hash(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    ban_cache: web::Data<BanCache>,
+    state: web::Data<AppState>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let hex = path.into_inner().0;
@@ -750,8 +742,8 @@ pub(crate) async fn remove_banned_hash(
         );
     };
     respond_removed(
-        db::delete_banned_hash(db.get_ref(), &hash).await,
-        || ban_cache.invalidate_hashes(),
+        db::delete_banned_hash(&state.db, &hash).await,
+        || state.ban_cache.invalidate_hashes(),
         || format!("admin: removed banned hash {hex}"),
         "delete_banned_hash",
     )
@@ -782,10 +774,10 @@ pub(crate) struct UserAgentCreate {
 #[get("/bans/user-agents")]
 pub(crate) async fn list_banned_user_agents(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
+    state: web::Data<AppState>,
 ) -> impl Responder {
     respond_list(
-        db::list_banned_user_agents(db.get_ref()).await,
+        db::list_banned_user_agents(&state.db).await,
         BannedUserAgentDto::from,
         "list_banned_user_agents",
     )
@@ -794,13 +786,12 @@ pub(crate) async fn list_banned_user_agents(
 #[post("/bans/user-agents")]
 pub(crate) async fn add_banned_user_agent(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    ban_cache: web::Data<BanCache>,
+    state: web::Data<AppState>,
     body: web::Json<UserAgentCreate>,
 ) -> impl Responder {
     respond_created(
-        db::insert_banned_user_agent(db.get_ref(), &body.pattern, body.reason.as_deref()).await,
-        || ban_cache.invalidate_user_agents(),
+        db::insert_banned_user_agent(&state.db, &body.pattern, body.reason.as_deref()).await,
+        || state.ban_cache.invalidate_user_agents(),
         || format!("admin: banned user agent pattern {:?}", body.pattern),
         "insert_banned_user_agent",
     )
@@ -811,14 +802,13 @@ pub(crate) async fn add_banned_user_agent(
 #[delete("/bans/user-agents/{pattern:.*}")]
 pub(crate) async fn remove_banned_user_agent(
     _auth: AdminAuth,
-    db: web::Data<DbPool>,
-    ban_cache: web::Data<BanCache>,
+    state: web::Data<AppState>,
     path: web::Path<(String,)>,
 ) -> impl Responder {
     let pattern = path.into_inner().0;
     respond_removed(
-        db::delete_banned_user_agent(db.get_ref(), &pattern).await,
-        || ban_cache.invalidate_user_agents(),
+        db::delete_banned_user_agent(&state.db, &pattern).await,
+        || state.ban_cache.invalidate_user_agents(),
         || format!("admin: removed banned user agent pattern {pattern:?}"),
         "delete_banned_user_agent",
     )

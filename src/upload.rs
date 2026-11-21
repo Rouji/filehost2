@@ -10,8 +10,7 @@ use rand::distr::{Alphanumeric, SampleString};
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 use tokio::io::AsyncWriteExt as _;
 
-use crate::ip::{XffTrust, extract_ip};
-use crate::rate_limit::UploadThrottle;
+use crate::ip::extract_ip;
 use crate::settings::Settings;
 
 use file_type::FileType;
@@ -115,7 +114,7 @@ async fn detect_content_type(path: PathBuf) -> Option<mime::Mime> {
 impl<'t> FieldReader<'t> for HashedTempFile {
     type Future = Pin<Box<dyn std::future::Future<Output = Result<Self, MultipartError>> + 't>>;
 
-    fn read_field(_req: &'t HttpRequest, mut field: Field, limits: &'t mut Limits) -> Self::Future {
+    fn read_field(req: &'t HttpRequest, mut field: Field, limits: &'t mut Limits) -> Self::Future {
         Box::pin(async move {
             let content_type = field.content_type().map(ToOwned::to_owned);
             let file_name = field
@@ -125,19 +124,17 @@ impl<'t> FieldReader<'t> for HashedTempFile {
                 .map(ToOwned::to_owned);
             let field_name = field.name().unwrap_or("file").to_owned();
 
-            let throttle = _req
-                .app_data::<actix_web::web::Data<UploadThrottle>>()
-                .cloned();
-            let (rate, burst) = _req
-                .app_data::<actix_web::web::Data<Settings>>()
-                .map(|s| (s.max_upload_bytes_per_sec, s.max_upload_burst_bytes))
+            let state = req.app_data::<actix_web::web::Data<crate::app::AppState>>();
+            let throttle = state.map(|s| s.upload_throttle.clone());
+            let (rate, burst) = state
+                .map(|s| {
+                    (
+                        s.settings.max_upload_bytes_per_sec,
+                        s.settings.max_upload_burst_bytes,
+                    )
+                })
                 .unwrap_or((None, None));
-            let untrusted = XffTrust::untrusted();
-            let xff_trust = _req
-                .app_data::<actix_web::web::Data<XffTrust>>()
-                .map(|t| &***t)
-                .unwrap_or(&untrusted);
-            let ip: Option<std::net::IpAddr> = extract_ip(_req, xff_trust);
+            let ip: Option<std::net::IpAddr> = state.and_then(|s| extract_ip(req, &s.xff_trust));
 
             let to_field_err = |e: std::io::Error| MultipartError::Field {
                 name: field_name.clone(),

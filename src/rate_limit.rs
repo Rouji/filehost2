@@ -138,9 +138,9 @@ where
     forward_ready!(service);
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        let limit = req
-            .app_data::<web::Data<crate::settings::Settings>>()
-            .map(|s| s.max_requests_per_minute)
+        let state = req.app_data::<web::Data<crate::app::AppState>>();
+        let limit = state
+            .map(|s| s.settings.max_requests_per_minute)
             .unwrap_or(0);
 
         if limit == 0 {
@@ -148,15 +148,10 @@ where
             return Box::pin(async move { fut.await.map(|res| res.map_into_left_body()) });
         }
 
-        let tracker = req
-            .app_data::<web::Data<RequestTracker>>()
-            .map(|t| t.get_ref());
-        let ip = req
-            .app_data::<web::Data<crate::ip::XffTrust>>()
-            .and_then(|trust| crate::ip::extract_ip(req.request(), trust));
+        let ip = state.and_then(|s| crate::ip::extract_ip(req.request(), &s.xff_trust));
 
-        if let (Some(tracker), Some(ip)) = (tracker, ip) {
-            let count = tracker.register(ip);
+        if let (Some(state), Some(ip)) = (state, ip) {
+            let count = state.request_tracker.register(ip);
             if count > limit as u32 {
                 if count == limit as u32 + 1 {
                     log::warn!("rate limit hit: {count} requests within a minute (ip={ip})");
