@@ -15,52 +15,6 @@ mod tests {
     use crate::handlers;
     use crate::settings::Settings;
 
-    fn test_settings() -> Settings {
-        Settings {
-            name: "some filehost name idc".to_string(),
-            database_url: String::new(),
-            base_url: Some("http://localhost:8080/".to_string()),
-            listen_addr: "127.0.0.1".to_string(),
-            listen_port: 8080,
-            acme_domains: None,
-            acme_directory_url: None,
-            acme_cache_dir: None,
-            max_filesize: 512,
-            max_fileage: 180,
-            min_fileage: 31,
-            decay_exp: 2,
-            upload_timeout: 300,
-            min_id_length: 3,
-            max_id_length: 24,
-            store_path: format!("/tmp/filehost_test_{}/", uuid::Uuid::new_v4()),
-            max_ext_len: 7,
-            auto_file_ext: false,
-            // XFF headers are ignored unless a test opts in by making the socket peer
-            // (always 127.0.0.1, see `TEST_PROXY`) a trusted proxy.
-            trusted_proxies: None,
-            xff_hops: 1,
-            admin_email: "test@example.com".to_string(),
-            admin_token: None,
-            clamd_addr: None,
-            nsfw_model_path: None,
-            nsfw_threshold: 0.9,
-            max_uploads_per_day: None,
-            max_bytes_per_day: None,
-            max_upload_bytes_per_sec: None,
-            max_upload_burst_bytes: None,
-            max_download_bytes_per_sec: None,
-            max_download_burst_bytes: None,
-            max_misses_per_minute: 30,
-            max_requests_per_minute: 0, // disabled: individual tests opt in below
-            dedup: true,
-            db_max_connections: 20,
-            ban_cache_ttl_seconds: 300,
-            pow_difficulty: 16,
-            pow_challenge_ttl_seconds: 300,
-            challenge_verified_ttl_seconds: 3600,
-        }
-    }
-
     // `#[sqlx::test]` only knows how to hand back a real `sqlx::MySqlPool` (it's what
     // creates/migrates/tears down the isolated per-test database), but application code
     // runs on a deadpool-backed pool in production — so point a deadpool pool at that same
@@ -88,7 +42,7 @@ mod tests {
 
     #[sqlx::test]
     async fn index_returns_200(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
         let resp =
             test::call_service(&app, peer(test::TestRequest::get()).uri("/").to_request()).await;
         assert!(resp.status().is_success());
@@ -96,7 +50,7 @@ mod tests {
 
     #[sqlx::test]
     async fn hupl_config_download(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
         let resp = test::call_service(
             &app,
             peer(test::TestRequest::get())
@@ -111,7 +65,7 @@ mod tests {
 
     #[sqlx::test]
     async fn unknown_slug_returns_404(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
         let resp = test::call_service(
             &app,
             peer(test::TestRequest::get())
@@ -127,7 +81,7 @@ mod tests {
     /// instead of serving the challenge page.
     #[sqlx::test]
     async fn captcha_page_is_not_shadowed_by_the_slug_route(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
         let resp = test::call_service(
             &app,
             peer(test::TestRequest::get()).uri("/captcha").to_request(),
@@ -141,7 +95,7 @@ mod tests {
     /// page loads instead of an inline `<script>` (which a strict CSP blocks).
     #[sqlx::test]
     async fn captcha_js_is_not_shadowed_by_the_slug_route(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
         let resp = test::call_service(
             &app,
             peer(test::TestRequest::get())
@@ -205,7 +159,7 @@ mod tests {
 
     #[sqlx::test]
     async fn upload_body_timeout_returns_408(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.upload_timeout = 1;
         let app = full_app(settings, pool).await;
 
@@ -230,7 +184,7 @@ mod tests {
 
     #[sqlx::test]
     async fn upload_and_retrieve(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
 
         let file_content = "hello ima test";
         let file_name = "hello.txt";
@@ -266,7 +220,7 @@ mod tests {
 
     #[sqlx::test]
     async fn html_served_as_plaintext_attachment(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
 
         let req = multipart_request(&multipart_body_with_type(
             "page.html",
@@ -307,7 +261,7 @@ mod tests {
 
     #[sqlx::test]
     async fn octet_stream_upload_falls_back_to_extension_guess(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
 
         let req = multipart_request(&multipart_body_with_type(
             "clip.mp4",
@@ -351,7 +305,7 @@ mod tests {
         // Binary bytes (contain control chars) that match no magic-byte signature make the
         // sniffer fall back to application/octet-stream. That default must not clobber a valid
         // extension-based guess.
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
 
         let req = multipart_request(&multipart_body_with_type(
             "clip.mp4",
@@ -386,7 +340,7 @@ mod tests {
 
     #[sqlx::test]
     async fn detected_plaintext_without_extension_is_served_as_text(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
 
         let req = multipart_request(&multipart_body_with_type(
             "noext",
@@ -427,7 +381,7 @@ mod tests {
 
     #[sqlx::test]
     async fn formatted_upload_returns_html_link(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
 
         let req = upload_req(
             &multipart_body("test.txt", "hello"),
@@ -471,7 +425,7 @@ mod tests {
         let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 1).await;
 
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
@@ -488,7 +442,7 @@ mod tests {
         let banned_ip: std::net::IpAddr = "2001:db8::1".parse().unwrap();
         ban_ip(&pool, banned_ip, 1).await;
 
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
@@ -505,7 +459,7 @@ mod tests {
         let banned_ip: std::net::IpAddr = "2001:db8::1".parse().unwrap();
         ban_ip(&pool, banned_ip, 1).await;
 
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
@@ -526,7 +480,7 @@ mod tests {
         let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 1).await;
 
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
 
         let req = upload_req(
             &multipart_body("test.txt", "hello"),
@@ -545,7 +499,7 @@ mod tests {
         let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 2).await; // Full ban
 
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         // a proxy that isn't us: the header arrives, but the peer never vouches for it
         settings.trusted_proxies = Some("10.0.0.1".to_string());
         let app = full_app(settings, pool).await;
@@ -567,7 +521,7 @@ mod tests {
         let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 2).await; // Full ban
 
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
@@ -588,7 +542,7 @@ mod tests {
         let banned_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
         ban_ip(&pool, banned_ip, 2).await; // Full ban, on the socket peer itself
 
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
@@ -599,7 +553,7 @@ mod tests {
 
     #[sqlx::test]
     async fn upload_without_client_address_is_rejected(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
 
         let mut req = test::TestRequest::post().uri("/").insert_header((
             "content-type",
@@ -615,7 +569,7 @@ mod tests {
 
     #[sqlx::test]
     async fn get_without_client_address_is_rejected(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
 
         let req = upload_req(&multipart_body("test.txt", "hello"), &[]);
         let resp = test::call_service(&app, req).await;
@@ -633,7 +587,7 @@ mod tests {
         let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 2).await; // Full ban
 
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
@@ -659,7 +613,7 @@ mod tests {
         let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
         ban_ip(&pool, banned_ip, 1).await; // ReadOnly ban
 
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool).await;
 
@@ -689,7 +643,7 @@ mod tests {
 
     #[sqlx::test]
     async fn ipv6_daily_quota_shared_within_64_prefix(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         settings.max_uploads_per_day = Some(1);
         let app = full_app(settings, pool).await;
@@ -780,7 +734,7 @@ mod tests {
 
     #[sqlx::test]
     async fn suspect_browser_download_redirects_to_captcha(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         let slug = seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
@@ -799,7 +753,7 @@ mod tests {
 
     #[sqlx::test]
     async fn suspect_script_download_gets_428(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         let slug = seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
@@ -816,7 +770,7 @@ mod tests {
 
     #[sqlx::test]
     async fn verified_suspect_can_download(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         let slug = seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
@@ -832,7 +786,7 @@ mod tests {
 
     #[sqlx::test]
     async fn recent_nsfw_uploader_must_solve_challenge(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
@@ -857,7 +811,7 @@ mod tests {
 
     #[sqlx::test]
     async fn challenge_link_is_clickable_for_web_form(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
@@ -887,7 +841,7 @@ mod tests {
 
     #[sqlx::test]
     async fn old_nsfw_upload_does_not_make_ip_suspect(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         seed_nsfw_upload(&app, &pool, "198.51.100.7", 8).await;
@@ -914,7 +868,7 @@ mod tests {
     #[sqlx::test]
     async fn banned_user_agent_rejected_at_upload(pool: MySqlPool) {
         ban_user_agent(&pool, "curl").await;
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
 
         let req = upload_req(
             &multipart_body("test.txt", "hello"),
@@ -927,7 +881,7 @@ mod tests {
     #[sqlx::test]
     async fn non_banned_user_agent_upload_succeeds(pool: MySqlPool) {
         ban_user_agent(&pool, "curl").await;
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
 
         let req = upload_req(
             &multipart_body("test.txt", "hello"),
@@ -973,7 +927,7 @@ mod tests {
 
     #[sqlx::test]
     async fn miss_returns_404(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool.clone()).await;
+        let app = full_app(Settings::test_defaults(), pool.clone()).await;
 
         let resp = test::call_service(
             &app,
@@ -987,7 +941,7 @@ mod tests {
 
     #[sqlx::test]
     async fn banned_user_agent_cannot_download(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool.clone()).await;
+        let app = full_app(Settings::test_defaults(), pool.clone()).await;
         let slug = upload_and_get_slug(&app, "test.txt").await;
 
         db::insert_banned_user_agent(&to_db_pool(&pool), "python-requests", Some("scraper"))
@@ -1018,7 +972,7 @@ mod tests {
 
     #[sqlx::test]
     async fn request_rate_limit_429s_after_threshold(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.max_requests_per_minute = 2;
         let state = web::Data::new(AppState::new(to_db_pool(&pool), settings));
         let app = test::init_service(
@@ -1043,7 +997,7 @@ mod tests {
 
     #[sqlx::test]
     async fn miss_brute_force_marks_ip_suspect(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.max_misses_per_minute = 2;
         let app = full_app(settings, pool).await;
         // upload while the IP is still clean: once suspect, uploads need PoW too
@@ -1077,7 +1031,7 @@ mod tests {
 
     #[sqlx::test]
     async fn favicon_is_served(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool.clone()).await;
+        let app = full_app(Settings::test_defaults(), pool.clone()).await;
 
         let resp = test::call_service(
             &app,
@@ -1096,7 +1050,7 @@ mod tests {
 
     #[sqlx::test]
     async fn head_requests_hit_the_file_route(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool.clone()).await;
+        let app = full_app(Settings::test_defaults(), pool.clone()).await;
         let slug = upload_and_get_slug(&app, "test.txt").await;
 
         // HEAD used to fall through to the router's bare 404 (#[get] doesn't
@@ -1124,7 +1078,7 @@ mod tests {
 
     #[sqlx::test]
     async fn download_is_logged(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool.clone()).await;
+        let app = full_app(Settings::test_defaults(), pool.clone()).await;
         let slug = upload_and_get_slug(&app, "test.txt").await;
 
         let resp = test::call_service(
@@ -1146,7 +1100,7 @@ mod tests {
 
     #[sqlx::test]
     async fn download_logs_xff_ip(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.trusted_proxies = Some("127.0.0.1".to_string());
         let app = full_app(settings, pool.clone()).await;
         let slug = upload_and_get_slug(&app, "test.txt").await;
@@ -1175,7 +1129,7 @@ mod tests {
 
     #[sqlx::test]
     async fn download_throttle_paces_hot_clients(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         // 10 B/s with a 5 B burst: the first download drains the burst, the
         // immediate second one has to wait for the bucket to refill
         settings.max_download_bytes_per_sec = Some(10.0);
@@ -1211,7 +1165,7 @@ mod tests {
 
     #[sqlx::test]
     async fn upload_multiple(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await;
+        let app = full_app(Settings::test_defaults(), pool).await;
 
         let req = multipart_request(
             [
@@ -1235,7 +1189,7 @@ mod tests {
     }
 
     fn admin_settings() -> Settings {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.admin_token = Some("secret".to_string());
         settings
     }
@@ -1296,7 +1250,7 @@ mod tests {
 
     #[sqlx::test]
     async fn admin_no_token_configured_returns_404(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool).await; // admin_token defaults to None
+        let app = full_app(Settings::test_defaults(), pool).await; // admin_token defaults to None
         let resp = test::call_service(
             &app,
             peer(test::TestRequest::get())
@@ -1824,7 +1778,7 @@ mod tests {
 
     #[sqlx::test]
     async fn upload_and_download_log_user_agent(pool: MySqlPool) {
-        let app = full_app(test_settings(), pool.clone()).await;
+        let app = full_app(Settings::test_defaults(), pool.clone()).await;
 
         let req = upload_req(
             &multipart_body("test.txt", "hello"),
@@ -1864,7 +1818,7 @@ mod tests {
 
     #[sqlx::test]
     async fn dedup_reuses_existing_upload(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.dedup = true;
         let app = full_app(settings, pool.clone()).await;
 
@@ -1885,7 +1839,7 @@ mod tests {
 
     #[sqlx::test]
     async fn dedup_disabled_uploads_twice(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.dedup = false;
         let app = full_app(settings, pool.clone()).await;
 
@@ -1903,7 +1857,7 @@ mod tests {
 
     #[sqlx::test]
     async fn dedup_ignores_deleted_upload(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.dedup = true;
         settings.admin_token = Some("secret".to_string());
         let app = full_app(settings, pool.clone()).await;
@@ -1933,7 +1887,7 @@ mod tests {
 
     #[sqlx::test]
     async fn deleting_upload_purges_its_accesses(pool: MySqlPool) {
-        let mut settings = test_settings();
+        let mut settings = Settings::test_defaults();
         settings.admin_token = Some("secret".to_string());
         let app = full_app(settings, pool.clone()).await;
 

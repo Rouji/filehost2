@@ -331,50 +331,6 @@ mod tests {
     detection_test!(mp4, "sample.mp4", "mp4", "video/mp4".parse().unwrap());
     detection_test!(txt, "sample.txt", "txt", mime::TEXT_PLAIN);
 
-    fn test_settings() -> Settings {
-        Settings {
-            name: "Test".to_string(),
-            database_url: "mysql://root@localhost/test".to_string(),
-            base_url: Some("http://localhost:8080/".to_string()),
-            listen_addr: "127.0.0.1".to_string(),
-            listen_port: 8080,
-            acme_domains: None,
-            acme_directory_url: None,
-            acme_cache_dir: None,
-            max_filesize: 512,
-            max_fileage: 180,
-            min_fileage: 31,
-            decay_exp: 2,
-            upload_timeout: 300,
-            min_id_length: 3,
-            max_id_length: 24,
-            store_path: "files/".to_string(),
-            max_ext_len: 7,
-            auto_file_ext: false,
-            trusted_proxies: None,
-            xff_hops: 1,
-            admin_email: "admin@example.com".to_string(),
-            admin_token: None,
-            clamd_addr: None,
-            nsfw_model_path: None,
-            nsfw_threshold: 0.9,
-            max_uploads_per_day: None,
-            max_bytes_per_day: None,
-            max_upload_bytes_per_sec: None,
-            max_upload_burst_bytes: None,
-            max_download_bytes_per_sec: None,
-            max_download_burst_bytes: None,
-            max_misses_per_minute: 30,
-            max_requests_per_minute: 0,
-            dedup: true,
-            db_max_connections: 20,
-            ban_cache_ttl_seconds: 300,
-            pow_difficulty: 16,
-            pow_challenge_ttl_seconds: 300,
-            challenge_verified_ttl_seconds: 3600,
-        }
-    }
-
     #[test]
     fn random_string_has_correct_length() {
         for len in [1, 3, 8, 24] {
@@ -401,7 +357,7 @@ mod tests {
 
     #[test]
     fn calculate_expiry_tiny_file_gets_max_age() {
-        let settings = test_settings();
+        let settings = Settings::test_defaults();
         let expiry = calculate_expiry(0, &settings);
         let now = OffsetDateTime::now_utc();
         let diff = expiry - PrimitiveDateTime::new(now.date(), now.time());
@@ -411,7 +367,7 @@ mod tests {
 
     #[test]
     fn calculate_expiry_max_size_file_gets_min_age() {
-        let settings = test_settings();
+        let settings = Settings::test_defaults();
         let max_bytes = settings.max_filesize * 1024 * 1024;
         let expiry = calculate_expiry(max_bytes, &settings);
         let now = OffsetDateTime::now_utc();
@@ -422,7 +378,7 @@ mod tests {
 
     #[test]
     fn calculate_expiry_mid_size_is_between_min_and_max() {
-        let settings = test_settings();
+        let settings = Settings::test_defaults();
         let half_max = settings.max_filesize * 1024 * 1024 / 2;
         let expiry = calculate_expiry(half_max, &settings);
         let now = OffsetDateTime::now_utc();

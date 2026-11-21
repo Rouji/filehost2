@@ -94,3 +94,55 @@ impl Settings {
         crate::ip::XffTrust::new(self.trusted_proxies.as_deref(), self.xff_hops)
     }
 }
+
+#[cfg(test)]
+impl Settings {
+    /// Single source of truth for test settings. Override individual fields
+    /// with struct-update syntax:
+    /// `Settings { dedup: false, ..Settings::test_defaults() }`.
+    pub(crate) fn test_defaults() -> Self {
+        Self {
+            name: "some filehost name idc".to_string(),
+            database_url: String::new(),
+            base_url: Some("http://localhost:8080/".to_string()),
+            listen_addr: "127.0.0.1".to_string(),
+            listen_port: 8080,
+            acme_domains: None,
+            acme_directory_url: None,
+            acme_cache_dir: None,
+            max_filesize: 512,
+            max_fileage: 180,
+            min_fileage: 31,
+            decay_exp: 2,
+            upload_timeout: 300,
+            min_id_length: 3,
+            max_id_length: 24,
+            store_path: format!("/tmp/filehost_test_{}/", uuid::Uuid::new_v4()),
+            max_ext_len: 7,
+            auto_file_ext: false,
+            // XFF headers are ignored unless a test opts in by making the socket peer
+            // (always 127.0.0.1, see `TEST_PROXY` in tests.rs) a trusted proxy.
+            trusted_proxies: None,
+            xff_hops: 1,
+            admin_email: "test@example.com".to_string(),
+            admin_token: None,
+            clamd_addr: None,
+            nsfw_model_path: None,
+            nsfw_threshold: 0.9,
+            max_uploads_per_day: None,
+            max_bytes_per_day: None,
+            max_upload_bytes_per_sec: None,
+            max_upload_burst_bytes: None,
+            max_download_bytes_per_sec: None,
+            max_download_burst_bytes: None,
+            max_misses_per_minute: 30,
+            max_requests_per_minute: 0, // disabled: individual tests opt in
+            dedup: true,
+            db_max_connections: 20,
+            ban_cache_ttl_seconds: 300,
+            pow_difficulty: 16,
+            pow_challenge_ttl_seconds: 300,
+            challenge_verified_ttl_seconds: 3600,
+        }
+    }
+}
