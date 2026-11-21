@@ -71,6 +71,13 @@ async fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
+    // Server path only: subcommands like `migrate` never store files, so a
+    // MAX_FILESIZE that only matters for uploads shouldn't block them.
+    if let Err(e) = settings.validate() {
+        log::error!("{e}");
+        return Err(std::io::Error::other(e));
+    }
+
     if let Err(e) = db::run_migrations(&db).await {
         log::error!("failed to run database migrations: {e}");
         return Err(std::io::Error::other("migration failure"));

@@ -10,8 +10,10 @@ use rand::distr::{Alphanumeric, SampleString};
 use time::{Duration, OffsetDateTime, PrimitiveDateTime};
 use tokio::io::AsyncWriteExt as _;
 
+use crate::db::MAX_SLUG_LEN;
 use crate::ip::extract_ip;
 use crate::settings::Settings;
+use crate::util::truncate_chars;
 
 use file_type::FileType;
 use file_type::format::SourceType;
@@ -234,17 +236,6 @@ pub(crate) fn build_slug(
 ) -> String {
     let id = random_string(id_len);
 
-    let base = if keep_name {
-        let stem = sanitize_filename_stem(original_name);
-        if stem.is_empty() {
-            id
-        } else {
-            format!("{}_{}", stem, id)
-        }
-    } else {
-        id
-    };
-
     let ext = Path::new(original_name)
         .extension()
         .and_then(|e| e.to_str())
@@ -259,6 +250,29 @@ pub(crate) fn build_slug(
                 None
             }
         });
+
+    // Fit everything into uploads.slug's VARCHAR(255) (chars, not bytes —
+    // `keep_name` stems and unicode extensions can be long). The extension
+    // matters more than the stem, so the stem gives up room first; a
+    // pathological `max_ext_len` is capped so the id always still fits. Byte
+    // lengths overestimate char counts here, i.e. truncate conservatively.
+    let ext = ext
+        .as_ref()
+        .map(|e| truncate_chars(e, MAX_SLUG_LEN.saturating_sub(id.len() + 1)));
+    let ext_budget = ext.as_ref().map_or(0, |e| e.chars().count() + 1);
+    let base_budget = MAX_SLUG_LEN - ext_budget;
+
+    let base = if keep_name {
+        let stem = sanitize_filename_stem(original_name);
+        let stem = truncate_chars(&stem, base_budget.saturating_sub(id.len() + 1));
+        if stem.is_empty() {
+            id
+        } else {
+            format!("{}_{}", stem, id)
+        }
+    } else {
+        id
+    };
 
     match ext {
         Some(ext) => format!("{}.{}", base, ext),
@@ -442,6 +456,38 @@ mod tests {
         // an empty original name has no file stem to keep
         let slug = build_slug("", None, 5, false, 7, true);
         assert!(!slug.contains('_'));
+    }
+
+    #[test]
+    fn build_slug_caps_keep_name_slug_to_column_width() {
+        // a 400-char stem must shrink so stem + "_" + id + "." + ext fits
+        // uploads.slug's VARCHAR(255) exactly, with the extension preserved
+        let long_name = format!("{}.txt", "a".repeat(400));
+        let slug = build_slug(&long_name, None, 5, false, 7, true);
+        assert_eq!(slug.chars().count(), crate::db::MAX_SLUG_LEN);
+        assert!(slug.ends_with(".txt"));
+        assert!(slug.starts_with('a'));
+    }
+
+    #[test]
+    fn build_slug_caps_unicode_stem_by_chars() {
+        // 3-byte chars: the cap must count characters, not bytes
+        let long_name = format!("{}.txt", "ほ".repeat(400));
+        let slug = build_slug(&long_name, None, 5, false, 7, true);
+        assert_eq!(slug.chars().count(), crate::db::MAX_SLUG_LEN);
+        assert!(slug.ends_with(".txt"));
+    }
+
+    #[test]
+    fn build_slug_caps_pathological_extension() {
+        // max_ext_len is a setting; a huge value must not overflow the column
+        let long_name = format!("file.{}", "x".repeat(400));
+        let slug = build_slug(&long_name, None, 5, false, 400, false);
+        assert!(slug.chars().count() <= crate::db::MAX_SLUG_LEN);
+        assert!(
+            slug.contains('.'),
+            "extension should be capped, not dropped"
+        );
     }
 
     #[test]

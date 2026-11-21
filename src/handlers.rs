@@ -23,6 +23,7 @@ use crate::model::BanType;
 use crate::rate_limit;
 use crate::settings::Settings;
 use crate::upload::{HashedTempFile, build_slug, calculate_expiry, uuid_to_path};
+use crate::util;
 
 /// Characters that don't need percent-encoding in a URL path segment,
 /// on top of what `NON_ALPHANUMERIC` already leaves alone.
@@ -245,7 +246,10 @@ async fn process_file(
     let db = &state.db;
     let settings = &state.settings;
     let ban_cache = &state.ban_cache;
-    let original_name = file.file_name.as_deref().unwrap_or("unknown").to_string();
+    let original_name = util::truncate_chars(
+        file.file_name.as_deref().unwrap_or("unknown"),
+        db::MAX_NAME_LEN,
+    );
     let file_size = file.size;
 
     check_not_banned(
@@ -306,6 +310,7 @@ async fn process_file(
 
     let content_type_for_db =
         reconcile_content_type_for_db(file.detected_content_type.as_ref(), content_type_str);
+    let content_type_for_db = util::truncate_chars(&content_type_for_db, db::MAX_MIME_LEN);
 
     // The pre-check in `allocate_unique_slug` narrows the window, but two
     // concurrent uploads can still claim the same slug before either inserts.
@@ -622,11 +627,14 @@ pub(crate) async fn upload(
     let user_agent = req
         .headers()
         .get("User-Agent")
-        .and_then(|v| v.to_str().ok());
+        .and_then(|v| v.to_str().ok())
+        .map(|ua| util::truncate_chars(ua, db::MAX_UA_LEN));
     let formatted = wants_html(&req);
 
     // ban + rate-limit + challenge checks before the multipart body is read
-    if let Err(resp) = enforce_upload_gates(&state, uploader_ip, user_agent, formatted).await {
+    if let Err(resp) =
+        enforce_upload_gates(&state, uploader_ip, user_agent.as_deref(), formatted).await
+    {
         return resp;
     }
 
@@ -664,7 +672,7 @@ pub(crate) async fn upload(
             state.clone(),
             file,
             uploader_ip,
-            user_agent,
+            user_agent.as_deref(),
             id_len,
             keep_name,
         )
@@ -729,7 +737,7 @@ pub(crate) async fn get_file(
         .headers()
         .get("User-Agent")
         .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
+        .map(|ua| util::truncate_chars(ua, db::MAX_UA_LEN));
 
     if state
         .ban_cache

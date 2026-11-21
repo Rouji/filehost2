@@ -19,6 +19,14 @@ use crate::upload::uuid_to_path;
 /// how many physical-file unlinks to keep in flight during batch deletion
 const UNLINK_CONCURRENCY: usize = 32;
 
+/// Column widths for request-supplied strings, matching the schema. LONG
+/// values make the insert fail *after* the file is already saved to disk, so
+/// they are truncated (by character — VARCHAR(n) counts chars) before insert.
+pub(crate) const MAX_NAME_LEN: usize = 255; // uploads/deleted_uploads.original_name
+pub(crate) const MAX_SLUG_LEN: usize = 255; // uploads/deleted_uploads.slug
+pub(crate) const MAX_MIME_LEN: usize = 255; // uploads.content_type
+pub(crate) const MAX_UA_LEN: usize = 512; // uploads/accesses.user_agent
+
 /// True when `e` is a UNIQUE constraint violation (MySQL/MariaDB errcode 1062).
 pub(crate) fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(

@@ -90,6 +90,20 @@ impl Settings {
         self.base_url.as_deref().unwrap_or("/")
     }
 
+    /// Rejects settings that would only fail later, mid-request, at the
+    /// database: `uploads.file_size` is a signed INT column.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        let max_int_bytes = i32::MAX as usize;
+        match self.max_filesize.checked_mul(1024 * 1024) {
+            Some(bytes) if bytes <= max_int_bytes => Ok(()),
+            _ => Err(format!(
+                "MAX_FILESIZE {} exceeds the {} MiB limit imposed by the INT file_size column",
+                self.max_filesize,
+                max_int_bytes / (1024 * 1024) // 2047
+            )),
+        }
+    }
+
     /// get model path, but only if present on disk
     pub(crate) fn nsfw_model_path(&self) -> Option<&std::path::Path> {
         let path = std::path::Path::new(self.nsfw_model_path.as_deref()?);
@@ -150,5 +164,36 @@ impl Settings {
             pow_challenge_ttl_seconds: 300,
             challenge_verified_ttl_seconds: 3600,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_accepts_default_filesize() {
+        Settings::test_defaults().validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_filesize_exceeding_int_column() {
+        // signed INT tops out at 2047 MiB; 2048 MiB overflows it
+        assert!(
+            Settings {
+                max_filesize: 2048,
+                ..Settings::test_defaults()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Settings {
+                max_filesize: 2047,
+                ..Settings::test_defaults()
+            }
+            .validate()
+            .is_ok()
+        );
     }
 }

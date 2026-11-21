@@ -218,6 +218,37 @@ mod tests {
         assert_eq!(&test::read_body(resp).await[..], file_content.as_bytes());
     }
 
+    /// Column-width limits (20261121000000's sibling fix): an overlong
+    /// filename or User-Agent header must be truncated, not fail the insert
+    /// after the file is already saved to disk.
+    #[sqlx::test]
+    async fn upload_truncates_overlong_name_and_user_agent(pool: MySqlPool) {
+        let app = full_app(Settings::test_defaults(), pool.clone()).await;
+
+        let long_name = format!("{}.txt", "a".repeat(300));
+        let long_ua = "x".repeat(600);
+        let req = upload_req(
+            &multipart_body(&long_name, "hello"),
+            &[("User-Agent", long_ua.as_str())],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "upload failed: {}",
+            resp.status()
+        );
+
+        let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+        let row: (String, Option<String>) =
+            sqlx::query_as("SELECT original_name, user_agent FROM uploads WHERE slug = ?")
+                .bind(slug(&url))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(row.0.chars().count(), crate::db::MAX_NAME_LEN);
+        assert_eq!(row.1.as_deref().map(str::len), Some(crate::db::MAX_UA_LEN));
+    }
+
     #[sqlx::test]
     async fn html_served_as_plaintext_attachment(pool: MySqlPool) {
         let app = full_app(Settings::test_defaults(), pool).await;
