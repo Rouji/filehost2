@@ -40,7 +40,7 @@ where
     Fut: Future<Output = Result<HashSet<T>, sqlx::Error>>,
 {
     let set = cell
-        .get_or_refresh(|| async { Ok(Arc::new(fetch().await?)) })
+        .get_or_refresh::<_, _, sqlx::Error>(|| async { Ok(Arc::new(fetch().await?)) })
         .await?;
     Ok(set.contains(needle))
 }
@@ -82,7 +82,7 @@ impl BanCache {
     ) -> Result<bool, sqlx::Error> {
         let patterns = self
             .filename_patterns
-            .get_or_refresh(|| async {
+            .get_or_refresh::<_, _, sqlx::Error>(|| async {
                 let filenames = db::list_banned_filenames(db).await?;
                 let compiled = filenames
                     .iter()
@@ -140,7 +140,7 @@ impl BanCache {
     ) -> Result<bool, sqlx::Error> {
         let patterns = self
             .user_agent_patterns
-            .get_or_refresh(|| async {
+            .get_or_refresh::<_, _, sqlx::Error>(|| async {
                 Ok(Arc::new(
                     db::list_banned_user_agents(db)
                         .await?

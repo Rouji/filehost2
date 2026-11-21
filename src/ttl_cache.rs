@@ -18,10 +18,10 @@ impl<K: Eq + Hash + Clone, V: Clone> KeyedTtlCache<K, V> {
         }
     }
 
-    pub(crate) async fn get_or_refresh<F, Fut>(&self, key: K, fetch: F) -> Result<V, sqlx::Error>
+    pub(crate) async fn get_or_refresh<F, Fut, E>(&self, key: K, fetch: F) -> Result<V, E>
     where
         F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<V, sqlx::Error>>,
+        Fut: Future<Output = Result<V, E>>,
     {
         if let Some((fetched_at, value)) = self.state.read().await.get(&key)
             && fetched_at.elapsed() < self.ttl
@@ -64,42 +64,25 @@ impl<K: Eq + Hash + Clone, V: Clone> KeyedTtlCache<K, V> {
 /// refreshed via `fetch`. Clones the value on every hit, so wrap expensive
 /// values in an `Arc` at the call site.
 pub(crate) struct TtlCell<T> {
-    ttl: Duration,
-    slot: RwLock<Option<(Instant, T)>>,
+    inner: KeyedTtlCache<(), T>,
 }
 
 impl<T: Clone> TtlCell<T> {
     pub(crate) fn new(ttl: Duration) -> Self {
         Self {
-            ttl,
-            slot: RwLock::new(None),
+            inner: KeyedTtlCache::new(ttl),
         }
     }
 
-    pub(crate) async fn get_or_refresh<F, Fut>(&self, fetch: F) -> Result<T, sqlx::Error>
+    pub(crate) async fn get_or_refresh<F, Fut, E>(&self, fetch: F) -> Result<T, E>
     where
         F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<T, sqlx::Error>>,
+        Fut: Future<Output = Result<T, E>>,
     {
-        if let Some((fetched_at, value)) = self.slot.read().await.as_ref()
-            && fetched_at.elapsed() < self.ttl
-        {
-            return Ok(value.clone());
-        }
-
-        let mut guard = self.slot.write().await;
-        if let Some((fetched_at, value)) = guard.as_ref()
-            && fetched_at.elapsed() < self.ttl
-        {
-            return Ok(value.clone());
-        }
-
-        let fresh = fetch().await?;
-        *guard = Some((Instant::now(), fresh.clone()));
-        Ok(fresh)
+        self.inner.get_or_refresh((), fetch).await
     }
 
     pub(crate) async fn invalidate(&self) {
-        *self.slot.write().await = None;
+        self.inner.invalidate().await
     }
 }
