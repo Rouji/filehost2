@@ -520,15 +520,26 @@ async fn enforce_upload_gates(
 ) -> Result<(), HttpResponse> {
     let db = &state.db;
     let ban_cache = &state.ban_cache;
+    let whitelist_cache = &state.whitelist_cache;
     let challenge_cache = &state.challenge_cache;
     let settings = &state.settings;
-    check_not_banned(
-        ban_cache.is_ip_banned(db, uploader_ip, BanType::ReadOnly),
-        uploader_ip,
-        "banned IP",
-        "Your IP is banned from uploading.",
-    )
-    .await?;
+    // whitelisted IPs skip the IP ban and challenge gates entirely
+    let whitelisted = match whitelist_cache.is_ip_whitelisted(db, uploader_ip).await {
+        Ok(whitelisted) => whitelisted,
+        Err(e) => {
+            log::error!("whitelist check failed: {e}");
+            return Err(internal_error());
+        }
+    };
+    if !whitelisted {
+        check_not_banned(
+            ban_cache.is_ip_banned(db, uploader_ip, BanType::ReadOnly),
+            uploader_ip,
+            "banned IP",
+            "Your IP is banned from uploading.",
+        )
+        .await?;
+    }
 
     if let Some(ua) = user_agent {
         check_not_banned(
@@ -567,14 +578,16 @@ async fn enforce_upload_gates(
         )?;
     }
 
-    respond_to_check(
-        challenge_cache
-            .needs_challenge(db, uploader_ip, settings.nsfw_threshold)
-            .await,
-        uploader_ip,
-        "challenge required",
-        || challenge_required_response(settings, "uploading", formatted),
-    )?;
+    if !whitelisted {
+        respond_to_check(
+            challenge_cache
+                .needs_challenge(db, uploader_ip, settings.nsfw_threshold)
+                .await,
+            uploader_ip,
+            "challenge required",
+            || challenge_required_response(settings, "uploading", formatted),
+        )?;
+    }
 
     Ok(())
 }
@@ -739,11 +752,17 @@ pub(crate) async fn get_file(
         .and_then(|v| v.to_str().ok())
         .map(|ua| util::truncate_chars(ua, db::MAX_UA_LEN));
 
-    if state
-        .ban_cache
-        .is_ip_banned(db, ip, BanType::Full)
+    let whitelisted = state
+        .whitelist_cache
+        .is_ip_whitelisted(db, ip)
         .await
-        .map_err(actix_web::error::ErrorInternalServerError)?
+        .map_err(actix_web::error::ErrorInternalServerError)?;
+    if !whitelisted
+        && state
+            .ban_cache
+            .is_ip_banned(db, ip, BanType::Full)
+            .await
+            .map_err(actix_web::error::ErrorInternalServerError)?
     {
         return Ok(error_page(StatusCode::FORBIDDEN, "Your IP is banned."));
     }
@@ -759,11 +778,12 @@ pub(crate) async fn get_file(
         return Ok(error_page(StatusCode::FORBIDDEN, "Your client is banned."));
     }
 
-    if state
-        .challenge_cache
-        .needs_challenge(db, ip, settings.nsfw_threshold)
-        .await
-        .map_err(actix_web::error::ErrorInternalServerError)?
+    if !whitelisted
+        && state
+            .challenge_cache
+            .needs_challenge(db, ip, settings.nsfw_threshold)
+            .await
+            .map_err(actix_web::error::ErrorInternalServerError)?
     {
         log::info!("download rejected: challenge required (ip={ip})");
         // browsers get sent through the captcha and back to the file

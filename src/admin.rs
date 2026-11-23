@@ -12,7 +12,9 @@ use uuid::Uuid;
 use crate::app::AppState;
 use crate::db;
 use crate::ip;
-use crate::model::{BanType, BannedFileHash, BannedFileMime, BannedIpRange, Upload};
+use crate::model::{
+    BanType, BannedFileHash, BannedFileMime, BannedIpRange, Upload, WhitelistedIpRange,
+};
 use crate::util::{format_ts, hex_decode, hex_encode, parse_rfc3339};
 
 /// Registers every `/admin/*` route. Shared by the real app (main.rs) and the test
@@ -28,6 +30,9 @@ pub(crate) fn configure(cfg: &mut web::ServiceConfig) {
         .service(list_banned_ips)
         .service(add_banned_ip)
         .service(remove_banned_ip)
+        .service(list_whitelisted_ips)
+        .service(add_whitelisted_ip)
+        .service(remove_whitelisted_ip)
         .service(list_banned_filenames)
         .service(add_banned_filename)
         .service(remove_banned_filename)
@@ -423,6 +428,95 @@ pub(crate) struct BannedIpRangeCreate {
 pub(crate) struct ListBannedIpsQuery {
     limit: Option<i64>,
     offset: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct WhitelistedIpRangeDto {
+    id: i64,
+    start_ip: String,
+    end_ip: String,
+    reason: Option<String>,
+    created_timestamp: String,
+}
+
+impl From<WhitelistedIpRange> for WhitelistedIpRangeDto {
+    fn from(w: WhitelistedIpRange) -> Self {
+        WhitelistedIpRangeDto {
+            id: w.id,
+            start_ip: ip::display_db_bytes(&w.start_ip),
+            end_ip: ip::display_db_bytes(&w.end_ip),
+            reason: w.reason,
+            created_timestamp: format_ts(w.created_timestamp),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct WhitelistedIpRangeCreate {
+    start_ip: String,
+    end_ip: String,
+    reason: Option<String>,
+}
+
+#[get("/whitelist/ips")]
+pub(crate) async fn list_whitelisted_ips(
+    _auth: AdminAuth,
+    state: web::Data<AppState>,
+    query: web::Query<ListBannedIpsQuery>,
+) -> impl Responder {
+    let limit = query.limit.unwrap_or(100).clamp(1, 1000);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    respond_list(
+        db::list_whitelisted_ips(&state.db, limit, offset).await,
+        WhitelistedIpRangeDto::from,
+        "list_whitelisted_ips",
+    )
+}
+
+#[post("/whitelist/ips")]
+pub(crate) async fn add_whitelisted_ip(
+    _auth: AdminAuth,
+    state: web::Data<AppState>,
+    body: web::Json<WhitelistedIpRangeCreate>,
+) -> impl Responder {
+    let Ok(start_ip) = body.start_ip.parse::<IpAddr>() else {
+        return json_error(StatusCode::BAD_REQUEST, "Invalid start_ip");
+    };
+    let Ok(end_ip) = body.end_ip.parse::<IpAddr>() else {
+        return json_error(StatusCode::BAD_REQUEST, "Invalid end_ip");
+    };
+    if !ip::same_family(start_ip, end_ip) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "start_ip and end_ip must be the same IP version",
+        );
+    }
+
+    match db::insert_whitelisted_ip(&state.db, start_ip, end_ip, body.reason.as_deref()).await {
+        Ok(id) => {
+            log::info!("admin: whitelisted ip range {start_ip}-{end_ip} (id {id})");
+            state.whitelist_cache.invalidate().await;
+            HttpResponse::Created().json(IdResult { id })
+        }
+        Err(e) => internal_err(e, "insert_whitelisted_ip"),
+    }
+}
+
+#[delete("/whitelist/ips/{id}")]
+pub(crate) async fn remove_whitelisted_ip(
+    _auth: AdminAuth,
+    state: web::Data<AppState>,
+    path: web::Path<(i64,)>,
+) -> impl Responder {
+    let id = path.into_inner().0;
+    respond_removed(
+        db::delete_whitelisted_ip(&state.db, id).await,
+        || state.whitelist_cache.invalidate(),
+        || format!("admin: removed whitelisted ip range {id}"),
+        "delete_whitelisted_ip",
+    )
+    .await
 }
 
 #[get("/bans/ips")]

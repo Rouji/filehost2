@@ -12,7 +12,7 @@ use crate::db_pool::{self, DbPool};
 use crate::ip;
 use crate::model::{
     BanType, BannedFileHash, BannedFileMime, BannedFilename, BannedIpRange, BannedUserAgent,
-    Blacklist, Upload,
+    Blacklist, Upload, WhitelistedIpRange,
 };
 use crate::settings::Settings;
 use crate::upload::uuid_to_path;
@@ -70,6 +70,54 @@ pub(crate) async fn is_ip_banned(
     .fetch_optional(&mut *conn)
     .await?
     .is_some())
+}
+
+pub(crate) async fn is_ip_whitelisted(db: &DbPool, ip: IpAddr) -> Result<bool, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let ip = ip::to_db_vec(ip);
+    Ok(sqlx::query!(
+        "SELECT 1 AS found FROM whitelisted_ip_ranges WHERE ? BETWEEN start_ip AND end_ip",
+        ip
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .is_some())
+}
+
+pub(crate) async fn list_whitelisted_ips(
+    db: &DbPool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<WhitelistedIpRange>, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    sqlx::query_as!(
+        WhitelistedIpRange,
+        "SELECT id, start_ip, end_ip, reason, created_timestamp FROM whitelisted_ip_ranges ORDER BY id DESC LIMIT ? OFFSET ?",
+        limit,
+        offset
+    )
+    .fetch_all(&mut *conn)
+    .await
+}
+
+pub(crate) async fn insert_whitelisted_ip(
+    db: &DbPool,
+    start_ip: IpAddr,
+    end_ip: IpAddr,
+    reason: Option<&str>,
+) -> Result<i64, sqlx::Error> {
+    let mut conn = db_pool::conn(db).await?;
+    let start_ip = ip::to_db_vec(start_ip);
+    let end_ip = ip::to_db_vec(end_ip);
+    let result = sqlx::query!(
+        "INSERT INTO whitelisted_ip_ranges (start_ip, end_ip, reason) VALUES (?, ?, ?)",
+        start_ip,
+        end_ip,
+        reason
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(result.last_insert_id() as i64)
 }
 
 pub(crate) async fn is_ip_challenge_verified(db: &DbPool, ip: IpAddr) -> Result<bool, sqlx::Error> {
@@ -863,6 +911,12 @@ delete_by_id_bool!(
     delete_banned_ip,
     i64,
     "DELETE FROM banned_ip_ranges WHERE id = ?"
+);
+
+delete_by_id_bool!(
+    delete_whitelisted_ip,
+    i64,
+    "DELETE FROM whitelisted_ip_ranges WHERE id = ?"
 );
 
 ban_set_crud!(

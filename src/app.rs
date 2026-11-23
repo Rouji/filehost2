@@ -14,6 +14,7 @@ use crate::pow::PowSecret;
 use crate::rate_limit::{DownloadThrottle, MissTracker, RequestTracker, UploadThrottle};
 use crate::settings::Settings;
 use crate::templates::{self, RenderedTemplates};
+use crate::whitelist_cache::WhitelistCache;
 use crate::{admin, handlers};
 
 /// Everything request handlers need, registered as a single `web::Data`.
@@ -23,6 +24,7 @@ pub(crate) struct AppState {
     pub settings: Settings,
     pub templates: RenderedTemplates,
     pub ban_cache: BanCache,
+    pub whitelist_cache: WhitelistCache,
     pub challenge_cache: ChallengeCache,
     pub pow_secret: PowSecret,
     pub nsfw_model: Option<Arc<NsfwModel>>,
@@ -98,6 +100,7 @@ impl AppState {
             db,
             templates: templates::render(&settings),
             ban_cache: BanCache::new(ttl),
+            whitelist_cache: WhitelistCache::new(ttl),
             challenge_cache: ChallengeCache::new(ttl),
             pow_secret: PowSecret::generate(),
             nsfw_model,

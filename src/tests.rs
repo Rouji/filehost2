@@ -723,6 +723,92 @@ mod tests {
         assert!(resp.status().is_success());
     }
 
+    /// Seeds a whitelist range via raw SQL, mirroring `ban_ip` above.
+    async fn whitelist_range(pool: &MySqlPool, start: &str, end: &str) {
+        sqlx::query(
+            "INSERT INTO whitelisted_ip_ranges (start_ip, end_ip, created_timestamp) VALUES (?, ?, NOW())",
+        )
+        .bind(ip_bytes(start))
+        .bind(ip_bytes(end))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn whitelisted_ip_upload_overrides_ban(pool: MySqlPool) {
+        let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
+        ban_ip(&pool, banned_ip, 1).await; // ReadOnly ban
+        whitelist_range(&pool, "1.2.3.0", "1.2.3.255").await;
+
+        let mut settings = Settings::test_defaults();
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
+        let app = full_app(settings, pool).await;
+
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "1.2.3.4")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "whitelisted IP must upload despite the ban covering it, got: {}",
+            resp.status()
+        );
+    }
+
+    #[sqlx::test]
+    async fn whitelisted_ip_download_overrides_full_ban(pool: MySqlPool) {
+        let banned_ip: std::net::IpAddr = "1.2.3.4".parse().unwrap();
+        ban_ip(&pool, banned_ip, 2).await; // Full ban
+        whitelist_range(&pool, "1.2.3.0", "1.2.3.255").await;
+
+        let mut settings = Settings::test_defaults();
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
+        let app = full_app(settings, pool).await;
+
+        // clean uploader so we have a file to fetch
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "5.6.7.8")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+        let body = test::read_body(resp).await;
+        let url = std::str::from_utf8(&body).unwrap().trim().to_string();
+
+        let req = peer(test::TestRequest::get())
+            .uri(&url)
+            .insert_header(("X-Forwarded-For", "1.2.3.4"))
+            .to_request();
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "whitelisted IP must download despite the Full ban covering it, got: {}",
+            resp.status()
+        );
+    }
+
+    #[sqlx::test]
+    async fn whitelisted_ip_skips_challenge_gate(pool: MySqlPool) {
+        let mut settings = Settings::test_defaults();
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
+        let app = full_app(settings, pool.clone()).await;
+        seed_nsfw_upload(&app, &pool, "198.51.100.7", 0).await;
+        whitelist_range(&pool, "198.51.100.0", "198.51.100.255").await;
+
+        let req = upload_req(
+            &multipart_body("b.txt", "hello"),
+            &[("X-Forwarded-For", "198.51.100.7")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "whitelisted IP must not be sent through the challenge, got: {}",
+            resp.status()
+        );
+    }
+
     #[sqlx::test]
     async fn ipv6_daily_quota_shared_within_64_prefix(pool: MySqlPool) {
         let mut settings = Settings::test_defaults();
@@ -1695,6 +1781,73 @@ mod tests {
 
         let ranges: Vec<IpRangeResponse> = admin_list(&app, "/admin/bans/ips").await;
         assert!(!ranges.iter().any(|r| r.id == created.id));
+    }
+
+    #[derive(Serialize)]
+    struct WhitelistBody<'a> {
+        start_ip: &'a str,
+        end_ip: &'a str,
+        reason: Option<&'a str>,
+    }
+
+    #[derive(Deserialize)]
+    struct WhitelistResponse {
+        id: i64,
+        start_ip: String,
+        end_ip: String,
+    }
+
+    #[sqlx::test]
+    async fn admin_whitelist_ip_add_list_delete_and_enforced(pool: MySqlPool) {
+        let mut settings = admin_settings();
+        settings.trusted_proxies = Some("127.0.0.1".to_string());
+        let app = full_app(settings, pool.clone()).await;
+
+        let resp = admin_post(
+            &app,
+            "/admin/whitelist/ips",
+            &WhitelistBody {
+                start_ip: "10.0.0.5",
+                end_ip: "10.0.0.9",
+                reason: Some("office"),
+            },
+        )
+        .await;
+        assert_eq!(resp.status(), 201);
+        let created: IdResponse = test::read_body_json(resp).await;
+
+        let entries: Vec<WhitelistResponse> = admin_list(&app, "/admin/whitelist/ips").await;
+        let entry = entries
+            .iter()
+            .find(|e| e.id == created.id)
+            .expect("whitelisted range should be listed");
+        assert_eq!(entry.start_ip, "10.0.0.5");
+        assert_eq!(entry.end_ip, "10.0.0.9");
+
+        // Enforcement: a ReadOnly ban on the same range is overridden for whitelisted IPs.
+        let banned_ip: std::net::IpAddr = "10.0.0.7".parse().unwrap();
+        ban_ip(&pool, banned_ip, 1).await;
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "10.0.0.7")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "whitelisted IP must upload despite the ban covering it, got: {}",
+            resp.status()
+        );
+
+        let resp = admin_delete(&app, &format!("/admin/whitelist/ips/{}", created.id)).await;
+        assert_eq!(resp.status(), 204);
+
+        // Once the whitelist entry is gone the ban applies again.
+        let req = upload_req(
+            &multipart_body("test.txt", "hello"),
+            &[("X-Forwarded-For", "10.0.0.7")],
+        );
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 403);
     }
 
     #[derive(Serialize)]

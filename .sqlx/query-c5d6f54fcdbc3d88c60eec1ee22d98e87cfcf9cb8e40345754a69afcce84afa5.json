@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO whitelisted_ip_ranges (start_ip, end_ip, reason) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c5d6f54fcdbc3d88c60eec1ee22d98e87cfcf9cb8e40345754a69afcce84afa5"
+}

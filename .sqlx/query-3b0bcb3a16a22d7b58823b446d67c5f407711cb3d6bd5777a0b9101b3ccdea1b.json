@@ -1,0 +1,26 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT 1 AS found FROM whitelisted_ip_ranges WHERE ? BETWEEN start_ip AND end_ip",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "found",
+        "type_info": {
+          "type": "Long",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 1
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3b0bcb3a16a22d7b58823b446d67c5f407711cb3d6bd5777a0b9101b3ccdea1b"
+}

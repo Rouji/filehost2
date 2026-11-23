@@ -59,6 +59,11 @@ pub(crate) enum Command {
         #[command(subcommand)]
         target: BanTarget,
     },
+    /// manage whitelisted IP ranges (skip IP bans and challenges)
+    Whitelist {
+        #[command(subcommand)]
+        command: WhitelistCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -99,6 +104,20 @@ pub(crate) enum BanIpCommand {
         /// ban type: 1=readonly, 2=full
         #[arg(short, long = "type", default_value_t = 1)]
         type_: u32,
+    },
+    Remove {
+        id: i64,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum WhitelistCommand {
+    List,
+    Add {
+        start: IpAddr,
+        end: IpAddr,
+        #[arg(long)]
+        reason: Option<String>,
     },
     Remove {
         id: i64,
@@ -386,6 +405,38 @@ async fn ban_ip(db: &DbPool, command: BanIpCommand) -> Result<()> {
         }
         BanIpCommand::Remove { id } => removal_result(
             db::delete_banned_ip(db, id).await?,
+            &format!("ip range id={id}"),
+        ),
+    }
+}
+
+pub(crate) async fn whitelist(db: &DbPool, command: WhitelistCommand) -> Result<()> {
+    match command {
+        WhitelistCommand::List => {
+            let entries = db::list_whitelisted_ips(db, i64::MAX, 0).await?;
+            print_list_or_empty(&entries, "No whitelisted IP ranges.", |entry| {
+                let reason = entry.reason.as_deref().unwrap_or("-");
+                let start = ip::display_db_bytes(&entry.start_ip);
+                let end = ip::display_db_bytes(&entry.end_ip);
+                println!(
+                    "{:>6}  {:<15}-{:<15}  reason={}",
+                    entry.id, start, end, reason
+                );
+            });
+            Ok(())
+        }
+        WhitelistCommand::Add { start, end, reason } => {
+            anyhow::ensure!(
+                ip::same_family(start, end),
+                "start and end must be the same IP version"
+            );
+            let id = db::insert_whitelisted_ip(db, start, end, reason.as_deref()).await?;
+            log::info!("whitelist: added ip range {start}-{end} (id {id})");
+            println!("Whitelisted {start}-{end} with id {id}.");
+            Ok(())
+        }
+        WhitelistCommand::Remove { id } => removal_result(
+            db::delete_whitelisted_ip(db, id).await?,
             &format!("ip range id={id}"),
         ),
     }

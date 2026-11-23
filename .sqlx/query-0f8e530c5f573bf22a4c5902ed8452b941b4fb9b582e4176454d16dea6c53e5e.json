@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "DELETE FROM whitelisted_ip_ranges WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "0f8e530c5f573bf22a4c5902ed8452b941b4fb9b582e4176454d16dea6c53e5e"
+}

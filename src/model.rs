@@ -60,6 +60,15 @@ pub(crate) struct BannedIpRange {
 }
 
 #[derive(Debug, sqlx::FromRow)]
+pub(crate) struct WhitelistedIpRange {
+    pub id: i64,
+    pub start_ip: Vec<u8>,
+    pub end_ip: Vec<u8>,
+    pub reason: Option<String>,
+    pub created_timestamp: PrimitiveDateTime,
+}
+
+#[derive(Debug, sqlx::FromRow)]
 pub(crate) struct Blacklist {
     pub id: i32,
     pub url: String,

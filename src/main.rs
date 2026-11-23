@@ -20,6 +20,7 @@ mod templates;
 mod ttl_cache;
 mod upload;
 mod util;
+mod whitelist_cache;
 
 #[cfg(test)]
 mod tests;
@@ -65,6 +66,7 @@ async fn main() -> std::io::Result<()> {
             cli::Command::Blacklist { command } => cli::blacklist(&db, command).await,
             cli::Command::AsnSync { path } => cli::asn_sync(&db, path.as_deref()).await,
             cli::Command::Ban { target } => cli::ban(&db, target).await,
+            cli::Command::Whitelist { command } => cli::whitelist(&db, command).await,
         };
         if let Err(e) = result {
             eprintln!("Error: {e}");
