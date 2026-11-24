@@ -62,6 +62,18 @@ pub(crate) struct Settings {
     #[env_settings(default = 1)]
     pub max_concurrent_nsfw_scans: usize, // cap on simultaneous NSFW inferences
 
+    // Qwen3Guard text moderation via a llama.cpp server; unset disables it.
+    // e.g. http://127.0.0.1:8081
+    pub guard_addr: Option<String>,
+    #[env_settings(default = 1)]
+    pub max_concurrent_guard_scans: usize, // cap on simultaneous guard scans (server is single-slot)
+    #[env_settings(default = 8)]
+    pub guard_max_chunks: usize, // max text chunks scanned per file; 0 disables the cap
+    #[env_settings(default = 60)]
+    pub guard_timeout_seconds: u64, // per-chunk request timeout
+    #[env_settings(default = "false")]
+    pub guard_strict: bool, // treat Controversial verdicts as Unsafe
+
     pub nsfw_model_path: Option<String>, //path to NSFW detection model; preferrably OwenElliott/image-safety-classifier-xs
     #[env_settings(default = 0.9)]
     pub nsfw_threshold: f32,
@@ -118,6 +130,10 @@ impl Settings {
                 self.max_concurrent_clamd_scans,
             ),
             ("MAX_CONCURRENT_NSFW_SCANS", self.max_concurrent_nsfw_scans),
+            (
+                "MAX_CONCURRENT_GUARD_SCANS",
+                self.max_concurrent_guard_scans,
+            ),
         ] {
             if n == 0 {
                 return Err(format!("{name} must be at least 1"));
@@ -171,6 +187,11 @@ impl Settings {
             clamd_addr: None,
             max_concurrent_clamd_scans: 2,
             max_concurrent_nsfw_scans: 1,
+            guard_addr: None,
+            max_concurrent_guard_scans: 1,
+            guard_max_chunks: 8,
+            guard_timeout_seconds: 60,
+            guard_strict: false,
             nsfw_model_path: None,
             nsfw_threshold: 0.9,
             max_uploads_per_day: None,
@@ -209,6 +230,10 @@ mod tests {
             },
             Settings {
                 max_concurrent_nsfw_scans: 0,
+                ..Settings::test_defaults()
+            },
+            Settings {
+                max_concurrent_guard_scans: 0,
                 ..Settings::test_defaults()
             },
         ] {

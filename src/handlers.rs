@@ -19,6 +19,7 @@ use crate::app::AppState;
 use crate::clamd;
 use crate::db;
 use crate::db_pool::DbPool;
+use crate::guard;
 use crate::ip::extract_ip;
 use crate::model::BanType;
 use crate::rate_limit;
@@ -254,6 +255,89 @@ fn spawn_nsfw_scan(
     });
 }
 
+/// Post-accept Qwen3Guard scan. `Unsafe` bans hash + deletes + suspects the
+/// IP (clamd-style); `Controversial` only suspects the IP. Fails open.
+fn spawn_guard_scan(
+    state: web::Data<AppState>,
+    uploader_ip: std::net::IpAddr,
+    uuid: Uuid,
+    slug: String,
+    hash: [u8; 32],
+    save_path: std::path::PathBuf,
+    content_type: String,
+) {
+    let Some(addr) = state.settings.guard_addr.clone() else {
+        return;
+    };
+    let semaphore = state.guard_scan_semaphore.clone();
+    let guard_timeout = Duration::from_secs(state.settings.guard_timeout_seconds);
+    let chunk_chars = guard::DEFAULT_CHUNK_CHARS;
+    let max_chunks = state.settings.guard_max_chunks;
+    let strict = state.settings.guard_strict;
+    // scan budget: one request timeout per chunk, plus slack
+    let scan_budget = if max_chunks == 0 {
+        guard_timeout * 32
+    } else {
+        guard_timeout * (max_chunks as u32 + 1)
+    };
+    tokio::spawn(async move {
+        let result = {
+            let _permit = semaphore.acquire().await;
+            tokio::time::timeout(
+                scan_budget,
+                guard::scan_file(
+                    &addr,
+                    &save_path,
+                    &content_type,
+                    chunk_chars,
+                    max_chunks,
+                    guard_timeout,
+                ),
+            )
+            .await
+        };
+        match result {
+            Err(_) => log::error!("guard: scan timed out for {uuid} ({slug})"),
+            Ok(Ok(None)) => log::debug!("guard: {uuid} ({slug}) nothing extractable"),
+            Ok(Ok(Some(verdict))) => {
+                let cats = if verdict.categories.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", verdict.categories.join(", "))
+                };
+                let effective = if strict && verdict.level == guard::Level::Controversial {
+                    guard::Level::Unsafe
+                } else {
+                    verdict.level
+                };
+                match effective {
+                    guard::Level::Unsafe => {
+                        log::warn!("guard: {uuid} ({slug}) UNSAFE{cats}, deleting");
+                        let reason = format!("guard: {cats}");
+                        if let Err(e) =
+                            db::insert_banned_hash(&state.db, hash.as_slice(), Some(&reason)).await
+                        {
+                            log::error!("guard: failed to ban hash for {uuid}: {e}");
+                        } else {
+                            state.ban_cache.invalidate_hashes().await;
+                        }
+                        if let Err(e) = db::delete_by_id(&state.db, &state.settings, uuid).await {
+                            log::error!("guard: failed to delete unsafe file {uuid}: {e}");
+                        }
+                        state.challenge_cache.mark_ip_suspect(uploader_ip).await;
+                    }
+                    guard::Level::Controversial => {
+                        log::warn!("guard: {uuid} ({slug}) controversial{cats}, flagging IP");
+                        state.challenge_cache.mark_ip_suspect(uploader_ip).await;
+                    }
+                    guard::Level::Safe => log::info!("guard: {uuid} ({slug}) safe"),
+                }
+            }
+            Ok(Err(e)) => log::warn!("guard: scan failed for {uuid} ({slug}): {e:#}"),
+        }
+    });
+}
+
 async fn process_file(
     state: web::Data<AppState>,
     file: HashedTempFile,
@@ -376,7 +460,25 @@ async fn process_file(
     spawn_clamd_scan(state.clone(), uuid, slug.clone(), hash, save_path.clone());
 
     if content_type_for_db.starts_with("image/") {
-        spawn_nsfw_scan(state.clone(), uploader_ip, uuid, slug.clone(), save_path);
+        spawn_nsfw_scan(
+            state.clone(),
+            uploader_ip,
+            uuid,
+            slug.clone(),
+            save_path.clone(),
+        );
+    }
+
+    if guard::is_extractable(&content_type_for_db) {
+        spawn_guard_scan(
+            state.clone(),
+            uploader_ip,
+            uuid,
+            slug.clone(),
+            hash,
+            save_path,
+            content_type_for_db.clone(),
+        );
     }
 
     let encoded_slug = utf8_percent_encode(&slug, PATH_SEGMENT).to_string();

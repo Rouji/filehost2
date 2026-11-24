@@ -8,6 +8,7 @@ mod cli;
 mod db;
 mod db_pool;
 mod dedup;
+mod guard;
 mod handlers;
 mod ip;
 mod model;

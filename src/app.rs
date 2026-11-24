@@ -31,6 +31,7 @@ pub(crate) struct AppState {
     /// bounds concurrent scans (DoS protection)
     pub clamd_scan_semaphore: Arc<tokio::sync::Semaphore>,
     pub nsfw_scan_semaphore: Arc<tokio::sync::Semaphore>,
+    pub guard_scan_semaphore: Arc<tokio::sync::Semaphore>,
     pub xff_trust: XffTrust,
     pub upload_throttle: Arc<UploadThrottle>,
     pub download_throttle: Arc<DownloadThrottle>,
@@ -112,6 +113,9 @@ impl AppState {
             )),
             nsfw_scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 settings.max_concurrent_nsfw_scans,
+            )),
+            guard_scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                settings.max_concurrent_guard_scans,
             )),
             xff_trust,
             upload_throttle: Arc::new(UploadThrottle::new()),
