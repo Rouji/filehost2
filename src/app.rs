@@ -28,6 +28,9 @@ pub(crate) struct AppState {
     pub challenge_cache: ChallengeCache,
     pub pow_secret: PowSecret,
     pub nsfw_model: Option<Arc<NsfwModel>>,
+    /// bounds concurrent scans (DoS protection)
+    pub clamd_scan_semaphore: Arc<tokio::sync::Semaphore>,
+    pub nsfw_scan_semaphore: Arc<tokio::sync::Semaphore>,
     pub xff_trust: XffTrust,
     pub upload_throttle: Arc<UploadThrottle>,
     pub download_throttle: Arc<DownloadThrottle>,
@@ -104,6 +107,12 @@ impl AppState {
             challenge_cache: ChallengeCache::new(ttl),
             pow_secret: PowSecret::generate(),
             nsfw_model,
+            clamd_scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                settings.max_concurrent_clamd_scans,
+            )),
+            nsfw_scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                settings.max_concurrent_nsfw_scans,
+            )),
             xff_trust,
             upload_throttle: Arc::new(UploadThrottle::new()),
             download_throttle: Arc::new(DownloadThrottle::new()),

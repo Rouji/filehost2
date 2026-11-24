@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use actix_files::NamedFile;
 use actix_multipart::form::{MultipartForm, text::Text};
@@ -185,10 +186,21 @@ fn spawn_clamd_scan(
     let Some(addr) = state.settings.clamd_addr.clone() else {
         return;
     };
+    let semaphore = state.clamd_scan_semaphore.clone();
+    let scan_timeout = Duration::from_secs(state.settings.upload_timeout as u64);
     tokio::spawn(async move {
-        match clamd::scan_file(&addr, &save_path).await {
-            Ok(clamd::ScanResult::Clean) => log::info!("clamd: {uuid} ({slug}) clean"),
-            Ok(clamd::ScanResult::Infected(name)) => {
+        // bound concurrent scans (DoS vector); wait, never skip
+        // timeout so a hung clamd can't hold a permit forever
+        let result = {
+            let _permit = semaphore.acquire().await;
+            tokio::time::timeout(scan_timeout, clamd::scan_file(&addr, &save_path)).await
+        };
+        match result {
+            Err(_) => {
+                log::error!("clamd: scan timed out after {scan_timeout:?} for {uuid} ({slug})")
+            }
+            Ok(Ok(clamd::ScanResult::Clean)) => log::info!("clamd: {uuid} ({slug}) clean"),
+            Ok(Ok(clamd::ScanResult::Infected(name))) => {
                 log::warn!("clamd: {uuid} ({slug}) infected with {name:?}, deleting");
                 let reason = format!("clamd: {name}");
                 if let Err(e) =
@@ -202,7 +214,7 @@ fn spawn_clamd_scan(
                     log::error!("clamd: failed to delete infected file {uuid}: {e}");
                 }
             }
-            Err(e) => log::error!("clamd: scan failed for {uuid} ({slug}): {e}"),
+            Ok(Err(e)) => log::error!("clamd: scan failed for {uuid} ({slug}): {e}"),
         }
     });
 }
@@ -218,8 +230,15 @@ fn spawn_nsfw_scan(
         return;
     };
     let nsfw_threshold = state.settings.nsfw_threshold;
+    let semaphore = state.nsfw_scan_semaphore.clone();
     tokio::spawn(async move {
-        match tokio::task::spawn_blocking(move || model.classify(&save_path)).await {
+        // bound concurrent inferences (CPU-heavy); permit spans spawn_blocking
+        // so it caps running jobs, not queued ones
+        let result = {
+            let _permit = semaphore.acquire().await;
+            tokio::task::spawn_blocking(move || model.classify(&save_path)).await
+        };
+        match result {
             Ok(Ok(c)) => {
                 log::info!("nsfw: {uuid} ({slug}) score={:.3}", c.score);
                 if let Err(e) = db::update_nsfw_score(&state.db, uuid, c.score).await {

@@ -1362,6 +1362,118 @@ mod tests {
         settings
     }
 
+    struct MockClamd {
+        addr: std::net::SocketAddr,
+        /// total connections accepted so far (one per scan)
+        connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        peak: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    /// minimal clamd INSTREAM mock; tracks peak concurrency and delays each
+    /// response briefly so overlapping scans are measurable
+    async fn spawn_mock_clamd() -> MockClamd {
+        use std::sync::atomic::Ordering;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (connections, current, peak) = (
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        );
+        let (conn_task, cur_task, peak_task) = (connections.clone(), current.clone(), peak.clone());
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = match listener.accept().await {
+                    Ok(x) => x,
+                    Err(_) => return,
+                };
+                conn_task.fetch_add(1, Ordering::SeqCst);
+                let now = cur_task.fetch_add(1, Ordering::SeqCst) + 1;
+                peak_task.fetch_max(now, Ordering::SeqCst);
+                let cur_task = cur_task.clone();
+                tokio::spawn(async move {
+                    let mut window = [255u8; 4];
+                    let mut buf = [0u8; 4096];
+                    'read: loop {
+                        match sock.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                for &b in &buf[..n] {
+                                    window = [window[1], window[2], window[3], b];
+                                    if window == [0u8; 4] {
+                                        break 'read;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let _ = sock.write_all(b"stream: OK\0").await;
+                    let _ = sock.flush().await;
+                    cur_task.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        MockClamd {
+            addr,
+            connections,
+            peak,
+        }
+    }
+
+    /// scans must wait for a permit (never skip) and never exceed the limit
+    #[sqlx::test]
+    async fn clamd_scans_wait_for_a_permit(pool: MySqlPool) {
+        use std::sync::atomic::Ordering;
+
+        const N: usize = 6;
+        let clamd = spawn_mock_clamd().await;
+        let settings = Settings {
+            clamd_addr: Some(clamd.addr.to_string()),
+            max_concurrent_clamd_scans: 1,
+            ..Settings::test_defaults()
+        };
+        let app = full_app(settings, pool).await;
+
+        // unique content per upload so dedup can't collapse them into one scan
+        let reqs: Vec<_> = (0..N)
+            .map(|i| {
+                multipart_request(&multipart_body(
+                    &format!("f{i}.txt"),
+                    &format!("unique-content-{i}"),
+                ))
+            })
+            .collect();
+        let responses =
+            futures_util::future::join_all(reqs.into_iter().map(|r| test::call_service(&app, r)))
+                .await;
+        for resp in responses {
+            assert!(
+                resp.status().is_success(),
+                "upload failed: {}",
+                resp.status()
+            );
+        }
+
+        // scans run in spawned tasks: wait until all N have hit the mock
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while clamd.connections.load(Ordering::SeqCst) < N {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "only {} of {N} uploads were scanned in time",
+                clamd.connections.load(Ordering::SeqCst)
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            clamd.peak.load(Ordering::SeqCst) == 1,
+            "clamd scans overlapped: peak={} (limit 1)",
+            clamd.peak.load(Ordering::SeqCst)
+        );
+    }
+
     fn admin_req(method: test::TestRequest, uri: &str) -> test::TestRequest {
         method
             .uri(uri)

@@ -57,6 +57,10 @@ pub(crate) struct Settings {
     pub admin_token: Option<String>, //bearer token for /admin API; unset disables it
 
     pub clamd_addr: Option<String>,
+    #[env_settings(default = 2)]
+    pub max_concurrent_clamd_scans: usize, // cap on simultaneous INSTREAM sessions to clamd
+    #[env_settings(default = 1)]
+    pub max_concurrent_nsfw_scans: usize, // cap on simultaneous NSFW inferences
 
     pub nsfw_model_path: Option<String>, //path to NSFW detection model; preferrably OwenElliott/image-safety-classifier-xs
     #[env_settings(default = 0.9)]
@@ -93,6 +97,8 @@ impl Settings {
     /// Rejects settings that would only fail later, mid-request, at the
     /// database: `uploads.file_size` is a signed INT column.
     pub(crate) fn validate(&self) -> Result<(), String> {
+        self.validate_scan_concurrency()?;
+
         let max_int_bytes = i32::MAX as usize;
         match self.max_filesize.checked_mul(1024 * 1024) {
             Some(bytes) if bytes <= max_int_bytes => Ok(()),
@@ -102,6 +108,22 @@ impl Settings {
                 max_int_bytes / (1024 * 1024) // 2047
             )),
         }
+    }
+
+    /// a zero-permit semaphore would silently disable all scanning
+    fn validate_scan_concurrency(&self) -> Result<(), String> {
+        for (name, n) in [
+            (
+                "MAX_CONCURRENT_CLAMD_SCANS",
+                self.max_concurrent_clamd_scans,
+            ),
+            ("MAX_CONCURRENT_NSFW_SCANS", self.max_concurrent_nsfw_scans),
+        ] {
+            if n == 0 {
+                return Err(format!("{name} must be at least 1"));
+            }
+        }
+        Ok(())
     }
 
     /// get model path, but only if present on disk
@@ -147,6 +169,8 @@ impl Settings {
             admin_email: "test@example.com".to_string(),
             admin_token: None,
             clamd_addr: None,
+            max_concurrent_clamd_scans: 2,
+            max_concurrent_nsfw_scans: 1,
             nsfw_model_path: None,
             nsfw_threshold: 0.9,
             max_uploads_per_day: None,
@@ -174,6 +198,22 @@ mod tests {
     #[test]
     fn validate_accepts_default_filesize() {
         Settings::test_defaults().validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_zero_scan_concurrency() {
+        for zeroed in [
+            Settings {
+                max_concurrent_clamd_scans: 0,
+                ..Settings::test_defaults()
+            },
+            Settings {
+                max_concurrent_nsfw_scans: 0,
+                ..Settings::test_defaults()
+            },
+        ] {
+            assert!(zeroed.validate().is_err());
+        }
     }
 
     #[test]
