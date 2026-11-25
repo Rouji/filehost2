@@ -58,6 +58,9 @@ async fn main() -> std::io::Result<()> {
         let result = match command {
             cli::Command::Migrate => cli::migrate(&db).await,
             cli::Command::DeleteExpired => cli::delete_expired(&db, &settings).await,
+            cli::Command::DeleteNeverDownloaded { days, dry_run } => {
+                cli::delete_never_downloaded(&db, &settings, days, dry_run).await
+            }
             cli::Command::Delete { target } => cli::delete(&db, &settings, target).await,
             cli::Command::Dedup { dry_run } => cli::dedup(&db, &settings, dry_run).await,
             cli::Command::Rehash => cli::rehash(&db, &settings).await,

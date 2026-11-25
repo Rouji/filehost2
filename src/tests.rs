@@ -14,6 +14,7 @@ mod tests {
     use crate::db_pool;
     use crate::handlers;
     use crate::settings::Settings;
+    use crate::upload::uuid_to_path;
 
     // `#[sqlx::test]` only knows how to hand back a real `sqlx::MySqlPool` (it's what
     // creates/migrates/tears down the isolated per-test database), but application code
@@ -2257,6 +2258,158 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 0, "the download log should be cascade-deleted");
+    }
+
+    /// Like `upload_and_get_slug`, but with explicit content, so multiple
+    /// uploads in one test stay distinct under dedup.
+    async fn upload_content<S>(app: &S, filename: &str, content: &str) -> String
+    where
+        S: actix_web::dev::Service<Request, Response = ServiceResponse, Error = Error>,
+    {
+        let req = multipart_request(&multipart_body(filename, content));
+        let resp = test::call_service(app, req).await;
+        assert!(
+            resp.status().is_success(),
+            "upload failed: {}",
+            resp.status()
+        );
+        let url = String::from_utf8(test::read_body(resp).await.to_vec()).unwrap();
+        slug(&url).to_string()
+    }
+
+    /// Backdates an upload's `upload_timestamp` by the given number of days.
+    async fn backdate_upload(pool: &MySqlPool, slug: &str, days_ago: i64) {
+        let ts = time::OffsetDateTime::now_utc() - time::Duration::days(days_ago);
+        let ts = time::PrimitiveDateTime::new(ts.date(), ts.time());
+        sqlx::query("UPDATE uploads SET upload_timestamp = ? WHERE slug = ?")
+            .bind(ts)
+            .bind(slug)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn upload_id_by_slug(pool: &MySqlPool, slug: &str) -> uuid::Uuid {
+        sqlx::query_scalar("SELECT id FROM uploads WHERE slug = ?")
+            .bind(slug)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test]
+    async fn never_downloaded_uploads_are_deleted_after_n_days(pool: MySqlPool) {
+        let mut settings = Settings::test_defaults();
+        settings.never_downloaded_days = Some(30);
+        let app = full_app(settings.clone(), pool.clone()).await;
+
+        let stale = upload_content(&app, "stale.txt", "stale content").await;
+        let fresh = upload_content(&app, "fresh.txt", "fresh content").await;
+
+        backdate_upload(&pool, &stale, 40).await;
+        let stale_id = upload_id_by_slug(&pool, &stale).await;
+
+        let db = to_db_pool(&pool);
+        let count = db::delete_never_downloaded(&db, &settings, 30)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "only the old never-downloaded upload goes");
+
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 1, "the fresh upload survives");
+        let archived: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM deleted_uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(archived, 1, "the deleted row should be archived");
+
+        // the stale file is unlinked, the fresh one stays on disk
+        assert!(!uuid_to_path(std::path::Path::new(&settings.store_path), &stale_id).exists());
+        let fresh_id = upload_id_by_slug(&pool, &fresh).await;
+        assert!(
+            uuid_to_path(std::path::Path::new(&settings.store_path), &fresh_id).exists(),
+            "fresh file must stay on disk"
+        );
+    }
+
+    #[sqlx::test]
+    async fn downloaded_old_upload_is_kept(pool: MySqlPool) {
+        let settings = Settings::test_defaults();
+        let app = full_app(settings.clone(), pool.clone()).await;
+
+        let slug = upload_content(&app, "popular.txt", "downloaded content").await;
+        backdate_upload(&pool, &slug, 40).await;
+        let id = upload_id_by_slug(&pool, &slug).await;
+
+        db::log_access(
+            &to_db_pool(&pool),
+            id,
+            Some("127.0.0.1".parse().unwrap()),
+            None,
+            Some(18),
+            200,
+        )
+        .await
+        .unwrap();
+
+        let db = to_db_pool(&pool);
+        let count = db::delete_never_downloaded(&db, &settings, 30)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "a file with a downloads log entry must survive");
+
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[sqlx::test]
+    async fn count_never_downloaded_reports_without_deleting(pool: MySqlPool) {
+        let settings = Settings::test_defaults();
+        let app = full_app(settings.clone(), pool.clone()).await;
+
+        let stale = upload_content(&app, "stale.txt", "stale content").await;
+        let _fresh = upload_content(&app, "fresh.txt", "fresh content").await;
+        let downloaded = upload_content(&app, "popular.txt", "downloaded content").await;
+
+        backdate_upload(&pool, &stale, 40).await;
+        backdate_upload(&pool, &downloaded, 40).await;
+
+        let downloaded_id = upload_id_by_slug(&pool, &downloaded).await;
+        db::log_access(
+            &to_db_pool(&pool),
+            downloaded_id,
+            Some("127.0.0.1".parse().unwrap()),
+            None,
+            Some(18),
+            200,
+        )
+        .await
+        .unwrap();
+
+        let db = to_db_pool(&pool);
+        let (count, bytes) = db::count_never_downloaded(&db, 30).await.unwrap();
+        assert_eq!(
+            count, 1,
+            "only the stale never-downloaded upload is counted"
+        );
+        assert_eq!(bytes, 13, "reported bytes are the stale upload's size");
+
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 3, "a dry run deletes nothing");
+        let archived: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM deleted_uploads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(archived, 0, "a dry run archives nothing");
     }
 }
 

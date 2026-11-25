@@ -248,6 +248,7 @@ pub(crate) async fn find_dedup_pairs(db: &DbPool) -> Result<Vec<DedupPair>, sqlx
 /// Which uploads a batch delete should match.
 pub(crate) enum DeleteTarget {
     Expired,
+    NeverDownloaded(u64),
     Id(Uuid),
     Slug(String),
     Ip(IpAddr),
@@ -258,6 +259,10 @@ impl DeleteTarget {
     fn clause(&self) -> &'static str {
         match self {
             Self::Expired => "expiry_timestamp <= ?",
+            Self::NeverDownloaded(_) => {
+                "upload_timestamp <= ? \
+                 AND NOT EXISTS (SELECT 1 FROM accesses a WHERE a.upload_id = uploads.id)"
+            }
             Self::Id(_) => "id = ?",
             Self::Slug(_) => "slug = ?",
             Self::Ip(_) => "uploader_ip = ?",
@@ -265,7 +270,8 @@ impl DeleteTarget {
         }
     }
 
-    /// `now` is the frozen expiry cutoff, used only by `Expired`.
+    /// `now` is the frozen expiry cutoff, used by `Expired` and
+    /// `NeverDownloaded` (which subtracts its day count).
     fn bind<'q>(
         &self,
         q: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
@@ -273,6 +279,7 @@ impl DeleteTarget {
     ) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
         match self {
             Self::Expired => q.bind(now),
+            Self::NeverDownloaded(days) => q.bind(now - time::Duration::days(*days as i64)),
             Self::Id(id) => q.bind(*id),
             Self::Slug(slug) => q.bind(slug.clone()),
             Self::Ip(ip) => q.bind(ip::to_db_vec(*ip)),
@@ -364,6 +371,33 @@ async fn delete_matching(db: &DbPool, settings: &Settings, target: DeleteTarget)
 
 pub(crate) async fn delete_expired(db: &DbPool, settings: &Settings) -> Result<usize> {
     delete_matching(db, settings, DeleteTarget::Expired).await
+}
+
+pub(crate) async fn delete_never_downloaded(
+    db: &DbPool,
+    settings: &Settings,
+    days: u64,
+) -> Result<usize> {
+    delete_matching(db, settings, DeleteTarget::NeverDownloaded(days)).await
+}
+
+pub(crate) async fn count_never_downloaded(db: &DbPool, days: u64) -> Result<(i64, i64)> {
+    let mut conn = db_pool::conn(db).await?;
+    let now: PrimitiveDateTime =
+        sqlx::query_scalar!("SELECT CAST(NOW() AS DATETIME) AS `now!: PrimitiveDateTime`")
+            .fetch_one(&mut *conn)
+            .await?;
+    let row: (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*) AS `count`, \
+                CAST(COALESCE(SUM(file_size), 0) AS SIGNED) AS `bytes` \
+         FROM uploads \
+         WHERE upload_timestamp <= ? \
+         AND NOT EXISTS (SELECT 1 FROM accesses a WHERE a.upload_id = uploads.id)",
+    )
+    .bind(now - time::Duration::days(days as i64))
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(row)
 }
 
 pub(crate) async fn delete_by_id(db: &DbPool, settings: &Settings, id: Uuid) -> Result<usize> {

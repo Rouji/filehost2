@@ -30,6 +30,10 @@ pub(crate) struct Settings {
     #[env_settings(default = 2)]
     pub decay_exp: usize, //high values penalise larger files more
 
+    /// uploads that have never been downloaded are deleted after this many
+    /// days; unset disables the rule (the CLI `--days` flag overrides it)
+    pub never_downloaded_days: Option<u64>,
+
     #[env_settings(default = 300)]
     pub upload_timeout: usize, //max. time an upload can take before it times out
     #[env_settings(default = 3)]
@@ -172,6 +176,7 @@ impl Settings {
             max_fileage: 180,
             min_fileage: 31,
             decay_exp: 2,
+            never_downloaded_days: None,
             upload_timeout: 300,
             min_id_length: 3,
             max_id_length: 24,

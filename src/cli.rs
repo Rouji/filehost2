@@ -23,6 +23,13 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     Migrate,
     DeleteExpired,
+    DeleteNeverDownloaded {
+        /// age threshold in days; overrides NEVER_DOWNLOADED_DAYS
+        #[arg(long)]
+        days: Option<u64>,
+        #[arg(long)]
+        dry_run: bool,
+    },
     Delete {
         #[command(subcommand)]
         target: DeleteTarget,
@@ -251,6 +258,25 @@ pub(crate) async fn migrate(db: &DbPool) -> Result<()> {
 pub(crate) async fn delete_expired(db: &DbPool, settings: &Settings) -> Result<()> {
     let count = db::delete_expired(db, settings).await?;
     println!("Deleted {count} expired upload(s).");
+    Ok(())
+}
+
+pub(crate) async fn delete_never_downloaded(
+    db: &DbPool,
+    settings: &Settings,
+    days: Option<u64>,
+    dry_run: bool,
+) -> Result<()> {
+    let days = days
+        .or(settings.never_downloaded_days)
+        .ok_or_else(|| anyhow::anyhow!("no --days given and NEVER_DOWNLOADED_DAYS is unset"))?;
+    if dry_run {
+        let (count, bytes) = db::count_never_downloaded(db, days).await?;
+        println!("Would delete {count} never-downloaded upload(s), {bytes} byte(s).");
+    } else {
+        let count = db::delete_never_downloaded(db, settings, days).await?;
+        println!("Deleted {count} never-downloaded upload(s).");
+    }
     Ok(())
 }
 
